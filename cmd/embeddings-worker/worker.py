@@ -22,8 +22,9 @@ from app.config.settings import Settings
 from app.services.embeddings import EmbeddingService
 
 # Import event bus
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "pkg"))
-from events_python import EventBus
+# In Docker: worker.py is at /app/worker.py, pkg is at /app/pkg
+sys.path.insert(0, "/app")
+from pkg.events_python import EventBus
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -37,7 +38,7 @@ job_duration = Histogram("embeddings_worker_job_duration_seconds", "Job duration
 gpu_available = Gauge("embeddings_worker_gpu_available", "GPU availability", ["device"])
 
 REDIS_URL = os.getenv("REDIS_URL", settings.redis_url)
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
 RESOURCE_MANAGER_URL = os.getenv("RESOURCE_MANAGER_URL", "http://localhost:9090")
 QUEUE_NAME = os.getenv("QUEUE_NAME", settings.embeddings_queue)
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
@@ -98,7 +99,7 @@ class EmbeddingsWorker:
             job_id = message.get("job_id")
             logger.info(f"Processing embeddings for job: {job_id}")
 
-            text_key = f"job:{job_id}:text"
+            text_key = f"orchestrator:job:{job_id}:text"
             text_data = self.redis_client.get(text_key)
 
             if not text_data:
@@ -109,11 +110,12 @@ class EmbeddingsWorker:
 
             embeddings = self.service.generate_embeddings(text_data)
 
-            embeddings_key = f"job:{job_id}:embeddings"
+            embeddings_key = f"orchestrator:job:{job_id}:embeddings"
             self.redis_client.set(embeddings_key, json.dumps(embeddings))
 
+            # Update step status
             self.redis_client.hset(
-                f"job:{job_id}:status", mapping={"embeddings": "completed"}
+                f"orchestrator:job:{job_id}:steps", "embeddings", "completed"
             )
 
             # Publish event: 33% progress

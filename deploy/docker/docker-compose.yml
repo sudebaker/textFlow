@@ -53,10 +53,11 @@ services:
     environment:
       - UNSTRUCTURED_API_VERSION=latest
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/general/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - backend
 
@@ -114,6 +115,35 @@ services:
         limits:
           cpus: '0.5'
           memory: 128M
+
+  extraction-worker:
+    build:
+      context: ../../
+      dockerfile: cmd/extraction-worker/Dockerfile
+    container_name: ia-text-extraction-worker
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - UNSTRUCTURED_URL=http://unstructured:8000
+      - QUEUE_NAME=extract_text
+      - PREFETCH_COUNT=3
+      - LOG_LEVEL=info
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      unstructured:
+        condition: service_healthy
+    networks:
+      - backend
+      - datastore
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
 
   embeddings-worker:
     build:
@@ -192,6 +222,26 @@ services:
         limits:
           cpus: '1'
           memory: 512M
+
+  completion-worker:
+    build:
+      context: ../../
+      dockerfile: cmd/completion-worker/Dockerfile
+    container_name: ia-text-completion-worker
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=info
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - datastore
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   prometheus:
     image: prom/prometheus:v2.48.0

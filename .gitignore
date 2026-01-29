@@ -205,3 +205,47 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+***REMOVED***=================
+# Go / Golang
+***REMOVED***=================
+
+# Binaries and compiled files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary (compiled with go test -c)
+*.test
+
+# Output of go coverage
+*.out
+coverage.out
+
+# Go workspace file
+go.work
+
+# Vendor directory (if using go modules)
+vendor/
+
+# Go build output
+/bin/
+/build/
+
+# golang.org/x tools
+$HOME/go/
+
+# Delve debugger
+*.dwarf
+
+# Go module files
+go.sum
+
+# IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

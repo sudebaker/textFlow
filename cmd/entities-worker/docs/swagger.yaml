@@ -1,0 +1,203 @@
+openapi: 3.0.3
+info:
+  title: GLiNER Entity Extraction Service
+  description: API for Named Entity Recognition using GLiNER
+  version: 1.0.0
+  contact:
+    name: GLiNER Service
+    url: https://github.com/amphora/journalist-agent
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local
+paths:
+  /api/v1/extract:
+    post:
+      summary: Extract entities from text
+      tags:
+        - extract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractResponse'
+        '400':
+          description: Bad Request
+        '500':
+          description: Internal Server Error
+  /api/v1/extract/batch:
+    post:
+      summary: Extract entities from multiple texts
+      tags:
+        - extract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchExtractRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchExtractResponse'
+        '400':
+          description: Bad Request
+        '500':
+          description: Internal Server Error
+  /api/v1/health:
+    get:
+      summary: Health status
+      tags:
+        - health
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      tags:
+        - metrics
+      responses:
+        '200':
+          description: Successful Response
+components:
+  schemas:
+    BatchExtractRequest:
+      title: BatchExtractRequest
+      required:
+        - chunks
+      type: object
+      properties:
+        chunks:
+          type: array
+          items:
+            type: string
+        options:
+          $ref: '#/components/schemas/ExtractOptions'
+    BatchExtractResponse:
+      title: BatchExtractResponse
+      required:
+        - results
+        - processing_time_ms
+        - success
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExtractResponse'
+        processing_time_ms:
+          type: integer
+          format: int64
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+    Entity:
+      title: Entity
+      required:
+        - text
+        - label
+        - confidence
+        - start_char
+        - end_char
+      type: object
+      properties:
+        text:
+          type: string
+        label:
+          type: string
+        confidence:
+          type: number
+          format: float
+        start_char:
+          type: integer
+        end_char:
+          type: integer
+    ExtractOptions:
+      title: ExtractOptions
+      type: object
+      properties:
+        entity_types:
+          type: array
+          items:
+            type: string
+        confidence_threshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        max_length:
+          type: integer
+          minimum: 1
+        batch_size:
+          type: integer
+          minimum: 1
+    ExtractRequest:
+      title: ExtractRequest
+      required:
+        - text
+      type: object
+      properties:
+        text:
+          type: string
+          minLength: 1
+        options:
+          $ref: '#/components/schemas/ExtractOptions'
+    ExtractResponse:
+      title: ExtractResponse
+      required:
+        - entities
+        - processing_time_ms
+        - success
+      type: object
+      properties:
+        entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entity'
+        processing_time_ms:
+          type: integer
+          format: int64
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+    HealthResponse:
+      title: HealthResponse
+      required:
+        - status
+        - version
+        - timestamp
+        - checks
+      type: object
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        checks:
+          type: object
+          additionalProperties:
+            type: string

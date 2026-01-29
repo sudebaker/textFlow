@@ -153,6 +153,13 @@ func (b *RabbitMQBroker) declareQueue(name string) error {
 }
 
 func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message interface{}) error {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled before publish: %w", ctx.Err())
+	default:
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -175,9 +182,11 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 	)
 
 	if err != nil {
+		metrics.RabbitMQErrors.Inc()
 		return fmt.Errorf("failed to publish message to queue %s: %w", queue, err)
 	}
 
+	metrics.QueuePublishTotal.WithLabelValues(queue).Inc()
 	b.logger.Debug().Msgf("Message published to queue: %s", queue)
 	return nil
 }

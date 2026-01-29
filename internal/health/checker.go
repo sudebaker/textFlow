@@ -2,7 +2,6 @@ package health
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"ia-text-orchestrator/internal/broker"

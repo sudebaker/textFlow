@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -14,9 +16,10 @@ import (
 )
 
 type RedisClient struct {
-	client *redis.Client
-	logger zerolog.Logger
-	jobTTL time.Duration
+	client    *redis.Client
+	logger    zerolog.Logger
+	jobTTL    time.Duration
+	namespace string
 }
 
 func New(cfg *config.Config) (*RedisClient, error) {
@@ -53,10 +56,17 @@ func New(cfg *config.Config) (*RedisClient, error) {
 
 	logger.Info().Str("addr", opt.Addr).Msg("Connected to Redis")
 
+	// Get namespace from environment or use default
+	namespace := os.Getenv("REDIS_NAMESPACE")
+	if namespace == "" {
+		namespace = "orchestrator"
+	}
+
 	return &RedisClient{
-		client: client,
-		logger: logger,
-		jobTTL: cfg.JobTTL,
+		client:    client,
+		logger:    logger,
+		jobTTL:    cfg.JobTTL,
+		namespace: namespace,
 	}, nil
 }
 
@@ -64,8 +74,15 @@ func (c *RedisClient) GetClient() *redis.Client {
 	return c.client
 }
 
+// key constructs a namespaced Redis key from parts
+// Example: key("job", jobID, "status") -> "orchestrator:job:123:status"
+func (c *RedisClient) key(parts ...string) string {
+	allParts := append([]string{c.namespace}, parts...)
+	return strings.Join(allParts, ":")
+}
+
 func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status models.JobStatus) error {
-	key := fmt.Sprintf("job:%s:status", jobID)
+	key := c.key("job", jobID, "status")
 	err := c.client.HSet(ctx, key, "status", string(status)).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set job status: %w", err)
@@ -75,7 +92,7 @@ func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status mod
 }
 
 func (c *RedisClient) GetJobStatus(ctx context.Context, jobID string) (models.JobStatus, error) {
-	key := fmt.Sprintf("job:%s:status", jobID)
+	key := c.key("job", jobID, "status")
 	status, err := c.client.HGet(ctx, key, "status").Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -87,7 +104,7 @@ func (c *RedisClient) GetJobStatus(ctx context.Context, jobID string) (models.Jo
 }
 
 func (c *RedisClient) SetJobText(ctx context.Context, jobID string, text string) error {
-	key := fmt.Sprintf("job:%s:text", jobID)
+	key := c.key("job", jobID, "text")
 	err := c.client.Set(ctx, key, text, c.jobTTL).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set job text: %w", err)
@@ -96,7 +113,7 @@ func (c *RedisClient) SetJobText(ctx context.Context, jobID string, text string)
 }
 
 func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, error) {
-	key := fmt.Sprintf("job:%s:text", jobID)
+	key := c.key("job", jobID, "text")
 	text, err := c.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -108,7 +125,7 @@ func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, err
 }
 
 func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *models.JobResults) error {
-	key := fmt.Sprintf("job:%s:results", jobID)
+	key := c.key("job", jobID, "results")
 	data, err := json.Marshal(results)
 	if err != nil {
 		return fmt.Errorf("failed to marshal job results: %w", err)
@@ -121,7 +138,7 @@ func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *
 }
 
 func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.JobResults, error) {
-	key := fmt.Sprintf("job:%s:results", jobID)
+	key := c.key("job", jobID, "results")
 	data, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -137,7 +154,7 @@ func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.
 }
 
 func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embeddings []float32) error {
-	key := fmt.Sprintf("job:%s:embeddings", jobID)
+	key := c.key("job", jobID, "embeddings")
 	data, err := json.Marshal(embeddings)
 	if err != nil {
 		return fmt.Errorf("failed to marshal embeddings: %w", err)
@@ -150,7 +167,7 @@ func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embedd
 }
 
 func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) ([]float32, error) {
-	key := fmt.Sprintf("job:%s:embeddings", jobID)
+	key := c.key("job", jobID, "embeddings")
 	data, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -166,7 +183,7 @@ func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) ([]flo
 }
 
 func (c *RedisClient) SetJobEntities(ctx context.Context, jobID string, entities []models.Entity) error {
-	key := fmt.Sprintf("job:%s:entities", jobID)
+	key := c.key("job", jobID, "entities")
 	data, err := json.Marshal(entities)
 	if err != nil {
 		return fmt.Errorf("failed to marshal entities: %w", err)
@@ -179,7 +196,7 @@ func (c *RedisClient) SetJobEntities(ctx context.Context, jobID string, entities
 }
 
 func (c *RedisClient) GetJobEntities(ctx context.Context, jobID string) ([]models.Entity, error) {
-	key := fmt.Sprintf("job:%s:entities", jobID)
+	key := c.key("job", jobID, "entities")
 	data, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -195,7 +212,7 @@ func (c *RedisClient) GetJobEntities(ctx context.Context, jobID string) ([]model
 }
 
 func (c *RedisClient) SetJobMetadata(ctx context.Context, jobID string, metadata map[string]interface{}) error {
-	key := fmt.Sprintf("job:%s:metadata", jobID)
+	key := c.key("job", jobID, "metadata")
 	data, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -208,7 +225,7 @@ func (c *RedisClient) SetJobMetadata(ctx context.Context, jobID string, metadata
 }
 
 func (c *RedisClient) GetJobMetadata(ctx context.Context, jobID string) (map[string]interface{}, error) {
-	key := fmt.Sprintf("job:%s:metadata", jobID)
+	key := c.key("job", jobID, "metadata")
 	data, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -224,7 +241,7 @@ func (c *RedisClient) GetJobMetadata(ctx context.Context, jobID string) (map[str
 }
 
 func (c *RedisClient) UpdateJobStep(ctx context.Context, jobID string, step string, status string) error {
-	key := fmt.Sprintf("job:%s:steps", jobID)
+	key := c.key("job", jobID, "steps")
 	err := c.client.HSet(ctx, key, step, status).Err()
 	if err != nil {
 		return fmt.Errorf("failed to update job step: %w", err)
@@ -234,7 +251,7 @@ func (c *RedisClient) UpdateJobStep(ctx context.Context, jobID string, step stri
 }
 
 func (c *RedisClient) GetJobSteps(ctx context.Context, jobID string) (map[string]string, error) {
-	key := fmt.Sprintf("job:%s:steps", jobID)
+	key := c.key("job", jobID, "steps")
 	steps, err := c.client.HGetAll(ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get job steps: %w", err)
@@ -243,7 +260,7 @@ func (c *RedisClient) GetJobSteps(ctx context.Context, jobID string) (map[string
 }
 
 func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
-	key := fmt.Sprintf("job:%s:meta", jobID)
+	key := c.key("job", jobID, "meta")
 	err := c.client.HSet(ctx, key, "created_at", time.Now().Unix()).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set job created time: %w", err)
@@ -253,7 +270,7 @@ func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 }
 
 func (c *RedisClient) SetJobCompleted(ctx context.Context, jobID string) error {
-	key := fmt.Sprintf("job:%s:meta", jobID)
+	key := c.key("job", jobID, "meta")
 	err := c.client.HSet(ctx, key, "completed_at", time.Now().Unix()).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set job completed time: %w", err)
@@ -263,7 +280,7 @@ func (c *RedisClient) SetJobCompleted(ctx context.Context, jobID string) error {
 }
 
 func (c *RedisClient) SetJobError(ctx context.Context, jobID string, errorMsg string) error {
-	key := fmt.Sprintf("job:%s:error", jobID)
+	key := c.key("job", jobID, "error")
 	err := c.client.Set(ctx, key, errorMsg, c.jobTTL).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set job error: %w", err)
@@ -272,7 +289,7 @@ func (c *RedisClient) SetJobError(ctx context.Context, jobID string, errorMsg st
 }
 
 func (c *RedisClient) GetJobError(ctx context.Context, jobID string) (string, error) {
-	key := fmt.Sprintf("job:%s:error", jobID)
+	key := c.key("job", jobID, "error")
 	errMsg, err := c.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -285,15 +302,15 @@ func (c *RedisClient) GetJobError(ctx context.Context, jobID string) (string, er
 
 func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 	keys := []string{
-		fmt.Sprintf("job:%s:status", jobID),
-		fmt.Sprintf("job:%s:text", jobID),
-		fmt.Sprintf("job:%s:results", jobID),
-		fmt.Sprintf("job:%s:embeddings", jobID),
-		fmt.Sprintf("job:%s:entities", jobID),
-		fmt.Sprintf("job:%s:metadata", jobID),
-		fmt.Sprintf("job:%s:steps", jobID),
-		fmt.Sprintf("job:%s:meta", jobID),
-		fmt.Sprintf("job:%s:error", jobID),
+		c.key("job", jobID, "status"),
+		c.key("job", jobID, "text"),
+		c.key("job", jobID, "results"),
+		c.key("job", jobID, "embeddings"),
+		c.key("job", jobID, "entities"),
+		c.key("job", jobID, "metadata"),
+		c.key("job", jobID, "steps"),
+		c.key("job", jobID, "meta"),
+		c.key("job", jobID, "error"),
 	}
 	err := c.client.Del(ctx, keys...).Err()
 	if err != nil {

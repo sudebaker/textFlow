@@ -21,7 +21,8 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 from app.config.settings import Settings
 
 # Add parent directory to path for pkg imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+# In Docker: worker.py is at /app/worker.py, pkg is at /app/pkg
+sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
 
 logging.basicConfig(
@@ -36,7 +37,7 @@ job_duration = Histogram("entities_worker_job_duration_seconds", "Job duration")
 gpu_available = Gauge("entities_worker_gpu_available", "GPU availability", ["device"])
 
 REDIS_URL = os.getenv("REDIS_URL", settings.redis_url)
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", settings.entities_queue)
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 
@@ -66,7 +67,7 @@ class EntitiesWorker:
             job_id = message.get("job_id")
             logger.info(f"Processing entities for job: {job_id}")
 
-            text_key = f"job:{job_id}:text"
+            text_key = f"orchestrator:job:{job_id}:text"
             text_data = self.redis_client.get(text_key)
 
             if not text_data:
@@ -90,11 +91,12 @@ class EntitiesWorker:
                 for e in entities[0]
             ]
 
-            entities_key = f"job:{job_id}:entities"
+            entities_key = f"orchestrator:job:{job_id}:entities"
             self.redis_client.set(entities_key, json.dumps(entities_list))
 
+            # Update step status
             self.redis_client.hset(
-                f"job:{job_id}:status", mapping={"entities": "completed"}
+                f"orchestrator:job:{job_id}:steps", "entities", "completed"
             )
 
             # Publish progress event (entities extraction = 66% complete)

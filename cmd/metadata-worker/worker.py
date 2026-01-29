@@ -22,8 +22,9 @@ import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
 # Import event bus
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "pkg"))
-from events_python import EventBus
+# In Docker: worker.py is at /app/worker.py, pkg is at /app/pkg
+sys.path.insert(0, "/app")
+from pkg.events_python import EventBus
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -34,7 +35,7 @@ jobs_total = Counter("metadata_worker_jobs_total", "Total jobs processed", ["sta
 job_duration = Histogram("metadata_worker_job_duration_seconds", "Job duration")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "metadata")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8003"))
 
@@ -122,7 +123,7 @@ class MetadataWorker:
             logger.info(f"Processing metadata for job: {job_id}")
 
             # Get text from Redis
-            text_key = f"job:{job_id}:text"
+            text_key = f"orchestrator:job:{job_id}:text"
             text_data = self.redis_client.get(text_key)
 
             if not text_data:
@@ -135,12 +136,12 @@ class MetadataWorker:
             metadata = self.extract_metadata(text_data, document_url)
 
             # Store in Redis
-            metadata_key = f"job:{job_id}:metadata"
+            metadata_key = f"orchestrator:job:{job_id}:metadata"
             self.redis_client.set(metadata_key, json.dumps(metadata))
 
-            # Update status
+            # Update step status
             self.redis_client.hset(
-                f"job:{job_id}:status", mapping={"metadata": "completed"}
+                f"orchestrator:job:{job_id}:steps", "metadata", "completed"
             )
 
             # Publish event: 100% progress

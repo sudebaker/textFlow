@@ -29,11 +29,12 @@ import (
 )
 
 var (
-	cfg      *config.Config
-	mqBroker *broker.RabbitMQBroker
-	redis    *redisclient.RedisClient
-	eventBus *events.EventBus
-	logger   zerolog.Logger
+	cfg           *config.Config
+	mqBroker      *broker.RabbitMQBroker
+	redis         *redisclient.RedisClient
+	eventBus      *events.EventBus
+	healthChecker *health.HealthChecker
+	logger        zerolog.Logger
 )
 
 func main() {
@@ -70,6 +71,10 @@ func main() {
 
 	// Initialize EventBus with Redis client
 	eventBus = events.NewEventBus(redis.GetClient())
+
+	// Initialize comprehensive health checker
+	healthChecker = health.NewHealthChecker(redis, mqBroker)
+	logger.Info().Msg("Health checker initialized")
 
 	r := setupRouter()
 
@@ -223,29 +228,19 @@ func metricsMiddleware() gin.HandlerFunc {
 }
 
 func healthHandler(c *gin.Context) {
-	redisStatus := "ok"
-	if err := redis.HealthCheck(); err != nil {
-		redisStatus = err.Error()
-	}
+	// Create context with timeout for health checks
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	defer cancel()
 
-	brokerStatus := "ok"
-	if err := mqBroker.HealthCheck(); err != nil {
-		brokerStatus = err.Error()
-	}
+	healthStatus := healthChecker.Check(ctx)
 
-	status := "healthy"
+	// Determine HTTP status code
 	httpStatus := http.StatusOK
-	if redisStatus != "ok" || brokerStatus != "ok" {
-		status = "unhealthy"
+	if healthStatus.Status == "degraded" {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
-	c.JSON(httpStatus, gin.H{
-		"status":  status,
-		"redis":   redisStatus,
-		"broker":  brokerStatus,
-		"service": "orchestrator",
-	})
+	c.JSON(httpStatus, healthStatus)
 }
 
 func createJobHandler(c *gin.Context) {
@@ -280,7 +275,9 @@ func createJobHandler(c *gin.Context) {
 
 	jobID := generateJobID()
 
-	ctx := c.Request.Context()
+	// Create context with timeout for the entire job creation process
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
 
 	if err := redis.SetJobStatus(ctx, jobID, models.StatusPending); err != nil {
 		logger.Error().Msgf("Failed to set job status: %v", err)
@@ -340,7 +337,10 @@ func createJobHandler(c *gin.Context) {
 
 func getJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
-	ctx := c.Request.Context()
+
+	// Create context with timeout for database operations
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
 
 	status, err := redis.GetJobStatus(ctx, jobID)
 	if err != nil {
@@ -351,7 +351,12 @@ func getJobHandler(c *gin.Context) {
 		return
 	}
 
-	results, _ := redis.GetJobResults(ctx, jobID)
+	// Get aggregated results (if completed)
+	var results *models.JobResults
+	if status == models.StatusCompleted {
+		results, _ = redis.GetJobResults(ctx, jobID)
+	}
+
 	errorMsg, _ := redis.GetJobError(ctx, jobID)
 
 	c.JSON(http.StatusOK, models.GetJobResponse{
@@ -364,7 +369,10 @@ func getJobHandler(c *gin.Context) {
 
 func deleteJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
-	ctx := c.Request.Context()
+
+	// Create context with timeout for deletion operations
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
 
 	status, err := redis.GetJobStatus(ctx, jobID)
 	if err != nil {

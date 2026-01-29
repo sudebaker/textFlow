@@ -3,3 +3,4 @@ redis>=5.0.0
 prometheus-client>=0.19.0
 langdetect>=1.0.9
 textstat>=0.7.3
+requests>=2.31.0

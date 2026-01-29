@@ -4,9 +4,6 @@ services:
   rabbitmq:
     image: rabbitmq:3.12-management
     container_name: ia-text-rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
@@ -16,31 +13,41 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - ia-text-network
+      - datastore
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          memory: 512M
 
   redis:
     image: redis:7-alpine
     container_name: ia-text-redis
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - ia-text-network
+      - datastore
     volumes:
       - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1536M
+        reservations:
+          memory: 1G
 
   unstructured:
     image: quay.io/unstructured-io/unstructured-api:0.0.66
     container_name: ia-text-unstructured
-    ports:
-      - "8000:8000"
     volumes:
       - ../../data:/app/data
     environment:
@@ -51,7 +58,7 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - ia-text-network
+      - backend
 
   orchestrator:
     build:
@@ -60,6 +67,10 @@ services:
     container_name: ia-text-orchestrator
     ports:
       - "8080:8080"
+    networks:
+      - frontend
+      - backend
+      - datastore
     environment:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - REDIS_URL=redis://redis:6379
@@ -77,13 +88,14 @@ services:
         condition: service_healthy
       unstructured:
         condition: service_healthy
-    networks:
-      - ia-text-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: '1'
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
           memory: 512M
 
   resource-manager:
@@ -91,13 +103,11 @@ services:
       context: ../../
       dockerfile: cmd/resource-manager/Dockerfile
     container_name: ia-text-resource-manager
-    ports:
-      - "9090:9090"
     environment:
       - LOG_LEVEL=info
       - HTTP_PORT=9090
     networks:
-      - ia-text-network
+      - backend
     restart: unless-stopped
     deploy:
       resources:
@@ -110,8 +120,6 @@ services:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: ia-text-embeddings-worker
-    ports:
-      - "8001:8001"
     environment:
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
@@ -119,11 +127,13 @@ services:
       - LOG_LEVEL=info
       - QUEUE_NAME=embeddings
       - METRICS_PORT=8001
+      - PREFETCH_COUNT=5
     depends_on:
       redis:
         condition: service_healthy
     networks:
-      - ia-text-network
+      - backend
+      - datastore
     restart: unless-stopped
     deploy:
       resources:
@@ -136,19 +146,19 @@ services:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: ia-text-entities-worker
-    ports:
-      - "8002:8002"
     environment:
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - LOG_LEVEL=info
       - QUEUE_NAME=entities
       - METRICS_PORT=8002
+      - PREFETCH_COUNT=5
     depends_on:
       redis:
         condition: service_healthy
     networks:
-      - ia-text-network
+      - backend
+      - datastore
     restart: unless-stopped
     deploy:
       resources:
@@ -161,21 +171,21 @@ services:
       context: ../../
       dockerfile: cmd/metadata-worker/Dockerfile
     container_name: ia-text-metadata-worker
-    ports:
-      - "8003:8003"
     environment:
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - LOG_LEVEL=info
       - QUEUE_NAME=metadata
       - METRICS_PORT=8003
+      - PREFETCH_COUNT=10
     depends_on:
       rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - ia-text-network
+      - backend
+      - datastore
     restart: unless-stopped
     deploy:
       resources:
@@ -187,7 +197,7 @@ services:
     image: prom/prometheus:v2.48.0
     container_name: ia-text-prometheus
     ports:
-      - "9091:9090"
+      - "127.0.0.1:9091:9090"
     volumes:
       - ../prometheus:/etc/prometheus
       - prometheus-data:/prometheus
@@ -196,7 +206,7 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'
     networks:
-      - ia-text-network
+      - frontend
     restart: unless-stopped
 
   grafana:
@@ -210,15 +220,18 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
     networks:
-      - ia-text-network
+      - frontend
     restart: unless-stopped
 
 networks:
-  ia-text-network:
+  frontend:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
+  backend:
+    driver: bridge
+    internal: true
+  datastore:
+    driver: bridge
+    internal: true
 
 volumes:
   redis-data:

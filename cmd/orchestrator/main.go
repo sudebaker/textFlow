@@ -52,6 +52,10 @@ func main() {
 	// Initialize metrics
 	metrics.Init()
 
+	// Start metrics collector for runtime stats
+	metrics.StartMetricsCollector()
+	logger.Info().Msg("Started runtime metrics collector")
+
 	mqBroker, err = broker.New(cfg)
 	if err != nil {
 		logger.Fatal().Msgf("Failed to connect to RabbitMQ: %v", err)
@@ -443,9 +447,9 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 
 		// Block cloud metadata endpoints (SSRF prevention)
 		blockedHosts := []string{
-			"169.254.169.254",           // AWS, Azure, GCP metadata
-			"metadata.google.internal",  // GCP metadata
-			"169.254.169.254",           // Azure metadata
+			"169.254.169.254",          // AWS, Azure, GCP metadata
+			"metadata.google.internal", // GCP metadata
+			"169.254.169.254",          // Azure metadata
 			"metadata",
 		}
 		for _, blocked := range blockedHosts {

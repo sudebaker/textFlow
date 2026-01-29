@@ -177,17 +177,16 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
     parsed = urlparse(url)
 
     credentials = pika.PlainCredentials(
-        parsed.username or 'guest',
-        parsed.password or 'guest'
+        parsed.username or "guest", parsed.password or "guest"
     )
 
     return pika.ConnectionParameters(
-        host=parsed.hostname or 'localhost',
+        host=parsed.hostname or "localhost",
         port=parsed.port or 5672,
-        virtual_host=parsed.path[1:] if parsed.path else '/',
+        virtual_host=parsed.path[1:] if parsed.path else "/",
         credentials=credentials,
         heartbeat=600,
-        blocked_connection_timeout=300
+        blocked_connection_timeout=300,
     )
 
 
@@ -199,8 +198,11 @@ def connect_rabbitmq(url: str, max_retries: int = 5):
             params = parse_rabbitmq_url(url)
             connection = pika.BlockingConnection(params)
             channel = connection.channel()
-            channel.basic_qos(prefetch_count=1)
-            logger.info(f"Connected to RabbitMQ at {params.host}:{params.port}")
+            prefetch_count = int(os.getenv("PREFETCH_COUNT", "10"))
+            channel.basic_qos(prefetch_count=prefetch_count)
+            logger.info(
+                f"Connected to RabbitMQ at {params.host}:{params.port} with prefetch_count={prefetch_count}"
+            )
             yield connection, channel
             return
         except Exception as e:

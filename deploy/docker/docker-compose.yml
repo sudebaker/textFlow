@@ -73,7 +73,7 @@ services:
       - backend
       - datastore
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
       - REDIS_URL=redis://redis:6379
       - UNSTRUCTURED_URL=http://unstructured:8000
       - RESOURCE_MANAGER_URL=http://resource-manager:9090
@@ -123,7 +123,7 @@ services:
     container_name: ia-text-extraction-worker
     environment:
       - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
       - UNSTRUCTURED_URL=http://unstructured:8000
       - QUEUE_NAME=extract_text
       - PREFETCH_COUNT=3
@@ -152,7 +152,7 @@ services:
     container_name: ia-text-embeddings-worker
     environment:
       - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
       - RESOURCE_MANAGER_URL=http://resource-manager:9090
       - LOG_LEVEL=info
       - QUEUE_NAME=embeddings
@@ -178,7 +178,7 @@ services:
     container_name: ia-text-entities-worker
     environment:
       - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
       - LOG_LEVEL=info
       - QUEUE_NAME=entities
       - METRICS_PORT=8002
@@ -203,7 +203,7 @@ services:
     container_name: ia-text-metadata-worker
     environment:
       - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
       - LOG_LEVEL=info
       - QUEUE_NAME=metadata
       - METRICS_PORT=8003

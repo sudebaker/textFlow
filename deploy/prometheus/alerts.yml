@@ -1,0 +1,106 @@
+groups:
+  - name: ia-text-orchestrator-critical
+    interval: 30s
+    rules:
+      # Critical Alert 1: High Job Failure Rate
+      - alert: HighJobFailureRate
+        expr: |
+          rate(ia_text_jobs_total{status="failed"}[5m]) /
+          rate(ia_text_jobs_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High job failure rate detected"
+          description: "More than 10% of jobs are failing ({{ $value | humanizePercentage }})"
+
+      # Critical Alert 2: Jobs Stuck (not progressing)
+      - alert: JobsStuck
+        expr: |
+          ia_text_jobs_in_progress > 0 AND
+          rate(ia_text_jobs_total{status="completed"}[10m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jobs not completing"
+          description: "{{ $value }} jobs in progress but none completed in 10 minutes"
+
+      # Critical Alert 3: Queue Saturation
+      - alert: QueueSaturated
+        expr: ia_text_queue_depth{queue=~".*"} > 500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue {{ $labels.queue }} saturated"
+          description: "Queue {{ $labels.queue }} has {{ $value }} unprocessed messages for 5+ minutes"
+
+      # Critical Alert 4: Queue Growing Rapidly
+      - alert: QueueGrowingRapidly
+        expr: |
+          rate(ia_text_queue_depth{queue=~".*"}[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} growing rapidly"
+          description: "Queue depth increasing by {{ $value }} messages/second"
+
+      # Critical Alert 5: Redis Errors
+      - alert: RedisHighErrorRate
+        expr: rate(ia_text_redis_errors_total[1m]) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis experiencing high error rate"
+          description: "{{ $value }} Redis errors per second in the last minute"
+
+      # Critical Alert 6: RabbitMQ Errors
+      - alert: RabbitMQHighErrorRate
+        expr: rate(ia_text_rabbitmq_errors_total[1m]) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ experiencing high error rate"
+          description: "{{ $value }} RabbitMQ errors per second"
+
+      # Warning Alert 1: Slow Job Processing
+      - alert: SlowJobProcessing
+        expr: |
+          histogram_quantile(0.95,
+            rate(ia_text_job_duration_seconds_bucket[5m])
+          ) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jobs taking too long to process"
+          description: "95th percentile job duration is {{ $value | humanizeDuration }}"
+
+      # Warning Alert 2: High HTTP Error Rate
+      - alert: HighHTTPErrorRate
+        expr: |
+          rate(ia_text_http_requests_total{status=~"5.."}[5m]) /
+          rate(ia_text_http_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 5xx error rate"
+          description: "{{ $value | humanizePercentage }} of HTTP requests are failing with 5xx errors"
+
+      # Warning Alert 3: Redis Slow Operations
+      - alert: RedisSlowOperations
+        expr: |
+          histogram_quantile(0.95,
+            rate(ia_text_redis_latency_seconds_bucket[5m])
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis operations are slow"
+          description: "95th percentile Redis latency is {{ $value | humanizeDuration }}"

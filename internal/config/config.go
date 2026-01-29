@@ -1,0 +1,72 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/rs/zerolog"
+	zerologpkgerrors "github.com/rs/zerolog/pkgerrors"
+)
+
+type Config struct {
+	RabbitMQURL        string        `env:"RABBITMQ_URL,required"`
+	RedisURL           string        `env:"REDIS_URL" default:"redis://localhost:6379"`
+	UnstructuredURL    string        `env:"UNSTRUCTURED_URL" default:"http://localhost:8000"`
+	ResourceManagerURL string        `env:"RESOURCE_MANAGER_URL" default:"http://localhost:9090"`
+	HTTPPort           int           `env:"HTTP_PORT" default:"8080"`
+	LogLevel           string        `env:"LOG_LEVEL" default:"info"`
+	JobTimeout         time.Duration `env:"JOB_TIMEOUT" default:"5m"`
+	JobTTL             time.Duration `env:"JOB_TTL" default:"24h"`
+	MaxRetries         int           `env:"MAX_RETRIES" default:"3"`
+	RetryDelay         time.Duration `env:"RETRY_DELAY" default:"1s"`
+	EmbeddingsQueue    string        `env:"EMBEDDINGS_QUEUE" default:"embeddings"`
+	EntitiesQueue      string        `env:"ENTITIES_QUEUE" default:"entities"`
+	ExtractQueue       string        `env:"EXTRACT_QUEUE" default:"extract_text"`
+	MetadataQueue      string        `env:"METADATA_QUEUE" default:"metadata"`
+}
+
+func (c *Config) ParseLogLevel() zerolog.Level {
+	switch strings.ToLower(c.LogLevel) {
+	case "debug":
+		return zerolog.DebugLevel
+	case "info":
+		return zerolog.InfoLevel
+	case "warn", "warning":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	case "fatal":
+		return zerolog.FatalLevel
+	case "panic":
+		return zerolog.PanicLevel
+	default:
+		return zerolog.InfoLevel
+	}
+}
+
+func Load() (*Config, error) {
+	cfg := &Config{}
+	if err := env.Parse(cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+func InitLogger(level string) zerolog.Logger {
+	zerolog.ErrorStackMarshaler = zerologpkgerrors.MarshalStack
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+
+	lvl, _ := zerolog.ParseLevel(level)
+	if lvl == zerolog.NoLevel {
+		lvl = zerolog.InfoLevel
+	}
+
+	return zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: false}).
+		Level(lvl).
+		With().
+		Timestamp().
+		Logger()
+}

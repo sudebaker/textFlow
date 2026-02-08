@@ -102,6 +102,20 @@ var (
 		},
 	)
 
+	RabbitMQReconnects = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_rabbitmq_reconnects_total",
+			Help: "Total RabbitMQ reconnection attempts",
+		},
+	)
+
+	RabbitMQReconnectErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_rabbitmq_reconnect_errors_total",
+			Help: "Total RabbitMQ reconnection failures",
+		},
+	)
+
 	// Runtime metrics
 	GoroutineCount = promauto.NewGauge(
 		prometheus.GaugeOpts{
@@ -158,6 +172,39 @@ var (
 			Help: "Total number of cache misses",
 		},
 		[]string{"cache_type"},
+	)
+
+	// Circuit breaker metrics
+	CircuitBreakerState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ia_text_circuit_breaker_state",
+			Help: "Circuit breaker state (0=closed, 1=half-open, 2=open)",
+		},
+		[]string{"name"},
+	)
+
+	CircuitBreakerOpen = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_circuit_breaker_open_total",
+			Help: "Total number of times circuit breaker opened",
+		},
+		[]string{"name"},
+	)
+
+	CircuitBreakerTooMany = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_circuit_breaker_too_many_total",
+			Help: "Total number of times request was rejected while circuit was half-open",
+		},
+		[]string{"name"},
+	)
+
+	CircuitBreakerErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_circuit_breaker_errors_total",
+			Help: "Total number of circuit breaker errors",
+		},
+		[]string{"name"},
 	)
 )
 

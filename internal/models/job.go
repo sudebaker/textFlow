@@ -29,38 +29,59 @@ const (
 )
 
 type JobResults struct {
-	Text       string                 `json:"text"`
-	Embeddings []float32              `json:"embeddings,omitempty"`
-	Entities   []Entity               `json:"entities,omitempty"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	JobID            string                 `json:"job_id"`
+	Status           string                 `json:"status"`
+	CreatedAt        string                 `json:"created_at"`
+	CompletedAt      string                 `json:"completed_at"`
+	Text             string                 `json:"text"`
+	Chunks           []Chunk                `json:"chunks,omitempty"`
+	Embeddings       map[string]interface{} `json:"embeddings,omitempty"`
+	Entities         []Entity               `json:"entities,omitempty"`
+	DocumentMetadata map[string]interface{} `json:"document_metadata,omitempty"`
+	TextMetadata     map[string]interface{} `json:"text_metadata,omitempty"`
+}
+
+type Chunk struct {
+	ChunkID     string `json:"chunk_id"`
+	Text        string `json:"text"`
+	StartOffset int    `json:"start_offset"`
+	EndOffset   int    `json:"end_offset"`
+	TokenCount  int    `json:"token_count,omitempty"`
 }
 
 type DocumentMetadata struct {
-	MIMEType  string `json:"mime_type"`
-	SizeBytes int64  `json:"size_bytes"`
-	Pages     int    `json:"pages,omitempty"`
-	Filename  string `json:"filename,omitempty"`
+	MIMEType     string `json:"mime_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Pages        int    `json:"pages,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	Author       string `json:"author,omitempty"`
+	Title        string `json:"title,omitempty"`
+	CreationDate string `json:"creation_date,omitempty"`
+	SHA256       string `json:"sha256,omitempty"`
 }
 
 type Entity struct {
 	Text       string  `json:"text"`
 	Label      string  `json:"label"`
 	Confidence float32 `json:"confidence"`
+	ChunkID    string  `json:"chunk_id,omitempty"`
 	Start      int     `json:"start"`
 	End        int     `json:"end"`
 }
 
 type JobMessage struct {
-	JobID          string `json:"job_id"`
-	DocumentBase64 string `json:"document_base64,omitempty"`
-	DocumentURL    string `json:"document_url,omitempty"`
-	MIMEType       string `json:"mime_type,omitempty"`
+	JobID          string   `json:"job_id"`
+	DocumentBase64 string   `json:"document_base64,omitempty"`
+	DocumentURL    string   `json:"document_url,omitempty"`
+	MIMEType       string   `json:"mime_type,omitempty"`
+	EntityTypes    []string `json:"entity_types,omitempty"`
 }
 
 type CreateJobRequest struct {
-	DocumentBase64 string `json:"document_base64" binding:"required_without=DocumentURL"`
-	DocumentURL    string `json:"document_url" binding:"required_without=DocumentBase64"`
-	Filename       string `json:"filename,omitempty"`
+	DocumentBase64 string   `json:"document_base64" binding:"required_without=DocumentURL"`
+	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
+	Filename       string   `json:"filename,omitempty"`
+	EntityTypes    []string `json:"entity_types,omitempty"`
 }
 
 type CreateJobResponse struct {

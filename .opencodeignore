@@ -1,0 +1,6 @@
+.venv/
+models/
+bin/
+data/
+deploy/
+.ruff_cache/

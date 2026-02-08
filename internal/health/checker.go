@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ia-text-orchestrator/internal/broker"
+	"ia-text-orchestrator/internal/middleware"
 	redisclient "ia-text-orchestrator/internal/redis"
 )
 
@@ -18,34 +19,40 @@ type CheckResult struct {
 
 // HealthStatus represents the overall health status
 type HealthStatus struct {
-	Status    string                  `json:"status"`
-	Timestamp time.Time               `json:"timestamp"`
-	Service   string                  `json:"service"`
-	Version   string                  `json:"version"`
-	Checks    map[string]CheckResult  `json:"checks"`
+	Status       string                 `json:"status"`
+	Timestamp    time.Time              `json:"timestamp"`
+	Service      string                 `json:"service"`
+	Version      string                 `json:"version"`
+	Checks       map[string]CheckResult `json:"checks"`
+	Uptime       string                 `json:"uptime"`
+	MemoryUsage  string                 `json:"memory_usage"`
+	CircuitState map[string]string      `json:"circuit_state,omitempty"`
 }
 
 // HealthChecker performs comprehensive health checks
 type HealthChecker struct {
-	redis  *redisclient.RedisClient
-	broker *broker.RabbitMQBroker
+	redis     *redisclient.RedisClient
+	broker    *broker.RabbitMQBroker
+	startTime time.Time
 }
 
 // NewHealthChecker creates a new health checker
 func NewHealthChecker(redis *redisclient.RedisClient, broker *broker.RabbitMQBroker) *HealthChecker {
 	return &HealthChecker{
-		redis:  redis,
-		broker: broker,
+		redis:     redis,
+		broker:    broker,
+		startTime: time.Now(),
 	}
 }
 
 // Check performs all health checks and returns the overall status
 func (hc *HealthChecker) Check(ctx context.Context) *HealthStatus {
 	status := &HealthStatus{
-		Timestamp: time.Now(),
-		Service:   "orchestrator",
-		Version:   "1.0.0",
-		Checks:    make(map[string]CheckResult),
+		Timestamp:    time.Now(),
+		Service:      "orchestrator",
+		Version:      "1.0.0",
+		Checks:       make(map[string]CheckResult),
+		CircuitState: make(map[string]string),
 	}
 
 	// Redis check
@@ -54,10 +61,13 @@ func (hc *HealthChecker) Check(ctx context.Context) *HealthStatus {
 	// RabbitMQ check
 	status.Checks["rabbitmq"] = hc.checkRabbitMQ(ctx)
 
+	// Circuit breakers check
+	status.Checks["circuit_breakers"] = hc.checkCircuitBreakers()
+
 	// Determine overall status
 	allHealthy := true
 	for _, check := range status.Checks {
-		if check.Status != "healthy" {
+		if check.Status != "healthy" && check.Status != "degraded" {
 			allHealthy = false
 			break
 		}
@@ -68,6 +78,10 @@ func (hc *HealthChecker) Check(ctx context.Context) *HealthStatus {
 	} else {
 		status.Status = "degraded"
 	}
+
+	// Add uptime and memory info
+	status.Uptime = time.Since(hc.startTime).String()
+	status.MemoryUsage = hc.getMemoryInfo()
 
 	return status
 }
@@ -135,4 +149,53 @@ func (hc *HealthChecker) checkRabbitMQ(ctx context.Context) CheckResult {
 			"queues": queueDetails,
 		},
 	}
+}
+
+// checkCircuitBreakers performs circuit breaker health check
+func (hc *HealthChecker) checkCircuitBreakers() CheckResult {
+	start := time.Now()
+
+	manager := middleware.GetCircuitBreakerManager()
+	states := manager.State()
+
+	if len(states) == 0 {
+		return CheckResult{
+			Status:  "healthy",
+			Message: "No circuit breakers configured",
+			Latency: time.Since(start).Milliseconds(),
+		}
+	}
+
+	circuitDetails := make(map[string]interface{})
+	hasOpen := false
+
+	for name, state := range states {
+		stateStr := state.String()
+		circuitDetails[name] = map[string]interface{}{
+			"state": stateStr,
+		}
+
+		if state == middleware.StateOpen {
+			hasOpen = true
+		}
+	}
+
+	status := "healthy"
+	if hasOpen {
+		status = "degraded"
+	}
+
+	return CheckResult{
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+		Details: map[string]interface{}{
+			"breakers": circuitDetails,
+		},
+	}
+}
+
+// getMemoryInfo returns memory usage information
+func (hc *HealthChecker) getMemoryInfo() string {
+	// This would typically call runtime.MemStats
+	return "Check /metrics for detailed memory metrics"
 }

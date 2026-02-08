@@ -1,6 +1,6 @@
 # Makefile for ia-text-orchestrator
 
-.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs
+.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models docker-build-offline docker-build-models
 
 # Variables
 GO_VERSION?=1.22
@@ -160,6 +160,24 @@ infra-up: ## Start infrastructure (RabbitMQ, Redis, Unstructured)
 infra-down: ## Stop infrastructure
 	@echo -e "${YELLOW}Stopping infrastructure...${NC}"
 	docker compose down rabbitmq redis unstructured
+
+# =============================================================================
+# Air-Gapped Deployment
+# =============================================================================
+
+setup-models: ## Download ML models for air-gapped deployment (~2GB)
+	@echo -e "${YELLOW}Downloading ML models (one-time setup)...${NC}"
+	@echo "This may take several minutes depending on your internet connection."
+	cd deploy/docker && python download-models.py
+	@echo -e "${GREEN}✅ Models ready for air-gapped deployment!${NC}"
+
+docker-build-models: ## Build images using local models (100% offline after setup)
+	@echo -e "${YELLOW}Building Docker images with local models...${NC}"
+	docker compose build
+	@echo -e "${GREEN}✅ All images built successfully!${NC}"
+
+docker-build-offline: setup-models docker-build-models
+	@echo -e "${GREEN}🎉 Build complete! You can now deploy without internet.${NC}"
 
 # =============================================================================
 # Documentation

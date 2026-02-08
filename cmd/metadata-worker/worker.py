@@ -234,7 +234,6 @@ def main():
     while True:
         try:
             with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
-                channel.queue_declare(queue=QUEUE_NAME, durable=True)
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
                 channel.basic_consume(

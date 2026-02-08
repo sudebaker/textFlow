@@ -13,6 +13,18 @@ var (
 	loggerInit sync.Once
 )
 
+// safeString converts interface to string, returning empty string if nil or wrong type
+func safeString(i interface{}) string {
+	if i == nil {
+		return ""
+	}
+	s, ok := i.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
 func Init(level string) zerolog.Logger {
 	loggerInit.Do(func() {
 		zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
@@ -21,9 +33,9 @@ func Init(level string) zerolog.Logger {
 		writer := zerolog.ConsoleWriter{
 			Out:           os.Stdout,
 			TimeFormat:    "2006-01-02 15:04:05.000",
-			FormatLevel:   func(i interface{}) string { return "[" + i.(string) + "]" },
-			FormatMessage: func(i interface{}) string { return i.(string) },
-			FormatCaller:  func(i interface{}) string { return i.(string) },
+			FormatLevel:   func(i interface{}) string { return "[" + safeString(i) + "]" },
+			FormatMessage: func(i interface{}) string { return safeString(i) },
+			FormatCaller:  func(i interface{}) string { return safeString(i) },
 		}
 
 		lvl, _ := zerolog.ParseLevel(level)

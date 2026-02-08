@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Embeddings Worker for IA Text Orchestrator
-Consumes messages from RabbitMQ and generates embeddings using BAAI/bge-m3
+Consumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3
 """
 
 import os
@@ -11,18 +11,18 @@ import signal
 import sys
 import time
 from contextlib import contextmanager
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 
 import pika
 import redis
 import requests
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
-from app.config.settings import Settings
 from app.services.embeddings import EmbeddingService
 
-# Import event bus
-# In Docker: worker.py is at /app/worker.py, pkg is at /app/pkg
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
 
@@ -31,17 +31,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-settings = Settings()
-
 jobs_total = Counter("embeddings_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram("embeddings_worker_job_duration_seconds", "Job duration")
 gpu_available = Gauge("embeddings_worker_gpu_available", "GPU availability", ["device"])
 
-REDIS_URL = os.getenv("REDIS_URL", settings.redis_url)
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
-RESOURCE_MANAGER_URL = os.getenv("RESOURCE_MANAGER_URL", "http://localhost:9090")
-QUEUE_NAME = os.getenv("QUEUE_NAME", settings.embeddings_queue)
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
+RESOURCE_MANAGER_URL = os.getenv("RESOURCE_MANAGER_URL", "http://resource-manager:9090")
+QUEUE_NAME = os.getenv("QUEUE_NAME", "embeddings")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
+MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))
 
 
 class ResourceManagerClient:
@@ -80,15 +80,15 @@ class EmbeddingsWorker:
     def load_model(self):
         resources = self.get_resources()
         use_gpu = resources.get("gpu_available", False)
-        batch_size = 64 if use_gpu else 16
+        batch_size = EMBEDDING_BATCH_SIZE if use_gpu else 8
 
         gpu_available.labels(device="cuda:0").set(1 if use_gpu else 0)
 
         logger.info(
-            f"Loading embeddings model on GPU: {use_gpu}, batch_size: {batch_size}"
+            f"Loading embeddings model from local path: {MODEL_PATH}, GPU: {use_gpu}, batch_size: {batch_size}"
         )
-        self.service = EmbeddingService()
-        logger.info("Embeddings model loaded successfully")
+        self.service = EmbeddingService(model_path=MODEL_PATH)
+        logger.info("Embeddings model loaded successfully from local cache")
 
     def process(self, ch, method, properties, body):
         start_time = time.time()
@@ -97,35 +97,59 @@ class EmbeddingsWorker:
         try:
             message = json.loads(body)
             job_id = message.get("job_id")
-            logger.info(f"Processing embeddings for job: {job_id}")
+            chunks = message.get("chunks", [])
 
-            text_key = f"orchestrator:job:{job_id}:text"
-            text_data = self.redis_client.get(text_key)
+            logger.info(
+                f"Processing embeddings for job: {job_id} with {len(chunks)} chunks"
+            )
 
-            if not text_data:
-                logger.warning(f"No text found in Redis for job: {job_id}")
-                jobs_total.labels(status="no_text").inc()
-                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                return
+            if not chunks:
+                chunks_json = self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+                if chunks_json:
+                    chunks = json.loads(chunks_json)
+                else:
+                    logger.warning(
+                        f"No chunks found in message or Redis for job: {job_id}"
+                    )
+                    jobs_total.labels(status="no_chunks").inc()
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                    return
 
-            embeddings = self.service.generate_embeddings(text_data)
+            embeddings_dict = {}
+            total_chunks = len(chunks)
+
+            for i, chunk in enumerate(chunks):
+                chunk_id = chunk.get("chunk_id")
+                chunk_text = chunk.get("text", "")
+
+                if not chunk_text:
+                    logger.warning(f"Empty text for chunk {chunk_id}")
+                    continue
+
+                embedding = self.service.generate_embeddings(chunk_text)
+                embeddings_dict[chunk_id] = embedding
+
+                if (i + 1) % 10 == 0 or (i + 1) == total_chunks:
+                    logger.info(
+                        f"Generated embeddings for chunk {i + 1}/{total_chunks}"
+                    )
 
             embeddings_key = f"orchestrator:job:{job_id}:embeddings"
-            self.redis_client.set(embeddings_key, json.dumps(embeddings))
+            self.redis_client.set(embeddings_key, json.dumps(embeddings_dict))
 
-            # Update step status
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "embeddings", "completed"
             )
 
-            # Publish event: 33% progress
             self.event_bus.publish_job_progress(job_id, 33, "embedding")
 
             duration = time.time() - start_time
             job_duration.observe(duration)
             jobs_total.labels(status="success").inc()
 
-            logger.info(f"Embeddings completed for job: {job_id} in {duration:.2f}s")
+            logger.info(
+                f"Embeddings completed for job: {job_id} in {duration:.2f}s ({total_chunks} chunks)"
+            )
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -134,18 +158,13 @@ class EmbeddingsWorker:
             jobs_total.labels(status="error").inc()
             if job_id:
                 self.redis_client.hset(
-                    f"job:{job_id}:status", mapping={"embeddings": "error"}
+                    f"orchestrator:job:{job_id}:status", mapping={"embeddings": "error"}
                 )
-                # Publish failed event
                 self.event_bus.publish_job_failed(job_id, str(e))
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 
 def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
-    """Parse AMQP URL and return ConnectionParameters.
-
-    Supports URLs like: amqp://user:pass@host:port/vhost
-    """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -166,7 +185,6 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
 
 @contextmanager
 def connect_rabbitmq(url: str, max_retries: int = 5):
-    """Connect to RabbitMQ with retry logic."""
     for attempt in range(max_retries):
         try:
             params = parse_rabbitmq_url(url)
@@ -208,7 +226,6 @@ def main():
     while True:
         try:
             with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
-                channel.queue_declare(queue=QUEUE_NAME, durable=True)
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
                 channel.basic_consume(

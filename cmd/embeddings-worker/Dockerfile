@@ -1,13 +1,16 @@
-# Multi-stage build for Embeddings Worker
+# Multi-stage build for Embeddings Worker - Air-gapped ready
 FROM python:3.11-slim as base
+
+# ⭐ AIR-GAPPED MODE: Disable HuggingFace Hub online checks
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_HOME=/models
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
-    wget \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -27,14 +30,15 @@ COPY pkg/ ./pkg/
 COPY cmd/embeddings-worker/worker.py .
 COPY cmd/embeddings-worker/app ./app
 
-# Change ownership to app user
-RUN chown -R app:app /app
+# Create models directory (will be mounted or populated at runtime)
+RUN mkdir -p /models && chown -R app:app /app /models
 
 # Switch to app user
 USER app
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
+ENV MODEL_PATH=/models/bge-m3
 
 EXPOSE 8001
 

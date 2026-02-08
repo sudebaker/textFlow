@@ -146,6 +146,7 @@ func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.
 		}
 		return nil, fmt.Errorf("failed to get job results: %w", err)
 	}
+
 	var results models.JobResults
 	if err := json.Unmarshal(data, &results); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal job results: %w", err)
@@ -267,6 +268,18 @@ func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 	}
 	c.client.Expire(ctx, key, c.jobTTL)
 	return nil
+}
+
+func (c *RedisClient) GetJobCreated(ctx context.Context, jobID string) (time.Time, error) {
+	key := c.key("job", jobID, "meta")
+	createdAt, err := c.client.HGet(ctx, key, "created_at").Int64()
+	if err != nil {
+		if err == redis.Nil {
+			return time.Time{}, fmt.Errorf("job created time not found: %s", jobID)
+		}
+		return time.Time{}, fmt.Errorf("failed to get job created time: %w", err)
+	}
+	return time.Unix(createdAt, 0), nil
 }
 
 func (c *RedisClient) SetJobCompleted(ctx context.Context, jobID string) error {

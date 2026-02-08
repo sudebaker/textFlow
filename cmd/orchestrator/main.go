@@ -306,6 +306,7 @@ func createJobHandler(c *gin.Context) {
 		JobID:          jobID,
 		DocumentBase64: req.DocumentBase64,
 		DocumentURL:    req.DocumentURL,
+		EntityTypes:    req.EntityTypes,
 	}
 
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
@@ -351,19 +352,35 @@ func getJobHandler(c *gin.Context) {
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Job status: '%s' (constant: '%s', equal: %v)\n", status, models.StatusCompleted, status == models.StatusCompleted)
+
 	// Get aggregated results (if completed)
 	var results *models.JobResults
+	var resultsErr error
 	if status == models.StatusCompleted {
-		results, _ = redis.GetJobResults(ctx, jobID)
+		fmt.Fprintf(os.Stderr, "DEBUG: Status is completed, fetching results for job: %s\n", jobID)
+		results, resultsErr = redis.GetJobResults(ctx, jobID)
+		if resultsErr != nil {
+			logger.Error().Err(resultsErr).Msgf("Failed to get job results: %s", jobID)
+		} else if results == nil {
+			logger.Warn().Msgf("GetJobResults returned nil for job: %s", jobID)
+		} else {
+			logger.Info().Msgf("Got results: job_id=%s, chunks=%d, embeddings=%d",
+				results.JobID, len(results.Chunks), len(results.Embeddings))
+		}
 	}
 
 	errorMsg, _ := redis.GetJobError(ctx, jobID)
 
+	// Get created timestamp
+	createdAt, _ := redis.GetJobCreated(ctx, jobID)
+
 	c.JSON(http.StatusOK, models.GetJobResponse{
-		JobID:   jobID,
-		Status:  status,
-		Results: results,
-		Error:   errorMsg,
+		JobID:     jobID,
+		Status:    status,
+		Results:   results,
+		Error:     errorMsg,
+		CreatedAt: createdAt,
 	})
 }
 
@@ -468,12 +485,24 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 
 		// Check if hostname is an IP address
 		if ip := net.ParseIP(hostname); ip != nil {
-			// Block private IP ranges (RFC 1918)
+			// Block loopback addresses
 			if ip.IsLoopback() {
 				return fmt.Errorf("loopback IP addresses are not allowed: %s", ip.String())
 			}
+			// Block private IP ranges (RFC 1918), but allow Docker network IPs
 			if ip.IsPrivate() {
-				return fmt.Errorf("private IP addresses are not allowed: %s", ip.String())
+				// Check if IP is in Docker's network range (172.16.0.0 - 172.31.255.255)
+				ip4 := ip.To4()
+				if ip4 != nil {
+					// Docker range: 172.16.0.0 - 172.31.255.255
+					if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+						// Allow Docker network IPs
+					} else {
+						return fmt.Errorf("private IP addresses are not allowed: %s", ip.String())
+					}
+				} else {
+					return fmt.Errorf("private IP addresses are not allowed: %s", ip.String())
+				}
 			}
 			// Block link-local addresses
 			if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
@@ -489,8 +518,19 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 		}
 
 		for _, ip := range ips {
-			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
-				return fmt.Errorf("hostname resolves to a private/loopback IP address: %s -> %s", hostname, ip.String())
+			if ip.IsLoopback() {
+				return fmt.Errorf("hostname resolves to loopback IP: %s -> %s", hostname, ip.String())
+			}
+			if ip.IsPrivate() {
+				// Check if in Docker network range
+				ip4 := ip.To4()
+				isDockerIP := ip4 != nil && ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31
+				if !isDockerIP {
+					return fmt.Errorf("hostname resolves to private IP: %s -> %s", hostname, ip.String())
+				}
+			}
+			if ip.IsLinkLocalUnicast() {
+				return fmt.Errorf("hostname resolves to link-local IP: %s -> %s", hostname, ip.String())
 			}
 		}
 	}

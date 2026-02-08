@@ -2,6 +2,11 @@
 """
 Embeddings Worker for IA Text Orchestrator
 Consumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3
+
+⭐ GPU Features:
+- Automatic GPU detection via torch.cuda
+- Adaptive batching (GPU=32, CPU=2)
+- FP16 optimization for GPU (in EmbeddingService)
 """
 
 import os
@@ -16,6 +21,7 @@ from typing import Dict, Optional, List, Any
 import pika
 import redis
 import requests
+import torch
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
 from app.services.embeddings import EmbeddingService
@@ -34,61 +40,53 @@ logger = logging.getLogger(__name__)
 jobs_total = Counter("embeddings_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram("embeddings_worker_job_duration_seconds", "Job duration")
 gpu_available = Gauge("embeddings_worker_gpu_available", "GPU availability", ["device"])
+gpu_memory_gb = Gauge("embeddings_worker_gpu_memory_gb", "GPU memory usage in GB")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
-RESOURCE_MANAGER_URL = os.getenv("RESOURCE_MANAGER_URL", "http://resource-manager:9090")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "embeddings")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))
+EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "32"))
+EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
 
 
-class ResourceManagerClient:
-    def __init__(self, base_url: str):
-        self.base_url = base_url
-        self._cache = None
-        self._cache_time = 0
-        self._cache_ttl = 60
-
-    def get_resources(self) -> Dict:
-        now = time.time()
-        if self._cache and (now - self._cache_time) < self._cache_ttl:
-            return self._cache
-
-        try:
-            resp = requests.get(f"{self.base_url}/api/v1/resources", timeout=5)
-            resp.raise_for_status()
-            self._cache = resp.json()
-            self._cache_time = now
-            return self._cache
-        except Exception as e:
-            logger.warning(f"Failed to get resources from manager: {e}")
-            return {"gpu_available": False}
+def detect_gpu() -> bool:
+    """Check if GPU is available."""
+    if torch is None:
+        return False
+    return torch.cuda.is_available()
 
 
 class EmbeddingsWorker:
     def __init__(self):
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        self.resource_manager = ResourceManagerClient(RESOURCE_MANAGER_URL)
         self.event_bus = EventBus(self.redis_client)
         self.service = None
-
-    def get_resources(self) -> Dict:
-        return self.resource_manager.get_resources()
+        self.batch_size = EMBEDDING_BATCH_SIZE_CPU
 
     def load_model(self):
-        resources = self.get_resources()
-        use_gpu = resources.get("gpu_available", False)
-        batch_size = EMBEDDING_BATCH_SIZE if use_gpu else 8
+        use_gpu = detect_gpu()
+        self.batch_size = (
+            EMBEDDING_BATCH_SIZE_GPU if use_gpu else EMBEDDING_BATCH_SIZE_CPU
+        )
 
+        # Update metrics
         gpu_available.labels(device="cuda:0").set(1 if use_gpu else 0)
 
-        logger.info(
-            f"Loading embeddings model from local path: {MODEL_PATH}, GPU: {use_gpu}, batch_size: {batch_size}"
-        )
+        if use_gpu:
+            gpu_name = (
+                torch.cuda.get_device_name() if torch.cuda.is_available() else "Unknown"
+            )
+            logger.info(f"🚀 GPU Mode detected: {gpu_name}")
+            logger.info(f"   Batch size: {self.batch_size} (optimized for GPU)")
+        else:
+            logger.info(f"📝 CPU Mode detected")
+            logger.info(f"   Batch size: {self.batch_size} (conservative for CPU)")
+
+        logger.info(f"Loading embeddings model from: {MODEL_PATH}")
         self.service = EmbeddingService(model_path=MODEL_PATH)
-        logger.info("Embeddings model loaded successfully from local cache")
+        logger.info("✅ Embeddings model loaded successfully")
 
     def process(self, ch, method, properties, body):
         start_time = time.time()
@@ -118,21 +116,38 @@ class EmbeddingsWorker:
             embeddings_dict = {}
             total_chunks = len(chunks)
 
-            for i, chunk in enumerate(chunks):
-                chunk_id = chunk.get("chunk_id")
-                chunk_text = chunk.get("text", "")
+            # ⭐ Adaptive batching: process chunks in batches for efficiency
+            logger.info(
+                f"Processing {total_chunks} chunks with batch_size={self.batch_size}"
+            )
 
-                if not chunk_text:
-                    logger.warning(f"Empty text for chunk {chunk_id}")
-                    continue
+            chunk_texts = [chunk.get("text", "") for chunk in chunks]
+            chunk_ids = [chunk.get("chunk_id") for chunk in chunks]
 
-                embedding = self.service.generate_embeddings(chunk_text)
-                embeddings_dict[chunk_id] = embedding
+            # Process in batches
+            for batch_start in range(0, len(chunk_texts), self.batch_size):
+                batch_end = min(batch_start + self.batch_size, len(chunk_texts))
+                batch_texts = chunk_texts[batch_start:batch_end]
+                batch_ids = chunk_ids[batch_start:batch_end]
 
-                if (i + 1) % 10 == 0 or (i + 1) == total_chunks:
-                    logger.info(
-                        f"Generated embeddings for chunk {i + 1}/{total_chunks}"
-                    )
+                # Generate embeddings for batch
+                batch_embeddings = self.service.generate_embeddings(
+                    batch_texts, batch_size=self.batch_size
+                )
+
+                # Store results
+                for chunk_id, embedding in zip(batch_ids, batch_embeddings):
+                    if chunk_id:
+                        embeddings_dict[chunk_id] = embedding
+
+                processed = min(batch_end, total_chunks)
+                logger.info(
+                    f"Generated embeddings for chunk {processed}/{total_chunks}"
+                )
+
+            # Update GPU memory metrics
+            if detect_gpu():
+                gpu_memory_gb.set(torch.cuda.memory_allocated() / 1024**3)
 
             embeddings_key = f"orchestrator:job:{job_id}:embeddings"
             self.redis_client.set(embeddings_key, json.dumps(embeddings_dict))

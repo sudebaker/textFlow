@@ -12,14 +12,14 @@ import sys
 import time
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Any
+from pathlib import Path
 
 import pika
 import redis
 import requests
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
-
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+from rapidfuzz import fuzz
+from unidecode import unidecode
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
@@ -32,14 +32,29 @@ logger = logging.getLogger(__name__)
 jobs_total = Counter("entities_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram("entities_worker_job_duration_seconds", "Job duration")
 gpu_available = Gauge("entities_worker_gpu_available", "GPU availability", ["device"])
+entities_deduplicated = Counter(
+    "entities_worker_deduplicated_total", "Total entities deduplicated"
+)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
-GLINER_MODEL_PATH = os.getenv("GLINER_MODEL_PATH", "/models/gliner-small")
+GLINER_MODEL_PATH = os.getenv("GLINER_MODEL_PATH", "/models/gliner_large")
+GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
 ENTITY_TYPES = os.getenv("ENTITY_TYPES", "PER,ORG,LOC,DATE,MONEY")
-ENTITY_THRESHOLD = float(os.getenv("ENTITY_THRESHOLD", "0.8"))
+ALLOW_REMOTE_DOWNLOAD = os.getenv("ALLOW_REMOTE_DOWNLOAD", "true").lower() == "true"
+DEDUPLICATION_ENABLED = os.getenv("DEDUPLICATION_ENABLED", "true").lower() == "true"
+FUZZY_MATCH_THRESHOLD = float(os.getenv("FUZZY_MATCH_THRESHOLD", "0.85"))
+
+# Thresholds per entity type
+ENTITY_THRESHOLDS = {
+    "PER": float(os.getenv("ENTITY_THRESHOLD_PER", "0.35")),
+    "ORG": float(os.getenv("ENTITY_THRESHOLD_ORG", "0.50")),
+    "LOC": float(os.getenv("ENTITY_THRESHOLD_LOC", "0.50")),
+    "DATE": float(os.getenv("ENTITY_THRESHOLD_DATE", "0.60")),
+    "MONEY": float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.65")),
+}
 
 
 class EntitiesWorker:
@@ -52,21 +67,131 @@ class EntitiesWorker:
 
     def load_model(self):
         from gliner import GLiNER
-        from pathlib import Path
 
         model_path = Path(GLINER_MODEL_PATH)
-        config_file = model_path / "gliner_config.json"
+        config_file = model_path / "config.json"
 
+        # Try to load from local path first
         if config_file.exists():
             logger.info(f"Loading GLiNER from local path: {GLINER_MODEL_PATH}")
-            self.model = GLiNER.from_pretrained(str(model_path))
-            logger.info("GLiNER model loaded successfully from local cache")
+            try:
+                self.model = GLiNER.from_pretrained(str(model_path))
+                logger.info("GLiNER model loaded successfully from local cache")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to load from local path: {e}")
+
+        # Fallback to remote download if allowed
+        if ALLOW_REMOTE_DOWNLOAD:
+            logger.info(f"Loading GLiNER from HuggingFace: {GLINER_MODEL_NAME}")
+            try:
+                self.model = GLiNER.from_pretrained(GLINER_MODEL_NAME)
+                logger.info("GLiNER model loaded from HuggingFace")
+                return
+            except Exception as e:
+                logger.error(f"Failed to load model from HuggingFace: {e}")
+                raise
         else:
-            logger.info(
-                f"Local model not found at {GLINER_MODEL_PATH}, downloading from HuggingFace..."
+            raise Exception(
+                f"Model not found at {GLINER_MODEL_PATH} and remote download is disabled"
             )
-            self.model = GLiNER.from_pretrained("urchade/gliner_small")
-            logger.info("GLiNER model loaded from HuggingFace")
+
+    def normalize_entity_text(self, text: str) -> str:
+        """Normalize entity text for deduplication."""
+        return unidecode(text).lower().strip()
+
+    def deduplicate_entities(
+        self, entities: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Deduplicate entities using fuzzy matching and normalization.
+
+        Args:
+            entities: List of extracted entities with positions
+
+        Returns:
+            List of deduplicated entities
+        """
+        if not DEDUPLICATION_ENABLED or not entities:
+            return entities
+
+        deduplicated = {}
+        original_count = len(entities)
+
+        for entity in entities:
+            text = entity["text"]
+            label = entity["label"]
+            normalized_key = f"{label}:{self.normalize_entity_text(text)}"
+
+            # Check if we already have a similar entity
+            found_similar = False
+            for existing_key, existing_entity in deduplicated.items():
+                if existing_key.startswith(f"{label}:"):
+                    # Calculate similarity
+                    similarity = (
+                        fuzz.ratio(
+                            self.normalize_entity_text(text),
+                            self.normalize_entity_text(existing_entity["text"]),
+                        )
+                        / 100.0
+                    )
+
+                    if similarity >= FUZZY_MATCH_THRESHOLD:
+                        # Update with higher confidence if needed
+                        if entity.get("confidence", 0) > existing_entity.get(
+                            "confidence", 0
+                        ):
+                            existing_entity["confidence"] = entity["confidence"]
+                            existing_entity["text"] = text  # Keep original text
+
+                        # Track positions (optional, for multiple occurrences)
+                        if "positions" not in existing_entity:
+                            existing_entity["positions"] = []
+                        existing_entity["positions"].append(
+                            {
+                                "chunk_id": entity.get("chunk_id"),
+                                "start": entity.get("start"),
+                                "end": entity.get("end"),
+                            }
+                        )
+
+                        found_similar = True
+                        break
+
+            if not found_similar:
+                # New unique entity
+                deduplicated[normalized_key] = entity.copy()
+                deduplicated[normalized_key]["positions"] = []
+
+        # Convert back to list
+        result = list(deduplicated.values())
+
+        if len(result) < original_count:
+            dedup_count = original_count - len(result)
+            logger.info(
+                f"Deduplicated {dedup_count} entities ({original_count} -> {len(result)})"
+            )
+            entities_deduplicated.inc(dedup_count)
+
+        return result
+
+    def calculate_global_position(
+        self, chunk_offset: int, local_start: int, local_end: int
+    ) -> tuple:
+        """
+        Calculate global position in document from chunk offset and local positions.
+
+        Args:
+            chunk_offset: Start position of chunk in document
+            local_start: Start position within chunk
+            local_end: End position within chunk
+
+        Returns:
+            Tuple of (global_start, global_end)
+        """
+        global_start = chunk_offset + local_start
+        global_end = chunk_offset + local_end
+        return (global_start, global_end)
 
     def process(self, ch, method, properties, body):
         start_time = time.time()
@@ -97,18 +222,22 @@ class EntitiesWorker:
                     return
 
             all_entities = []
-            entity_id = 0
 
+            # Process each chunk
             for chunk in chunks:
                 chunk_id = chunk.get("chunk_id")
                 chunk_text = chunk.get("text", "")
+                # Get chunk offset from either field name (support both formats)
+                chunk_offset = chunk.get("start_offset") or chunk.get("offset") or 0
 
                 if not chunk_text:
                     continue
 
                 try:
                     entities = self.model.predict_entities(
-                        chunk_text, entity_types, threshold=ENTITY_THRESHOLD
+                        chunk_text,
+                        entity_types,
+                        threshold=0.1,  # Use low threshold, filter per-type below
                     )
 
                     if entities and len(entities) > 0 and isinstance(entities[0], list):
@@ -118,18 +247,32 @@ class EntitiesWorker:
                     else:
                         entities_items = []
 
+                    # Filter by per-type threshold
                     for e in entities_items:
-                        all_entities.append(
-                            {
-                                "entity_id": f"ent_{entity_id:03d}",
-                                "text": e.get("text", ""),
-                                "label": e.get("label", ""),
-                                "confidence": e.get("score", 0.0),
-                                "chunk_id": chunk_id,
-                                "position_in_chunk": e.get("start", 0),
-                            }
-                        )
-                        entity_id += 1
+                        label = e.get("label", "")
+                        score = e.get("score", 0.0)
+
+                        # Get threshold for this entity type
+                        threshold = ENTITY_THRESHOLDS.get(label, 0.5)
+
+                        # Only include if confidence meets threshold
+                        if score >= threshold:
+                            local_start = e.get("start", 0)
+                            local_end = e.get("end", 0)
+                            global_start, global_end = self.calculate_global_position(
+                                chunk_offset, local_start, local_end
+                            )
+
+                            all_entities.append(
+                                {
+                                    "text": e.get("text", ""),
+                                    "label": label,
+                                    "confidence": float(score),
+                                    "start": global_start,
+                                    "end": global_end,
+                                    "chunk_id": chunk_id,
+                                }
+                            )
 
                 except Exception as e:
                     logger.warning(
@@ -137,6 +280,11 @@ class EntitiesWorker:
                     )
                     continue
 
+            # Deduplicate entities if enabled
+            if DEDUPLICATION_ENABLED:
+                all_entities = self.deduplicate_entities(all_entities)
+
+            # Store in Redis
             entities_key = f"orchestrator:job:{job_id}:entities"
             self.redis_client.set(entities_key, json.dumps(all_entities))
 

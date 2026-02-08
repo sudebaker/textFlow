@@ -101,7 +101,6 @@ class CompletionWorker:
                 "completed_at": completed_at,
                 "document_metadata": document_metadata,
                 "text_metadata": text_metadata,
-                "text": text,
                 "chunks": chunks,
                 "embeddings": embeddings,
                 "entities": entities,
@@ -123,7 +122,7 @@ class CompletionWorker:
             self.event_bus.publish_job_completed(job_id)
 
             logger.info(
-                f"Job {job_id} finalized: text={len(text)} chars, chunks={len(chunks)}, entities={len(entities)}"
+                f"Job {job_id} finalized: chunks={len(chunks)}, entities={len(entities)}"
             )
 
         except Exception as e:

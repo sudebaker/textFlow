@@ -29,14 +29,46 @@ CURRENT_VERSION = SERVICE_VERSION
 class Settings:
     def __init__(self) -> None:
         self.port = int(os.getenv("PORT", "8080"))
-        self.model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_model")
-        self.confidence_threshold = float(os.getenv("GLINER_CONFIDENCE_THRESHOLD", "0.8"))
+        self.model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_large")
+        self.model_name = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
+        self.allow_remote_download = os.getenv(
+            "GLINER_ALLOW_REMOTE_DOWNLOAD", "true"
+        ).lower() in {"1", "true", "yes", "on"}
+
+        # Legacy threshold (fallback if per-type not specified)
+        self.confidence_threshold = float(
+            os.getenv("GLINER_CONFIDENCE_THRESHOLD", "0.5")
+        )
+
+        # Per-type thresholds
+        self.threshold_per = float(os.getenv("ENTITY_THRESHOLD_PER", "0.35"))
+        self.threshold_org = float(os.getenv("ENTITY_THRESHOLD_ORG", "0.50"))
+        self.threshold_loc = float(os.getenv("ENTITY_THRESHOLD_LOC", "0.50"))
+        self.threshold_date = float(os.getenv("ENTITY_THRESHOLD_DATE", "0.60"))
+        self.threshold_money = float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.65"))
+
         self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "32"))
         self.max_length = int(os.getenv("GLINER_MAX_LENGTH", "512"))
         self.default_entity_types = self._parse_entity_types(
             os.getenv("GLINER_DEFAULT_ENTITY_TYPES", ",".join(DEFAULT_ENTITY_TYPES))
         )
-        self.use_mock = os.getenv("GLINER_USE_MOCK", "false").lower() in {"1", "true", "yes", "on"}
+        self.use_mock = os.getenv("GLINER_USE_MOCK", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def get_threshold(self, entity_type: str) -> float:
+        """Get threshold for specific entity type."""
+        thresholds = {
+            "PER": self.threshold_per,
+            "ORG": self.threshold_org,
+            "LOC": self.threshold_loc,
+            "DATE": self.threshold_date,
+            "MONEY": self.threshold_money,
+        }
+        return thresholds.get(entity_type.upper(), self.confidence_threshold)
 
     @staticmethod
     def _parse_entity_types(raw: str) -> List[str]:
@@ -92,7 +124,13 @@ class HealthResponse(BaseModel):
 class MockGLiNER:
     """Minimal mock used when GLiNER is unavailable or disabled."""
 
-    def predict_entities(self, texts: List[str], entity_types: List[str], threshold: float = 0.0, flat_ner: bool = True):
+    def predict_entities(
+        self,
+        texts: List[str],
+        entity_types: List[str],
+        threshold: float = 0.0,
+        flat_ner: bool = True,
+    ):
         results: List[List[Dict[str, Any]]] = []
         for text in texts:
             if not text:
@@ -100,15 +138,17 @@ class MockGLiNER:
                 continue
             entity_type = entity_types[0] if entity_types else "MOCK"
             chunk = text[: min(10, len(text))]
-            results.append([
-                {
-                    "text": chunk,
-                    "label": entity_type,
-                    "score": 0.9,
-                    "start": 0,
-                    "end": len(chunk),
-                }
-            ])
+            results.append(
+                [
+                    {
+                        "text": chunk,
+                        "label": entity_type,
+                        "score": 0.9,
+                        "start": 0,
+                        "end": len(chunk),
+                    }
+                ]
+            )
         return results
 
 
@@ -121,13 +161,29 @@ class GLiNERAdapter:
 
     def _resolve_entity_types(self, options: Optional[ExtractOptions]) -> List[str]:
         if options and options.entity_types:
-            return [item.strip().upper() for item in options.entity_types if item.strip()]
+            return [
+                item.strip().upper() for item in options.entity_types if item.strip()
+            ]
         return self.settings.default_entity_types
 
-    def _resolve_threshold(self, options: Optional[ExtractOptions]) -> float:
+    def _resolve_threshold(
+        self,
+        options: Optional[ExtractOptions],
+        entity_types: Optional[List[str]] = None,
+    ) -> Dict[str, float]:
+        """
+        Get thresholds for entity extraction.
+        Returns a mapping of entity type to threshold.
+        """
         if options and options.confidence_threshold is not None:
-            return float(options.confidence_threshold)
-        return self.settings.confidence_threshold
+            # If explicit threshold provided in options, use for all types
+            override = float(options.confidence_threshold)
+            types = entity_types or self.settings.default_entity_types
+            return {t: override for t in types}
+
+        # Use per-type thresholds
+        types = entity_types or self.settings.default_entity_types
+        return {t: self.settings.get_threshold(t) for t in types}
 
     def ensure_model(self) -> None:
         if self.model is not None:
@@ -136,24 +192,62 @@ class GLiNERAdapter:
         if self.settings.use_mock:
             self.model = MockGLiNER()
             self.model_status = "mock"
-            self.logger.warning("Starting GLiNER service in mock mode; set GLINER_USE_MOCK=false to use the real model")
+            self.logger.warning(
+                "Starting GLiNER service in mock mode; set GLINER_USE_MOCK=false to use the real model"
+            )
             return
 
         try:
             from gliner import GLiNER
         except Exception as exc:  # pragma: no cover - defensive import guard
             self.model_status = "unavailable"
-            raise RuntimeError("GLiNER package is not installed; install requirements first") from exc
+            raise RuntimeError(
+                "GLiNER package is not installed; install requirements first"
+            ) from exc
 
         model_path = Path(self.settings.model_path)
-        if not model_path.exists():
-            self.model_status = "missing_model"
-            raise FileNotFoundError(f"Model path does not exist: {model_path}")
+        config_file = model_path / "config.json"
 
-        self.logger.info("Loading GLiNER model", extra={"model_path": str(model_path)})
-        self.model = GLiNER.from_pretrained(str(model_path))
-        self.model_status = "ready"
-        self.logger.info("GLiNER model loaded", extra={"model_path": str(model_path)})
+        # Try to load from local path first
+        if config_file.exists():
+            self.logger.info(
+                "Loading GLiNER model from local path",
+                extra={"model_path": str(model_path)},
+            )
+            try:
+                self.model = GLiNER.from_pretrained(str(model_path))
+                self.model_status = "ready"
+                self.logger.info(
+                    "GLiNER model loaded from local cache",
+                    extra={"model_path": str(model_path)},
+                )
+                return
+            except Exception as e:
+                self.logger.warning(f"Failed to load from local path: {e}")
+
+        # Fallback to remote download if allowed
+        if self.settings.allow_remote_download:
+            self.logger.info(
+                "Loading GLiNER model from HuggingFace",
+                extra={"model_name": self.settings.model_name},
+            )
+            try:
+                self.model = GLiNER.from_pretrained(self.settings.model_name)
+                self.model_status = "ready"
+                self.logger.info(
+                    "GLiNER model loaded from HuggingFace",
+                    extra={"model_name": self.settings.model_name},
+                )
+                return
+            except Exception as e:
+                self.model_status = "unavailable"
+                self.logger.error(f"Failed to load model from HuggingFace: {e}")
+                raise
+        else:
+            self.model_status = "missing_model"
+            raise FileNotFoundError(
+                f"Model not found at {model_path} and remote download is disabled"
+            )
 
     def extract(self, text: str, options: Optional[ExtractOptions]) -> ExtractResponse:
         if not text.strip():
@@ -162,7 +256,10 @@ class GLiNERAdapter:
         self.ensure_model()
 
         entity_types = self._resolve_entity_types(options)
-        threshold = self._resolve_threshold(options)
+        threshold_map = self._resolve_threshold(options, entity_types)
+
+        # GLiNER expects a single threshold, use minimum for safety
+        threshold = min(threshold_map.values())
 
         start_time = time.perf_counter()
 
@@ -178,15 +275,21 @@ class GLiNERAdapter:
         entities: List[Entity] = []
         first_batch = predictions[0] if predictions else []
         for prediction in first_batch:
-            entities.append(
-                Entity(
-                    text=prediction.get("text", ""),
-                    label=prediction.get("label", ""),
-                    confidence=float(prediction.get("score", threshold)),
-                    start_char=int(prediction.get("start", 0)),
-                    end_char=int(prediction.get("end", 0)),
+            label = prediction.get("label", "")
+            score = float(prediction.get("score", threshold))
+            entity_threshold = threshold_map.get(label, threshold)
+
+            # Only include if confidence meets the threshold for this entity type
+            if score >= entity_threshold:
+                entities.append(
+                    Entity(
+                        text=prediction.get("text", ""),
+                        label=label,
+                        confidence=score,
+                        start_char=int(prediction.get("start", 0)),
+                        end_char=int(prediction.get("end", 0)),
+                    )
                 )
-            )
 
         return ExtractResponse(
             entities=entities,
@@ -195,14 +298,19 @@ class GLiNERAdapter:
             error=None,
         )
 
-    def extract_batch(self, chunks: List[str], options: Optional[ExtractOptions]) -> BatchExtractResponse:
+    def extract_batch(
+        self, chunks: List[str], options: Optional[ExtractOptions]
+    ) -> BatchExtractResponse:
         if not chunks:
             raise ValueError("chunks must contain at least one text entry")
 
         self.ensure_model()
 
         entity_types = self._resolve_entity_types(options)
-        threshold = self._resolve_threshold(options)
+        threshold_map = self._resolve_threshold(options, entity_types)
+
+        # GLiNER expects a single threshold, use minimum for safety
+        threshold = min(threshold_map.values())
 
         start_time = time.perf_counter()
 
@@ -221,15 +329,21 @@ class GLiNERAdapter:
         for idx, prediction_list in enumerate(safe_predictions):
             entities: List[Entity] = []
             for prediction in prediction_list:
-                entities.append(
-                    Entity(
-                        text=prediction.get("text", ""),
-                        label=prediction.get("label", ""),
-                        confidence=float(prediction.get("score", threshold)),
-                        start_char=int(prediction.get("start", 0)),
-                        end_char=int(prediction.get("end", 0)),
+                label = prediction.get("label", "")
+                score = float(prediction.get("score", threshold))
+                entity_threshold = threshold_map.get(label, threshold)
+
+                # Only include if confidence meets the threshold for this entity type
+                if score >= entity_threshold:
+                    entities.append(
+                        Entity(
+                            text=prediction.get("text", ""),
+                            label=label,
+                            confidence=score,
+                            start_char=int(prediction.get("start", 0)),
+                            end_char=int(prediction.get("end", 0)),
+                        )
                     )
-                )
             results.append(
                 ExtractResponse(
                     entities=entities,
@@ -249,7 +363,9 @@ class GLiNERAdapter:
     def health(self) -> Dict[str, str]:
         checks: Dict[str, str] = {}
 
-        checks["model_path"] = "ok" if Path(self.settings.model_path).exists() else "missing"
+        checks["model_path"] = (
+            "ok" if Path(self.settings.model_path).exists() else "missing"
+        )
         checks["model"] = self.model_status
         checks["mode"] = "mock" if self.settings.use_mock else "gliner"
         checks["python"] = platform.python_version()
@@ -270,14 +386,21 @@ app = FastAPI(
     docs_url="/swagger",
     redoc_url=None,
     openapi_url="/swagger/doc.json",
-    contact={"name": "GLiNER Service", "url": "https://github.com/amphora/journalist-agent"},
+    contact={
+        "name": "GLiNER Service",
+        "url": "https://github.com/amphora/journalist-agent",
+    },
     license_info={"name": "MIT"},
     servers=[{"url": "http://localhost:8080", "description": "Local"}],
 )
 
 
-REQUEST_COUNT = Counter("gliner_requests_total", "Total GLiNER requests", ["endpoint", "status"])
-REQUEST_LATENCY = Histogram("gliner_request_latency_ms", "Request latency in milliseconds", ["endpoint"])
+REQUEST_COUNT = Counter(
+    "gliner_requests_total", "Total GLiNER requests", ["endpoint", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "gliner_request_latency_ms", "Request latency in milliseconds", ["endpoint"]
+)
 
 
 @app.middleware("http")

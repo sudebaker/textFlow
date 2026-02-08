@@ -171,7 +171,6 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-      - RESOURCE_MANAGER_URL=http://resource-manager:9090
       - LOG_LEVEL=info
       - QUEUE_NAME=embeddings
       - METRICS_PORT=8001
@@ -180,6 +179,10 @@ services:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - MODEL_PATH=/models/bge-m3
+      # ⭐ GPU Configuration
+      - CUDA_VISIBLE_DEVICES=0
+      - EMBEDDING_BATCH_SIZE_GPU=32
+      - EMBEDDING_BATCH_SIZE_CPU=2
     depends_on:
       redis:
         condition: service_healthy
@@ -189,9 +192,20 @@ services:
     restart: unless-stopped
     deploy:
       resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
         limits:
-          cpus: '2'
-          memory: 2G
+          cpus: '4'
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import torch; assert torch.cuda.is_available()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   entities-worker:
     build:

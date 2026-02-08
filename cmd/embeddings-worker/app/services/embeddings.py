@@ -3,6 +3,11 @@ Embedding generation service using sentence-transformers.
 
 This module provides embedding generation capabilities using the
 BAAI/bge-m3 multilingual model with GPU/CPU support.
+
+⭐ GPU Features:
+- Automatic GPU detection
+- FP16 (half-precision) for reduced VRAM usage
+- Adaptive batching based on device
 """
 
 import os
@@ -26,19 +31,48 @@ except ImportError as e:
     torch = None
 
 
+def detect_device() -> str:
+    """
+    Automatically detect and return the best available device.
+
+    Returns:
+        str: 'cuda:0' if GPU available, 'cpu' otherwise
+    """
+    if torch is None:
+        logger.warning("torch not available, using CPU")
+        return "cpu"
+
+    if torch.cuda.is_available():
+        device = "cuda:0"
+        props = torch.cuda.get_device_properties(0)
+        total_memory = props.total_memory / 1024**3
+        logger.info(f"⭐ GPU DETECTED: {props.name}")
+        logger.info(f"   VRAM: {total_memory:.1f} GB")
+        logger.info(f"   Compute Capability: {props.major}.{props.minor}")
+        return device
+    else:
+        logger.warning("⚠️ GPU NOT available, falling back to CPU")
+        return "cpu"
+
+
 class EmbeddingService:
     """
     Service for generating text embeddings using BAAI/bge-m3.
 
     This service handles model loading, embedding generation,
     and provides thread-safe operations for concurrent requests.
+
+    ⭐ GPU Features:
+    - Automatic GPU detection on initialization
+    - FP16 (half-precision) for GPU to reduce VRAM usage
+    - Adaptive batching based on device (GPU=32, CPU=2)
     """
 
     def __init__(
         self,
         model_name: str = "BAAI/bge-m3",
         model_path: str = None,
-        device: str = "cpu",
+        device: str = None,  # ⭐ Auto-detect if None
     ):
         """
         Initialize the embedding service.
@@ -46,7 +80,7 @@ class EmbeddingService:
         Args:
             model_name: Name of the sentence-transformers model
             model_path: Local path to the model (optional)
-            device: Device to use ('cpu' or 'cuda')
+            device: Device to use ('cpu', 'cuda:0', or None for auto-detect)
         """
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             raise ImportError(
@@ -56,19 +90,29 @@ class EmbeddingService:
 
         self.model_name = model_name
         self.model_path = model_path
-        self.device = device
-        self.model = None
         self.embedding_dimension = 1024  # BAAI/bge-m3 dimension
         self._model_lock = threading.Lock()
+        self._use_fp16 = False  # ⭐ FP16 flag
 
-        # Set CUDA environment variables if GPU is requested
-        if device == "cuda" and torch.cuda.is_available():
-            logger.info(f"Using GPU device: {torch.cuda.get_device_name()}")
-        elif device == "cuda":
-            logger.warning("CUDA requested but not available, falling back to CPU")
-            self.device = "cpu"
+        # ⭐ Auto-detect device if not specified
+        if device is None:
+            self.device = detect_device()
         else:
-            logger.info("Using CPU device")
+            self.device = device
+
+        # Verify GPU availability and log info
+        if self.device.startswith("cuda"):
+            if torch.cuda.is_available():
+                logger.info(f"🚀 GPU Mode: {torch.cuda.get_device_name()}")
+                self._use_fp16 = True  # ⭐ Enable FP16 for GPU
+                logger.info(f"   Precision: FP16 (half-precision)")
+            else:
+                logger.warning("CUDA requested but not available, falling back to CPU")
+                self.device = "cpu"
+                logger.info("   Precision: FP32 (full-precision)")
+        else:
+            logger.info(f"📝 CPU Mode: Using CPU for embeddings")
+            logger.info(f"   Precision: FP32 (full-precision)")
 
         # Initialize model on first use
         self._model_loaded = False
@@ -116,12 +160,26 @@ class EmbeddingService:
                         self.model_name, device=self.device
                     )
 
+                # ⭐ Apply FP16 optimization for GPU
+                if self._use_fp16 and self.device.startswith("cuda"):
+                    logger.info("Applying FP16 optimization for GPU...")
+                    self.model = self.model.half()
+                    logger.info("   Model converted to FP16 (half-precision)")
+                    logger.info(f"   Expected VRAM reduction: ~50%")
+
                 # Optimize for inference
                 if hasattr(self.model, "eval"):
                     self.model.eval()
 
+                # Log VRAM usage after loading
+                if self.device.startswith("cuda") and torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / 1024**3
+                    reserved = torch.cuda.memory_reserved() / 1024**3
+                    logger.info(f"   VRAM allocated: {allocated:.2f} GB")
+                    logger.info(f"   VRAM reserved: {reserved:.2f} GB")
+
                 self._model_loaded = True
-                logger.info(f"Model loaded successfully on {self.device}")
+                logger.info(f"✅ Model loaded successfully on {self.device}")
                 return True
 
             except Exception as e:

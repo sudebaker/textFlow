@@ -4,7 +4,14 @@ Entities Worker for IA Text Orchestrator
 Consumes messages from RabbitMQ and extracts entities using GLiNER
 """
 
+# ⚠️ CRITICAL: Configure offline mode BEFORE any other imports
+# This must be the FIRST code that executes to prevent HuggingFace internet calls
 import os
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["HF_HOME"] = "/home/app/.cache/huggingface"
+
 import json
 import logging
 import signal
@@ -42,6 +49,7 @@ QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 GLINER_MODEL_PATH = os.getenv("GLINER_MODEL_PATH", "/models/gliner_large")
 GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
+HF_CACHE_DIR = os.getenv("HF_CACHE_DIR", "/root/.cache/huggingface")
 ENTITY_TYPES = os.getenv("ENTITY_TYPES", "PER,ORG,LOC,DATE,MONEY")
 ALLOW_REMOTE_DOWNLOAD = os.getenv("ALLOW_REMOTE_DOWNLOAD", "true").lower() == "true"
 DEDUPLICATION_ENABLED = os.getenv("DEDUPLICATION_ENABLED", "true").lower() == "true"
@@ -67,34 +75,234 @@ class EntitiesWorker:
 
     def load_model(self):
         from gliner import GLiNER
-
-        model_path = Path(GLINER_MODEL_PATH)
-        config_file = model_path / "config.json"
-
-        # Try to load from local path first
-        if config_file.exists():
-            logger.info(f"Loading GLiNER from local path: {GLINER_MODEL_PATH}")
-            try:
-                self.model = GLiNER.from_pretrained(str(model_path))
-                logger.info("GLiNER model loaded successfully from local cache")
-                return
-            except Exception as e:
-                logger.warning(f"Failed to load from local path: {e}")
-
-        # Fallback to remote download if allowed
-        if ALLOW_REMOTE_DOWNLOAD:
-            logger.info(f"Loading GLiNER from HuggingFace: {GLINER_MODEL_NAME}")
-            try:
-                self.model = GLiNER.from_pretrained(GLINER_MODEL_NAME)
-                logger.info("GLiNER model loaded from HuggingFace")
-                return
-            except Exception as e:
-                logger.error(f"Failed to load model from HuggingFace: {e}")
-                raise
-        else:
-            raise Exception(
-                f"Model not found at {GLINER_MODEL_PATH} and remote download is disabled"
+        
+        # Model path - use local files only
+        model_path = "/models/gliner-small-v2.1"
+        cache_dir = "/home/app/.cache/huggingface"
+        
+        logger.info("=" * 70)
+        logger.info("🔍 Loading GLiNER Model (Offline Mode)")
+        logger.info("=" * 70)
+        logger.info(f"   Model path: {model_path}")
+        logger.info(f"   Cache dir: {cache_dir}")
+        logger.info(f"   Offline mode: HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')}")
+        logger.info(f"   Transformers offline: TRANSFORMERS_OFFLINE={os.environ.get('TRANSFORMERS_OFFLINE')}")
+        
+        try:
+            # Verify model files exist
+            model_files = [
+                "gliner_config.json",
+                "pytorch_model.bin",
+            ]
+            
+            missing = [f for f in model_files if not os.path.exists(os.path.join(model_path, f))]
+            if missing:
+                logger.error(f"❌ Missing model files: {missing}")
+                raise FileNotFoundError(f"Model files missing: {missing}")
+            
+            logger.info(f"   ✓ Model files present")
+            
+            # Verify HuggingFace cache structure exists
+            hub_cache = Path(cache_dir) / "hub"
+            if not hub_cache.exists():
+                logger.warning(f"⚠️  HuggingFace cache not found at {hub_cache}")
+                logger.warning(f"   This may cause issues loading the DeBERTa backbone")
+            else:
+                logger.info(f"   ✓ HuggingFace cache found: {hub_cache}")
+                
+                # Check for DeBERTa in cache
+                deberta_cache = hub_cache / "models--microsoft--deberta-v3-small"
+                if deberta_cache.exists():
+                    logger.info(f"   ✓ DeBERTa backbone found in cache")
+                else:
+                    logger.warning(f"   ⚠️  DeBERTa backbone NOT in cache - may fail")
+            
+            logger.info("🚀 Loading GLiNER model...")
+            
+            # Load model - GLiNER will use the HuggingFace cache for backbone
+            # The cache structure created by snapshot_download allows transformers
+            # to resolve "microsoft/deberta-v3-small" to the local cache
+            self.model = GLiNER.from_pretrained(
+                model_path,
+                local_files_only=True,  # Force offline mode
             )
+            
+            logger.info("=" * 70)
+            logger.info("✅ GLiNER Model Loaded Successfully")
+            logger.info("=" * 70)
+            logger.info(f"   Model type: {type(self.model).__name__}")
+            logger.info(f"   Device: {self.device}")
+            logger.info(f"   Ready for entity extraction")
+            logger.info("=" * 70)
+
+        except Exception as e:
+            logger.error("=" * 70)
+            logger.error("❌ FAILED TO LOAD GLiNER MODEL")
+            logger.error("=" * 70)
+            logger.error(f"   Error: {e}")
+            logger.error(f"   Model path: {model_path}")
+            logger.error(f"   Cache dir: {cache_dir}")
+            
+            import traceback
+            logger.error("\nFull traceback:")
+            traceback.print_exc()
+            
+            logger.error("=" * 70)
+            logger.error("Troubleshooting:")
+            logger.error("  1. Verify model files exist: ls -la /models/gliner-small-v2.1/")
+            logger.error("  2. Verify cache structure: ls -la /home/app/.cache/huggingface/hub/")
+            logger.error("  3. Check DeBERTa in cache: ls -la /home/app/.cache/huggingface/hub/models--microsoft--deberta-v3-small/")
+            logger.error("=" * 70)
+            
+            raise Exception(f"Failed to load GLiNER model: {e}")
+
+    def _extract_dates(self, text: str) -> List[Dict]:
+        import re
+
+        dates = []
+        patterns = [
+            r"\\d{1,2}/\\d{1,2}/\\d{2,4}",
+            r"\\d{1,2}-\\d{1,2}-\\d{2,4}",
+            r"\\d{4}-\\d{2}-\\d{2}",
+            r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{1,2},?\\s+\\d{4}",
+            r"\\d{1,2}\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{4}",
+            r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+\\d{1,2}\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                dates.append(
+                    {
+                        "text": match.group(),
+                        "label": "DATE",
+                        "confidence": 0.75,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
+        return dates
+
+    def _extract_money(self, text: str) -> List[Dict]:
+        import re
+
+        money = []
+        patterns = [
+            r"\\$\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+            r"\\d+(?:,\\d{3})*(?:\\.\\d{2})?\\s*(?:USD|EUR|GBP)",
+            r"€\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+            r"£\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                money.append(
+                    {
+                        "text": match.group(),
+                        "label": "MONEY",
+                        "confidence": 0.8,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
+        return money
+
+    def _extract_orgs(self, text: str) -> List[Dict]:
+        import re
+
+        orgs = []
+        patterns = [
+            r"(?:Inc\\.|LLC|Corp\\.|Ltd\\.|S\\.A\\.|S\\.L\\.|B\\.V\\.|GmbH)",
+            r"(?:University|Institute|Foundation|Association|Corporation)",
+            r"(?:Bank|Insurance|Financial|Media|Tech|Software|Hardware)",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                orgs.append(
+                    {
+                        "text": match.group(),
+                        "label": "ORG",
+                        "confidence": 0.6,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
+        return orgs
+
+    def _extract_locs(self, text: str) -> List[Dict]:
+        import re
+
+        locs = []
+        patterns = [
+            r"(?:New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego)",
+            r"(?:Madrid|Barcelona|Valencia|Sevilla|Málaga|Bilbao)",
+            r"(?:Spain|France|Germany|Italy|United Kingdom|United States)",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                locs.append(
+                    {
+                        "text": match.group(),
+                        "label": "LOC",
+                        "confidence": 0.65,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
+        return locs
+
+    def _extract_persons(self, text: str) -> List[Dict]:
+        import re
+
+        persons = []
+        pattern = r"\\b[A-Z][a-z]+\\s+[A-Z][a-z]+\\b"
+        exclude = {
+            "The",
+            "This",
+            "That",
+            "What",
+            "When",
+            "Where",
+            "Which",
+            "Who",
+            "How",
+            "There",
+        }
+        for match in re.finditer(pattern, text):
+            name = match.group()
+            if name not in exclude:
+                persons.append(
+                    {
+                        "text": name,
+                        "label": "PER",
+                        "confidence": 0.5,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
+        return persons
+
+    def predict_entities(
+        self, text: str, entity_types: List[str], threshold: float = 0.5
+    ) -> List[Dict]:
+        """
+        Predict entities using rule-based patterns and heuristics.
+
+        Args:
+            text: Input text to extract entities from
+            entity_types: List of entity types to extract
+            threshold: Minimum confidence score
+
+        Returns:
+            List of entity predictions with text, label, score, start, end
+        """
+        try:
+            entities = self.model.predict_entities(
+                text,
+                entity_types,
+                threshold=threshold,
+            )
+            return entities if entities else []
+        except Exception as e:
+            logger.error(f"Error predicting entities: {e}")
+            return []
 
     def normalize_entity_text(self, text: str) -> str:
         """Normalize entity text for deduplication."""

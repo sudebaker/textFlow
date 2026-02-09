@@ -175,14 +175,17 @@ services:
       - QUEUE_NAME=embeddings
       - METRICS_PORT=8001
       - PREFETCH_COUNT=5
-      # ⭐ Air-gapped mode enabled
-      - HF_HUB_OFFLINE=1
-      - TRANSFORMERS_OFFLINE=1
-      - MODEL_PATH=/models/bge-m3
-      # ⭐ GPU Configuration
-      - CUDA_VISIBLE_DEVICES=0
-      - EMBEDDING_BATCH_SIZE_GPU=32
-      - EMBEDDING_BATCH_SIZE_CPU=2
+      # ⭐ Air-gapped mode disabled for initial BGE tokenizer download
+      - HF_HUB_OFFLINE=0
+      # Modern-GLiNER: 512 tokens, bi-encoder architecture
+      - GLINER_MODEL_PATH=/models/modern-gliner
+      - GLINER_MODEL_NAME=knowledgator/modern-gliner-bi-base-v1.0
+      # Modern-GLiNER has better confidence calibration, adjust thresholds
+      - GLINER_PER_THRESHOLD=0.30
+      - GLINER_ORG_THRESHOLD=0.35
+      - GLINER_LOC_THRESHOLD=0.35
+      - GLINER_DATE_THRESHOLD=0.35
+      - GLINER_MONEY_THRESHOLD=0.40
     depends_on:
       redis:
         condition: service_healthy
@@ -192,20 +195,9 @@ services:
     restart: unless-stopped
     deploy:
       resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['0']
-              capabilities: [gpu]
         limits:
-          cpus: '4'
-          memory: 4G
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import torch; assert torch.cuda.is_available()"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+           cpus: '2'
+           memory: 2G
 
   entities-worker:
     build:
@@ -213,7 +205,6 @@ services:
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: ia-text-entities-worker
     volumes:
-      # Mount pre-downloaded models from project root
       - ../../models:/models:ro
     environment:
       - REDIS_URL=redis://redis:6379
@@ -222,9 +213,19 @@ services:
       - QUEUE_NAME=entities
       - METRICS_PORT=8002
       - PREFETCH_COUNT=5
-      # ⭐ Air-gapped mode enabled
+      # ⭐ Strict Air-Gapped Mode - using baked-in HF cache from image
       - HF_HUB_OFFLINE=1
-      - GLINER_MODEL_PATH=/models/gliner-small
+      - HF_HOME=/home/app/.cache/huggingface
+      - TRANSFORMERS_OFFLINE=1
+      - GLINER_MODEL_PATH=/models/gliner-small-v2.1
+      - GLINER_MODEL_NAME=urchade/gliner_small-v2.1
+      - MAX_LENGTH=384
+      - ALLOW_REMOTE_DOWNLOAD=false
+      - GLINER_PER_THRESHOLD=0.30
+      - GLINER_ORG_THRESHOLD=0.35
+      - GLINER_LOC_THRESHOLD=0.35
+      - GLINER_DATE_THRESHOLD=0.35
+      - GLINER_MONEY_THRESHOLD=0.40
     depends_on:
       redis:
         condition: service_healthy
@@ -335,4 +336,6 @@ volumes:
   grafana-data:
     driver: local
   data:
+    driver: local
+  entities-cache:
     driver: local

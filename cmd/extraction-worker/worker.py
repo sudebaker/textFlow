@@ -248,12 +248,20 @@ class ExtractionWorker:
     ) -> Dict[str, Any]:
         try:
             document_bytes = base64.b64decode(document_base64)
+            logger.info(f"Decoded {len(document_bytes)} bytes, filename: {filename}")
+
+            # Detectar si es PDF por los magic bytes
+            if document_bytes[:4] == b"%PDF":
+                if not filename.lower().endswith(".pdf"):
+                    filename = filename + ".pdf"
+                    logger.info(f"Adjusted filename to: {filename}")
 
             response = requests.post(
                 f"{UNSTRUCTURED_URL}/general/v0/general",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
+            logger.info(f"Unstructured response status: {response.status_code}")
             response.raise_for_status()
 
             elements = response.json()

@@ -30,6 +30,43 @@ class CompletionWorker:
         self.event_bus = EventBus(self.redis_client)
         self.required_steps = {"extraction", "embeddings", "entities", "metadata"}
 
+    def deduplicate_entities(self, entities: list) -> list:
+        """
+        Deduplicate entities using exact text match (not fuzzy).
+        Keep all variations like "María Pilar" vs "María Pilar Rodríguez"
+        Keep highest confidence for exact duplicates.
+        """
+        if not entities:
+            return entities
+
+        # Group by (label, exact text) - no fuzzy matching
+        seen = {}
+        result = []
+
+        for entity in entities:
+            key = f"{entity.get('label', '')}:{entity.get('text', '')}"
+
+            if key not in seen:
+                # New unique entity
+                seen[key] = entity
+                result.append(entity)
+            else:
+                # Exact match found - keep highest confidence
+                existing = seen[key]
+                if entity.get("confidence", 0) > existing.get("confidence", 0):
+                    # Update in dictionary
+                    seen[key] = entity
+                    # Update in result list
+                    idx = result.index(existing)
+                    result[idx] = entity
+
+        logger.info(
+            f"Deduplicated entities: {len(entities)} → {len(result)} "
+            f"(removed {len(entities) - len(result)} exact duplicates)"
+        )
+
+        return result
+
     def get_job_creation_time(self, job_id: str) -> Optional[str]:
         meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
         created_at = meta.get("created_at")
@@ -91,8 +128,18 @@ class CompletionWorker:
             embeddings_raw = json.loads(embeddings_json) if embeddings_json else {}
             embeddings = {"model": "BAAI/bge-m3", "dimension": 1024, **embeddings_raw}
 
-            entities_json = self.redis_client.get(f"orchestrator:job:{job_id}:entities")
-            entities = json.loads(entities_json) if entities_json else []
+            # Read RAW entities from entities-worker (before dedup)
+            entities_raw_json = self.redis_client.get(
+                f"orchestrator:job:{job_id}:entities_raw"
+            )
+            entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
+
+            # Apply deduplication at the end (now that we have all entities from all chunks)
+            entities = self.deduplicate_entities(entities_raw) if entities_raw else []
+
+            logger.info(
+                f"Entities: {len(entities_raw)} raw → {len(entities)} after dedup"
+            )
 
             results = {
                 "job_id": job_id,

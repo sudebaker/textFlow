@@ -193,8 +193,11 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
         port=parsed.port or 5672,
         virtual_host=parsed.path[1:] if parsed.path else "/",
         credentials=credentials,
-        heartbeat=600,
+        heartbeat=1200,  # 20 minutes - sufficient for long-running jobs
         blocked_connection_timeout=300,
+        frame_max=131072,  # Increase frame size for large embeddings
+        connection_attempts=3,
+        retry_delay=2,
     )
 
 

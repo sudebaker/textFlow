@@ -15,33 +15,45 @@ FROM python:3.11-slim
 LABEL maintainer="ia-text-orchestrator"
 LABEL description="GLiNER Entity Extraction Worker for NER tasks"
 
-# ⭐ Para producción air-gapped: descomentar estas líneas
+# ⭐ Strict Air-Gapped Mode - Set BEFORE any Python imports
 ENV HF_HUB_OFFLINE=1
-ENV HF_HOME=/models
+ENV HF_HOME=/home/app/.cache/huggingface
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_DATASETS_OFFLINE=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create app user and directories early
+RUN useradd --create-home --shell /bin/bash app \
+    && mkdir -p /models /home/app/.cache/huggingface
+
+# Copy HuggingFace cache with proper structure (CRITICAL for offline mode)
+# This cache contains models with the structure transformers expects
+COPY --chown=app:app models/huggingface_cache/hub /home/app/.cache/huggingface/hub
+
+# Copy GLiNER model files
+COPY --chown=app:app models/gliner-small-v2.1 /models/gliner-small-v2.1
+
 # Copy requirements
 COPY cmd/entities-worker/requirements.txt .
 
-# Install PyTorch CPU-only version
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy shared packages (events_python)
 COPY pkg/ ./pkg/
 
 # Copy worker code and app structure
 COPY cmd/entities-worker/worker.py .
+COPY cmd/entities-worker/entrypoint.sh /entrypoint.sh
 COPY cmd/entities-worker/app ./app
 
-# Create models directory and user
-RUN mkdir -p /models && useradd --create-home --shell /bin/bash app && \
-    chown -R app /models /app
+# Fix permissions
+RUN chown -R app:app /models /app /home/app && chmod +x /entrypoint.sh
 
 # Switch to app user
 USER app
@@ -49,9 +61,9 @@ USER app
 # Expose metrics port
 EXPOSE 8002
 
-# Environment variables
+# Environment variables (explicitly set for clarity)
 ENV PYTHONUNBUFFERED=1
-ENV GLINER_MODEL_PATH=/models/gliner-small
+ENV GLINER_MODEL_PATH=/models/gliner-small-v2.1
 
-# Run worker
-CMD ["python", "worker.py"]
+# Run entrypoint script
+CMD ["/entrypoint.sh"]

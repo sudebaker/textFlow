@@ -217,8 +217,8 @@ services:
       - HF_HUB_OFFLINE=1
       - HF_HOME=/home/app/.cache/huggingface
       - TRANSFORMERS_OFFLINE=1
-      - GLINER_MODEL_PATH=/models/gliner-small-v2.1
-      - GLINER_MODEL_NAME=urchade/gliner_small-v2.1
+      - GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
+      - GLINER_MODEL_NAME=urchade/gliner_multitask-v0.5
       - MAX_LENGTH=384
       - ALLOW_REMOTE_DOWNLOAD=false
       - GLINER_PER_THRESHOLD=0.30

@@ -44,8 +44,8 @@ class Settings:
         self.threshold_per = float(os.getenv("ENTITY_THRESHOLD_PER", "0.35"))
         self.threshold_org = float(os.getenv("ENTITY_THRESHOLD_ORG", "0.50"))
         self.threshold_loc = float(os.getenv("ENTITY_THRESHOLD_LOC", "0.50"))
-        self.threshold_date = float(os.getenv("ENTITY_THRESHOLD_DATE", "0.60"))
-        self.threshold_money = float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.65"))
+        self.threshold_date = float(os.getenv("ENTITY_THRESHOLD_DATE", "0.45"))
+        self.threshold_money = float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.55"))
 
         self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "32"))
         self.max_length = int(os.getenv("GLINER_MAX_LENGTH", "512"))

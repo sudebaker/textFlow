@@ -31,7 +31,7 @@ fi
 echo "   ✓ DeBERTa backbone found in cache"
 
 # Verify GLiNER model files
-GLINER_MODEL="/models/gliner-small-v2.1"
+GLINER_MODEL="/models/gliner_multitask-v0.5"
 if [ ! -f "$GLINER_MODEL/gliner_config.json" ]; then
     echo "❌ ERROR: GLiNER model files not found!"
     echo "   Expected: $GLINER_MODEL/gliner_config.json"

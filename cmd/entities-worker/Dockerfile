@@ -35,7 +35,7 @@ RUN useradd --create-home --shell /bin/bash app \
 COPY --chown=app:app models/huggingface_cache/hub /home/app/.cache/huggingface/hub
 
 # Copy GLiNER model files
-COPY --chown=app:app models/gliner-small-v2.1 /models/gliner-small-v2.1
+COPY --chown=app:app models/gliner_multitask-v0.5 /models/gliner_multitask-v0.5
 
 # Copy requirements
 COPY cmd/entities-worker/requirements.txt .
@@ -63,7 +63,7 @@ EXPOSE 8002
 
 # Environment variables (explicitly set for clarity)
 ENV PYTHONUNBUFFERED=1
-ENV GLINER_MODEL_PATH=/models/gliner-small-v2.1
+ENV GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
 
 # Run entrypoint script
 CMD ["/entrypoint.sh"]

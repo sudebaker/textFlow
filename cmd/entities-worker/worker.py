@@ -47,12 +47,12 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
-GLINER_MODEL_PATH = os.getenv("GLINER_MODEL_PATH", "/models/gliner_large")
+GLINER_MODEL_PATH = os.getenv("GLINER_MODEL_PATH", "/models/gliner_multitask-v0.5")
 GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
 HF_CACHE_DIR = os.getenv("HF_CACHE_DIR", "/root/.cache/huggingface")
 ENTITY_TYPES = os.getenv("ENTITY_TYPES", "PER,ORG,LOC,DATE,MONEY")
 ALLOW_REMOTE_DOWNLOAD = os.getenv("ALLOW_REMOTE_DOWNLOAD", "true").lower() == "true"
-DEDUPLICATION_ENABLED = os.getenv("DEDUPLICATION_ENABLED", "true").lower() == "true"
+DEDUPLICATION_ENABLED = os.getenv("DEDUPLICATION_ENABLED", "false").lower() == "true"
 FUZZY_MATCH_THRESHOLD = float(os.getenv("FUZZY_MATCH_THRESHOLD", "0.85"))
 
 # Thresholds per entity type
@@ -60,8 +60,8 @@ ENTITY_THRESHOLDS = {
     "PER": float(os.getenv("ENTITY_THRESHOLD_PER", "0.35")),
     "ORG": float(os.getenv("ENTITY_THRESHOLD_ORG", "0.50")),
     "LOC": float(os.getenv("ENTITY_THRESHOLD_LOC", "0.50")),
-    "DATE": float(os.getenv("ENTITY_THRESHOLD_DATE", "0.60")),
-    "MONEY": float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.65")),
+    "DATE": float(os.getenv("ENTITY_THRESHOLD_DATE", "0.45")),
+    "MONEY": float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.55")),
 }
 
 
@@ -77,7 +77,7 @@ class EntitiesWorker:
         from gliner import GLiNER
         
         # Model path - use local files only
-        model_path = "/models/gliner-small-v2.1"
+        model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_multitask-v0.5")
         cache_dir = "/home/app/.cache/huggingface"
         
         logger.info("=" * 70)
@@ -89,18 +89,25 @@ class EntitiesWorker:
         logger.info(f"   Transformers offline: TRANSFORMERS_OFFLINE={os.environ.get('TRANSFORMERS_OFFLINE')}")
         
         try:
-            # Verify model files exist
-            model_files = [
-                "gliner_config.json",
-                "pytorch_model.bin",
-            ]
+            # Verify model directory exists and contains any model/config files
+            # Different GLiNER versions use different file names
+            model_path_obj = Path(model_path)
+            if not model_path_obj.exists():
+                raise FileNotFoundError(f"Model directory not found: {model_path}")
             
-            missing = [f for f in model_files if not os.path.exists(os.path.join(model_path, f))]
-            if missing:
-                logger.error(f"❌ Missing model files: {missing}")
-                raise FileNotFoundError(f"Model files missing: {missing}")
+            # Check for any config file (config.json, gliner_config.json, etc.)
+            config_files = list(model_path_obj.glob("*.json"))
+            model_files = list(model_path_obj.glob("*.bin")) + list(model_path_obj.glob("*.safetensors"))
             
-            logger.info(f"   ✓ Model files present")
+            if not config_files:
+                logger.error(f"❌ No config files found in {model_path}")
+                raise FileNotFoundError(f"No config files found in {model_path}")
+            
+            if not model_files:
+                logger.error(f"❌ No model weight files found in {model_path}")
+                raise FileNotFoundError(f"No model files found in {model_path}")
+            
+            logger.info(f"   ✓ Found {len(config_files)} config file(s), {len(model_files)} model file(s)")
             
             # Verify HuggingFace cache structure exists
             hub_cache = Path(cache_dir) / "hub"
@@ -149,7 +156,7 @@ class EntitiesWorker:
             
             logger.error("=" * 70)
             logger.error("Troubleshooting:")
-            logger.error("  1. Verify model files exist: ls -la /models/gliner-small-v2.1/")
+            logger.error(f"  1. Verify model files exist: ls -la {model_path}/")
             logger.error("  2. Verify cache structure: ls -la /home/app/.cache/huggingface/hub/")
             logger.error("  3. Check DeBERTa in cache: ls -la /home/app/.cache/huggingface/hub/models--microsoft--deberta-v3-small/")
             logger.error("=" * 70)
@@ -493,7 +500,7 @@ class EntitiesWorker:
                 all_entities = self.deduplicate_entities(all_entities)
 
             # Store in Redis
-            entities_key = f"orchestrator:job:{job_id}:entities"
+            entities_key = f"orchestrator:job:{job_id}:entities_raw"
             self.redis_client.set(entities_key, json.dumps(all_entities))
 
             self.redis_client.hset(

@@ -110,7 +110,7 @@ func (m *CircuitBreakerManager) Execute(ctx context.Context, name string, settin
 
 // Common circuit breaker configurations
 var (
-	// For external API calls (Unstructured, Resource Manager)
+	// For external API calls (Docling, Resource Manager)
 	ExternalAPIConfig = Settings{
 		MaxRequests: 5,
 		Interval:    30 * time.Second,

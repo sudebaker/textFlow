@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -175,8 +178,9 @@ func setupRouter() *gin.Engine {
 
 	v1 := r.Group("/v1")
 	{
-		v1.POST("/documents/process", createJobHandler)
+		v1.POST("/documents/upload", uploadHandler)
 		v1.GET("/documents/:id", getJobHandler)
+		v1.GET("/documents/:id/download", downloadHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
 	}
 
@@ -536,4 +540,173 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 	}
 
 	return nil
+}
+
+func uploadHandler(c *gin.Context) {
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_request",
+			Detail: "file is required",
+		})
+		return
+	}
+	defer file.Close()
+
+	if header.Size > 10*1024*1024 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "file_too_large",
+			Detail: "maximum file size is 10MB",
+		})
+		return
+	}
+
+	jobID := generateJobID()
+	filename := filepath.Base(header.Filename)
+	safeFilename := fmt.Sprintf("%s_%s", jobID, filename)
+	filePath := filepath.Join(cfg.UploadPath, safeFilename)
+
+	if err := os.MkdirAll(cfg.UploadPath, 0755); err != nil {
+		logger.Error().Err(err).Msg("failed to create upload directory")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to save file",
+		})
+		return
+	}
+
+	out, err := os.Create(filePath)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to create file")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to save file",
+		})
+		return
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, file); err != nil {
+		logger.Error().Err(err).Msg("failed to write file")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to save file",
+		})
+		return
+	}
+
+	entityTypes := c.PostForm("entity_types")
+	var entityTypesList []string
+	if entityTypes != "" {
+		entityTypesList = strings.Split(entityTypes, ",")
+	}
+
+	notifyWebhook := c.PostForm("notify_webhook")
+	if notifyWebhook == "" {
+		notifyWebhook = cfg.WebhookURL
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	if err := redis.SetJobStatus(ctx, jobID, models.StatusPending); err != nil {
+		logger.Error().Err(err).Msg("failed to set job status")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to create job",
+		})
+		return
+	}
+
+	if err := redis.SetJobCreated(ctx, jobID); err != nil {
+		logger.Error().Err(err).Msg("failed to set job created time")
+	}
+
+	jobMsg := models.JobMessage{
+		JobID:         jobID,
+		DocumentPath:  filePath,
+		MIMEType:      header.Header.Get("Content-Type"),
+		EntityTypes:   entityTypesList,
+		NotifyWebhook: notifyWebhook,
+	}
+
+	if err := mqBroker.Publish(ctx, cfg.ExtractQueue, jobMsg); err != nil {
+		logger.Error().Err(err).Msg("failed to publish job")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to process job",
+		})
+		return
+	}
+
+	metrics.JobsInProgress.Inc()
+	metrics.JobsTotal.WithLabelValues("created", "document").Inc()
+
+	logger.Info().Str("job_id", jobID).Str("filename", filename).Msg("job created from upload")
+
+	c.JSON(http.StatusAccepted, models.CreateJobResponse{
+		JobID:     jobID,
+		Status:    models.StatusPending,
+		StatusURL: fmt.Sprintf("/v1/documents/%s", jobID),
+	})
+}
+
+func downloadHandler(c *gin.Context) {
+	jobID := c.Param("id")
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	status, err := redis.GetJobStatus(ctx, jobID)
+	if err != nil || status == "" {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{
+			Error:  "not_found",
+			Detail: "job not found",
+		})
+		return
+	}
+
+	if status != models.StatusCompleted && status != models.StatusFailed {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "job_not_ready",
+			Detail: "job is still processing",
+		})
+		return
+	}
+
+	resultsPath := filepath.Join(cfg.ResultsPath, jobID+".json")
+
+	data, err := os.ReadFile(resultsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, models.ErrorResponse{
+				Error:  "not_found",
+				Detail: "results file not found",
+			})
+			return
+		}
+		logger.Error().Err(err).Msg("failed to read results file")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to read results",
+		})
+		return
+	}
+
+	var results models.JobResults
+	if err := json.Unmarshal(data, &results); err != nil {
+		logger.Error().Err(err).Msg("failed to parse results")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to parse results",
+		})
+		return
+	}
+
+	results.JobID = jobID
+	results.Status = string(status)
+
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json", jobID))
+	c.Header("Content-Type", "application/json")
+	c.JSON(http.StatusOK, results)
 }

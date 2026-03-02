@@ -32,10 +32,10 @@ RUN useradd --create-home --shell /bin/bash app \
 
 # Copy HuggingFace cache with proper structure (CRITICAL for offline mode)
 # This cache contains models with the structure transformers expects
-COPY --chown=app:app models/huggingface_cache/hub /home/app/.cache/huggingface/hub
+# COPY --chown=app:app models/huggingface_cache/hub /home/app/.cache/huggingface/hub
 
 # Copy GLiNER model files
-COPY --chown=app:app models/gliner_multitask-v0.5 /models/gliner_multitask-v0.5
+# COPY --chown=app:app models/gliner_multitask-v0.5 /models/gliner_multitask-v0.5
 
 # Copy requirements
 COPY cmd/entities-worker/requirements.txt .

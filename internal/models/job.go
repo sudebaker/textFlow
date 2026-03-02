@@ -71,10 +71,17 @@ type Entity struct {
 
 type JobMessage struct {
 	JobID          string   `json:"job_id"`
+	DocumentPath   string   `json:"document_path,omitempty"`
 	DocumentBase64 string   `json:"document_base64,omitempty"`
 	DocumentURL    string   `json:"document_url,omitempty"`
 	MIMEType       string   `json:"mime_type,omitempty"`
 	EntityTypes    []string `json:"entity_types,omitempty"`
+	NotifyWebhook  string   `json:"notify_webhook,omitempty"`
+}
+
+type UploadRequest struct {
+	EntityTypes   []string `json:"entity_types,omitempty"`
+	NotifyWebhook string   `json:"notify_webhook,omitempty"`
 }
 
 type CreateJobRequest struct {

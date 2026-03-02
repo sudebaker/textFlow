@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import redis
+import requests
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -17,6 +18,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -29,6 +33,45 @@ class CompletionWorker:
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
         self.required_steps = {"extraction", "embeddings", "entities", "metadata"}
+
+    def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
+        try:
+            os.makedirs(RESULTS_PATH, exist_ok=True)
+            file_path = os.path.join(RESULTS_PATH, f"{job_id}.json")
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            logger.info(f"Results saved to {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save results to file: {e}")
+            return False
+
+    def send_webhook(self, job_id: str, status: str, error: Optional[str] = None) -> bool:
+        webhook_url = WEBHOOK_URL
+        if not webhook_url:
+            return False
+
+        try:
+            payload = {
+                "job_id": job_id,
+                "status": status,
+                "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+            }
+            if error:
+                payload["error"] = error
+
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                timeout=10,
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            logger.info(f"Webhook sent successfully for job {job_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send webhook: {e}")
+            return False
 
     def deduplicate_entities(self, entities: list) -> list:
         """
@@ -166,6 +209,9 @@ class CompletionWorker:
                 f"orchestrator:job:{job_id}:status", "status", "completed"
             )
 
+            self.save_results_to_file(job_id, results)
+            self.send_webhook(job_id, "completed", None)
+
             self.event_bus.publish_job_completed(job_id)
 
             logger.info(
@@ -180,6 +226,7 @@ class CompletionWorker:
             self.redis_client.set(
                 f"orchestrator:job:{job_id}:error", f"Finalization error: {str(e)}"
             )
+            self.send_webhook(job_id, "failed", str(e))
             self.event_bus.publish_job_failed(job_id, str(e))
 
     def handle_event(self, message):

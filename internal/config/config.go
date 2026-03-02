@@ -14,7 +14,7 @@ import (
 type Config struct {
 	RabbitMQURL        string        `env:"RABBITMQ_URL,required"`
 	RedisURL           string        `env:"REDIS_URL" default:"redis://localhost:6379"`
-	UnstructuredURL    string        `env:"UNSTRUCTURED_URL" default:"http://localhost:8000"`
+	DoclingURL         string        `env:"DOCLING_URL" default:"http://localhost:8000"`
 	ResourceManagerURL string        `env:"RESOURCE_MANAGER_URL" default:"http://localhost:9090"`
 	HTTPPort           int           `env:"HTTP_PORT" default:"8080"`
 	LogLevel           string        `env:"LOG_LEVEL" default:"info"`

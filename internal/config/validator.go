@@ -33,8 +33,8 @@ func (v *Validator) ValidateAll() []ValidationResult {
 	// Validate RabbitMQ connection
 	results = append(results, v.validateRabbitMQ())
 
-	// Validate Unstructured API
-	results = append(results, v.validateUnstructured())
+	// Validate Docling API
+	results = append(results, v.validateDocling())
 
 	// Validate Resource Manager
 	results = append(results, v.validateResourceManager())
@@ -99,19 +99,19 @@ func (v *Validator) validateRabbitMQ() ValidationResult {
 	return result
 }
 
-// validateUnstructured checks Unstructured API health
-func (v *Validator) validateUnstructured() ValidationResult {
+// validateDocling checks Docling API health
+func (v *Validator) validateDocling() ValidationResult {
 	start := time.Now()
 
 	result := ValidationResult{
-		Component: "unstructured",
+		Component: "docling",
 		Status:    "pending",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	url := v.cfg.UnstructuredURL + "/health"
+	url := v.cfg.DoclingURL + "/openapi.json"
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		result.Status = "error"

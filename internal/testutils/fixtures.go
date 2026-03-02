@@ -161,7 +161,7 @@ func NewTestConfig() *TestConfig {
 		cfg: &config.Config{
 			RabbitMQURL:        "amqp://guest:guest@localhost:5672/",
 			RedisURL:           "redis://localhost:6379",
-			UnstructuredURL:    "http://localhost:8000",
+			DoclingURL:         "http://localhost:8000",
 			ResourceManagerURL: "http://localhost:9090",
 			HTTPPort:           8080,
 			LogLevel:           "debug",

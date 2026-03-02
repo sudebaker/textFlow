@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+  40 |     # Copy requirements
+
+--------------------
+
+target entities-worker: failed to solve: failed to compute cache key: failed to calculate checksum of ref f469c7cc-1a15-45b2-af1e-83ebb55f49a3::1n7mkw2jw16j1wnimnmp8kl5j: "/models/gliner_multitask-v0.5": not found
+  40 |     # Copy requirements
+
+--------------------
+
+target entities-worker: failed to solve: failed to compute cache key: failed to calculate checksum of ref f469c7cc-1a15-45b2-af1e-83ebb55f49a3::1n7mkw2jw16j1wnimnmp8kl5j: "/models/gliner_multitask-v0.5": not found
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  unstructured:
+    image: unstructuredio/unstructured:0.14.8
+    ports:
+      - "8000:8000"

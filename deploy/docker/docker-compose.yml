@@ -1,5 +1,4 @@
 version: '3.8'
-
 services:
   rabbitmq:
     image: rabbitmq:3.12-management
@@ -13,9 +12,9 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - datastore
+    - datastore
     volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
+    - rabbitmq-data:/var/lib/rabbitmq
     deploy:
       resources:
         limits:
@@ -23,20 +22,22 @@ services:
           memory: 1G
         reservations:
           memory: 512M
-
   redis:
     image: redis:7-alpine
     container_name: ia-text-redis
     command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+      - CMD
+      - redis-cli
+      - ping
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - datastore
+    - datastore
     volumes:
-      - redis-data:/data
+    - redis-data:/data
     deploy:
       resources:
         limits:
@@ -44,59 +45,41 @@ services:
           memory: 1536M
         reservations:
           memory: 1G
-
-  unstructured:
-    image: quay.io/unstructured-io/unstructured-api:0.0.66
-    container_name: ia-text-unstructured
-    volumes:
-      - ../../data:/app/data
-    environment:
-      - UNSTRUCTURED_API_VERSION=latest
-      # ⭐ Use Tesseract OCR (CPU-only, no GPU models needed)
-      - OCR_AGENT=unstructured.partition.utils.ocr_models.tesseract_ocr.OCRAgentTesseract
-      # ⭐ Air-gapped mode
-      - HF_HUB_OFFLINE=1
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/general/docs"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - backend
-
   orchestrator:
     build:
       context: ../../
       dockerfile: cmd/orchestrator/Dockerfile
     container_name: ia-text-orchestrator
     ports:
-      - "8080:8080"
+    - 8080:8080
     networks:
-      - frontend
-      - backend
-      - datastore
+    - frontend
+    - backend
+    - datastore
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-      - REDIS_URL=redis://redis:6379
-      - UNSTRUCTURED_URL=http://unstructured:8000
-      - RESOURCE_MANAGER_URL=http://resource-manager:9090
-      - HTTP_PORT=8080
-      - LOG_LEVEL=info
-      - JOB_TTL=24h
-      - MAX_RETRIES=3
-      - RETRY_DELAY=1s
-      # ⭐ Queue names
-      - EXTRACT_QUEUE=extract_text
-      - EMBEDDINGS_QUEUE=embeddings
-      - ENTITIES_QUEUE=entities
-      - METADATA_QUEUE=metadata
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - REDIS_URL=redis://redis:6379
+    - DOCLING_URL=http://docling:5001
+    - RESOURCE_MANAGER_URL=http://resource-manager:9090
+    - HTTP_PORT=8080
+    - LOG_LEVEL=info
+    - JOB_TTL=24h
+    - MAX_RETRIES=3
+    - RETRY_DELAY=1s
+    - WEBHOOK_URL=${WEBHOOK_URL:-}
+    - API_BASE_URL=http://orchestrator:8080
+    - UPLOAD_PATH=/app/data/uploads
+    - RESULTS_PATH=/app/data/results
+    - EXTRACT_QUEUE=extract_text
+    - EMBEDDINGS_QUEUE=embeddings
+    - ENTITIES_QUEUE=entities
+    - METADATA_QUEUE=metadata
     depends_on:
       rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
-      unstructured:
+      docling:
         condition: service_healthy
     restart: unless-stopped
     deploy:
@@ -107,215 +90,223 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-
+    volumes:
+    - uploads-data:/app/data/uploads
+    - results-data:/app/data/results
   resource-manager:
     build:
       context: ../../
       dockerfile: cmd/resource-manager/Dockerfile
     container_name: ia-text-resource-manager
     environment:
-      - LOG_LEVEL=info
-      - HTTP_PORT=9090
+    - LOG_LEVEL=info
+    - HTTP_PORT=9090
     networks:
-      - backend
+    - backend
     restart: unless-stopped
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 128M
-
   extraction-worker:
     build:
       context: ../../
       dockerfile: cmd/extraction-worker/Dockerfile
     container_name: ia-text-extraction-worker
     volumes:
-      # Mount data directory for local file access
-      - ../../data:/app/data:ro
+    - ../../data:/app/data:ro
     environment:
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-      - UNSTRUCTURED_URL=http://unstructured:8000
-      - QUEUE_NAME=extract_text
-      - PREFETCH_COUNT=3
-      - LOG_LEVEL=info
-      # ⭐ Air-gapped mode
-      - HF_HUB_OFFLINE=1
-      - TRANSFORMERS_OFFLINE=1
+    - REDIS_URL=redis://redis:6379
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - DOCLING_URL=http://docling:5001
+    - QUEUE_NAME=extract_text
+    - PREFETCH_COUNT=3
+    - LOG_LEVEL=info
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      unstructured:
+      docling:
         condition: service_healthy
     networks:
-      - backend
-      - datastore
+    - backend
+    - datastore
     restart: unless-stopped
     deploy:
       resources:
         limits:
           cpus: '1'
           memory: 1G
-
   embeddings-worker:
     build:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: ia-text-embeddings-worker
     volumes:
-      # Mount pre-downloaded models from project root
-      - ../../models:/models:ro
+    - ../../models:/models:ro
     environment:
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-      - LOG_LEVEL=info
-      - QUEUE_NAME=embeddings
-      - METRICS_PORT=8001
-      - PREFETCH_COUNT=5
-      # ⭐ Air-gapped mode disabled for initial BGE tokenizer download
-      - HF_HUB_OFFLINE=0
-      # Modern-GLiNER: 512 tokens, bi-encoder architecture
-      - GLINER_MODEL_PATH=/models/modern-gliner
-      - GLINER_MODEL_NAME=knowledgator/modern-gliner-bi-base-v1.0
-      # Modern-GLiNER has better confidence calibration, adjust thresholds
-      - GLINER_PER_THRESHOLD=0.30
-      - GLINER_ORG_THRESHOLD=0.35
-      - GLINER_LOC_THRESHOLD=0.35
-      - GLINER_DATE_THRESHOLD=0.35
-      - GLINER_MONEY_THRESHOLD=0.40
+    - REDIS_URL=redis://redis:6379
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - LOG_LEVEL=info
+    - QUEUE_NAME=embeddings
+    - METRICS_PORT=8001
+    - PREFETCH_COUNT=5
+    - HF_HUB_OFFLINE=0
+    - GLINER_MODEL_PATH=/models/modern-gliner
+    - GLINER_MODEL_NAME=knowledgator/modern-gliner-bi-base-v1.0
+    - GLINER_PER_THRESHOLD=0.30
+    - GLINER_ORG_THRESHOLD=0.35
+    - GLINER_LOC_THRESHOLD=0.35
+    - GLINER_DATE_THRESHOLD=0.35
+    - GLINER_MONEY_THRESHOLD=0.40
     depends_on:
       redis:
         condition: service_healthy
     networks:
-      - backend
-      - datastore
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-           cpus: '2'
-           memory: 2G
-
-  entities-worker:
-    build:
-      context: ../../
-      dockerfile: cmd/entities-worker/Dockerfile
-    container_name: ia-text-entities-worker
-    volumes:
-      - ../../models:/models:ro
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-      - LOG_LEVEL=info
-      - QUEUE_NAME=entities
-      - METRICS_PORT=8002
-      - PREFETCH_COUNT=5
-      # ⭐ Strict Air-Gapped Mode - using baked-in HF cache from image
-      - HF_HUB_OFFLINE=1
-      - HF_HOME=/home/app/.cache/huggingface
-      - TRANSFORMERS_OFFLINE=1
-      - GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
-      - GLINER_MODEL_NAME=urchade/gliner_multitask-v0.5
-      - MAX_LENGTH=384
-      - ALLOW_REMOTE_DOWNLOAD=false
-      - GLINER_PER_THRESHOLD=0.30
-      - GLINER_ORG_THRESHOLD=0.35
-      - GLINER_LOC_THRESHOLD=0.35
-      - GLINER_DATE_THRESHOLD=0.35
-      - GLINER_MONEY_THRESHOLD=0.40
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - backend
-      - datastore
+    - backend
+    - datastore
     restart: unless-stopped
     deploy:
       resources:
         limits:
           cpus: '2'
           memory: 2G
-
+  entities-worker:
+    build:
+      context: ../../
+      dockerfile: cmd/entities-worker/Dockerfile
+    container_name: ia-text-entities-worker
+    volumes:
+    - ../../models:/models:ro
+    environment:
+    - REDIS_URL=redis://redis:6379
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - LOG_LEVEL=info
+    - QUEUE_NAME=entities
+    - METRICS_PORT=8002
+    - PREFETCH_COUNT=5
+    - HF_HUB_OFFLINE=1
+    - HF_HOME=/home/app/.cache/huggingface
+    - TRANSFORMERS_OFFLINE=1
+    - GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
+    - GLINER_MODEL_NAME=urchade/gliner_multitask-v0.5
+    - MAX_LENGTH=384
+    - ALLOW_REMOTE_DOWNLOAD=false
+    - GLINER_PER_THRESHOLD=0.30
+    - GLINER_ORG_THRESHOLD=0.35
+    - GLINER_LOC_THRESHOLD=0.35
+    - GLINER_DATE_THRESHOLD=0.35
+    - GLINER_MONEY_THRESHOLD=0.40
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+    - backend
+    - datastore
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
   metadata-worker:
     build:
       context: ../../
       dockerfile: cmd/metadata-worker/Dockerfile
     container_name: ia-text-metadata-worker
     environment:
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-      - LOG_LEVEL=info
-      - QUEUE_NAME=metadata
-      - METRICS_PORT=8003
-      - PREFETCH_COUNT=10
+    - REDIS_URL=redis://redis:6379
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - LOG_LEVEL=info
+    - QUEUE_NAME=metadata
+    - METRICS_PORT=8003
+    - PREFETCH_COUNT=10
     depends_on:
       rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - backend
-      - datastore
+    - backend
+    - datastore
     restart: unless-stopped
     deploy:
       resources:
         limits:
           cpus: '1'
           memory: 512M
-
   completion-worker:
     build:
       context: ../../
       dockerfile: cmd/completion-worker/Dockerfile
     container_name: ia-text-completion-worker
     environment:
-      - REDIS_URL=redis://redis:6379
-      - LOG_LEVEL=info
+    - REDIS_URL=redis://redis:6379
+    - LOG_LEVEL=info
     depends_on:
       redis:
         condition: service_healthy
     networks:
-      - datastore
+    - datastore
     restart: unless-stopped
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 256M
-
   prometheus:
     image: prom/prometheus:v2.48.0
     container_name: ia-text-prometheus
     ports:
-      - "127.0.0.1:9091:9090"
+    - 127.0.0.1:9091:9090
     volumes:
-      - ../prometheus:/etc/prometheus
-      - prometheus-data:/prometheus
+    - ../prometheus:/etc/prometheus
+    - prometheus-data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=15d'
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=15d
     networks:
-      - frontend
+    - frontend
     restart: unless-stopped
-
   grafana:
     image: grafana/grafana:10.2.3
     container_name: ia-text-grafana
     ports:
-      - "3000:3000"
+    - 3000:3000
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
-      - grafana-data:/var/lib/grafana
+    - grafana-data:/var/lib/grafana
     networks:
-      - frontend
+    - frontend
     restart: unless-stopped
-
+  docling:
+    image: quay.io/docling-project/docling-serve:latest
+    container_name: ia-text-docling
+    ports:
+    - 8000:5001
+    environment:
+    - DOCLING_DEVICE=${DOCLING_DEVICE:-auto}
+    - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
+    - LOG_LEVEL=info
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:5001/openapi.json
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+    - backend
 networks:
   frontend:
     driver: bridge
@@ -325,7 +316,6 @@ networks:
   datastore:
     driver: bridge
     internal: true
-
 volumes:
   redis-data:
     driver: local
@@ -338,4 +328,8 @@ volumes:
   data:
     driver: local
   entities-cache:
+    driver: local
+  uploads-data:
+    driver: local
+  results-data:
     driver: local

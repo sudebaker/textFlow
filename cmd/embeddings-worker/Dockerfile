@@ -22,9 +22,10 @@ RUN apt-get update && apt-get install -y \
 
 # Install PyTorch with CUDA (auto-detect CUDA version)
 # This works with CUDA 11.8, 12.1, 12.2, 12.4
-RUN pip install --no-cache-dir \
-    torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu118
+# COMMENTED for offline mode - will fail if models needed
+# RUN pip install --no-cache-dir \
+#     torch torchvision torchaudio \
+#     --index-url https://download.pytorch.org/whl/cu118
 
 # Set working directory
 WORKDIR /app

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
-UNSTRUCTURED_URL = os.getenv("UNSTRUCTURED_URL", "http://unstructured:8000")
+DOCLING_URL = os.getenv("DOCLING_URL", "http://docling:5001")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "extract_text")
 PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "3"))
 
@@ -257,18 +257,20 @@ class ExtractionWorker:
                     logger.info(f"Adjusted filename to: {filename}")
 
             response = requests.post(
-                f"{UNSTRUCTURED_URL}/general/v0/general",
-                files={"files": (filename, document_bytes)},
+                f"{DOCLING_URL}/convert",
+                files={"file": (filename, document_bytes)},
                 timeout=300,
             )
-            logger.info(f"Unstructured response status: {response.status_code}")
+            logger.info(f"Docling response status: {response.status_code}")
             response.raise_for_status()
 
-            elements = response.json()
-            text = "\n".join([elem.get("text", "") for elem in elements])
+            result = response.json()
+            # Docling returns markdown text in "document.export_to_markdown()"
+            # The response has "document" key with the DoclingDocument
+            text = result.get("markdown", "") or result.get("text", "")
 
             metadata = {
-                "unstructured_elements": len(elements),
+                "docling_pages": result.get("num_pages", 0),
                 "extraction_method": "base64",
             }
 
@@ -278,20 +280,51 @@ class ExtractionWorker:
             logger.error(f"Failed to extract text from base64: {e}")
             raise
 
+    def extract_text_from_file(
+        self, file_path: str, filename: str = "document"
+    ) -> Dict[str, Any]:
+        try:
+            with open(file_path, "rb") as f:
+                document_bytes = f.read()
+            logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
+
+            response = requests.post(
+                f"{DOCLING_URL}/convert",
+                files={"file": (filename, document_bytes)},
+                timeout=300,
+            )
+            logger.info(f"Docling response status: {response.status_code}")
+            response.raise_for_status()
+
+            result = response.json()
+            # Docling returns markdown text
+            text = result.get("markdown", "") or result.get("text", "")
+
+            metadata = {
+                "docling_pages": result.get("num_pages", 0),
+                "extraction_method": "file",
+            }
+
+            return {"text": text, "metadata": metadata}
+
+        except Exception as e:
+            logger.error(f"Failed to extract text from file: {e}")
+            raise
+
     def extract_text_from_url(self, document_url: str) -> Dict[str, Any]:
         try:
             if document_url.startswith(
-                "http://unstructured:"
-            ) or document_url.startswith("http://unstructured/"):
-                if "://unstructured:" in document_url:
-                    url_path = document_url.split("/data/input/")[-1]
-                    local_path = f"/app/data/input/{url_path}"
+                "http://docling:"
+            ) or document_url.startswith("http://docling/"):
+                if "://docling:" in document_url:
+                    url_path = document_url.split("/data/uploads/")[-1]
+                    local_path = f"/app/data/uploads/{url_path}"
                 elif "/app/" in document_url:
                     url_path = document_url.split("/app/")[-1]
                     local_path = f"/app/{url_path}"
                 else:
-                    url_path = document_url.split("/data/input/")[-1]
-                    local_path = f"/app/data/input/{url_path}"
+                    url_path = document_url.split("/data/uploads/")[-1]
+                    local_path = f"/app/data/uploads/{url_path}"
 
                 with open(local_path, "rb") as f:
                     document_bytes = f.read()
@@ -307,17 +340,18 @@ class ExtractionWorker:
                     filename = "document.pdf"
 
             response = requests.post(
-                f"{UNSTRUCTURED_URL}/general/v0/general",
-                files={"files": (filename, document_bytes)},
+                f"{DOCLING_URL}/convert",
+                files={"file": (filename, document_bytes)},
                 timeout=300,
             )
             response.raise_for_status()
 
-            elements = response.json()
-            text = "\n".join([elem.get("text", "") for elem in elements])
+            result = response.json()
+            # Docling returns markdown text
+            text = result.get("markdown", "") or result.get("text", "")
 
             metadata = {
-                "unstructured_elements": len(elements),
+                "docling_pages": result.get("num_pages", 0),
                 "extraction_method": "url",
             }
 
@@ -341,7 +375,13 @@ class ExtractionWorker:
                 f"orchestrator:job:{job_id}:status", "status", "extracting"
             )
 
-            if message.get("document_base64"):
+            if message.get("document_path"):
+                result = self.extract_text_from_file(
+                    message["document_path"],
+                    os.path.basename(message["document_path"])
+                )
+                text = result["text"]
+            elif message.get("document_base64"):
                 result = self.extract_text_from_base64(message["document_base64"])
                 text = result["text"]
             elif message.get("document_url"):
@@ -350,13 +390,17 @@ class ExtractionWorker:
             else:
                 raise ValueError("No document provided")
 
-            temp_fd, temp_file_path = tempfile.mkstemp(suffix=".pdf")
-            try:
-                os.write(temp_fd, base64.b64decode(message.get("document_base64", "")))
-            finally:
-                os.close(temp_fd)
+            # For metadata extraction, use original file if available
+            if message.get("document_path"):
+                temp_file_path = message["document_path"]
+            else:
+                temp_fd, temp_file_path = tempfile.mkstemp(suffix=".pdf")
+                try:
+                    os.write(temp_fd, base64.b64decode(message.get("document_base64", "")))
+                finally:
+                    os.close(temp_fd)
 
-            document_metadata = extract_pdf_metadata(temp_file_path, "document.pdf")
+            document_metadata = extract_pdf_metadata(temp_file_path, os.path.basename(message.get("document_path", "document.pdf")))
 
             text_metadata = analyze_text(text)
 

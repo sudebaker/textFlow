@@ -26,6 +26,10 @@ type Config struct {
 	EntitiesQueue      string        `env:"ENTITIES_QUEUE" default:"entities"`
 	ExtractQueue       string        `env:"EXTRACT_QUEUE" default:"extract_text"`
 	MetadataQueue      string        `env:"METADATA_QUEUE" default:"metadata"`
+	AllowLocalURLs     bool          `env:"ALLOW_LOCAL_URLS" default:"false"`
+	WebhookURL         string        `env:"WEBHOOK_URL" default:""`
+	UploadPath         string        `env:"UPLOAD_PATH" default:"/app/data/uploads"`
+	ResultsPath        string        `env:"RESULTS_PATH" default:"/app/data/results"`
 }
 
 func (c *Config) ParseLogLevel() zerolog.Level {

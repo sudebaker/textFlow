@@ -1,0 +1,57 @@
+{
+  "job_id": "1772565367500816229",
+  "status": {},
+  "extracted_text": "Test Document for Docling Integration",
+  "chunks": [
+    {
+      "chunk_id": "chunk_000",
+      "text": "Test Document for Docling Integration",
+      "start_offset": 0,
+      "end_offset": 37,
+      "token_count": 9
+    }
+  ],
+  "metadata": {
+    "document": {
+      "filename": "1772565367500816229_test_docling_e2e.pdf",
+      "file_size_bytes": 665,
+      "sha256": "ebe49a2800699cdde34afae8b05346eac130c23e16a3a5759eafa24b746db242",
+      "author": null,
+      "title": null,
+      "subject": null,
+      "creator": null,
+      "producer": null,
+      "creation_date": null,
+      "modification_date": null,
+      "page_count": null,
+      "encrypted": false,
+      "mime_type": "application/pdf",
+      "exif_data": {
+        "ExifToolVersion": 13.25,
+        "FileName": "1772565367500816229_test_docling_e2e.pdf",
+        "Directory": "/app/data/uploads",
+        "FileSize": "665 bytes",
+        "FileModifyDate": "2026:03:03 19:16:07+00:00",
+        "FileAccessDate": "2026:03:03 19:16:07+00:00",
+        "FileInodeChangeDate": "2026:03:03 19:16:07+00:00",
+        "FilePermissions": "-rw-r--r--",
+        "FileType": "PDF",
+        "FileTypeExtension": "pdf",
+        "MIMEType": "application/pdf",
+        "PDFVersion": 1.4,
+        "Linearized": "No",
+        "Warning": "Invalid xref table"
+      }
+    },
+    "text_stats": {
+      "char_count": 37,
+      "word_count": 5,
+      "line_count": 1,
+      "language": "en",
+      "has_urls": false,
+      "has_emails": false,
+      "has_numbers": false,
+      "encoding": "utf-8"
+    }
+  }
+}

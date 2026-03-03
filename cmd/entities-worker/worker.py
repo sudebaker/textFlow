@@ -4,13 +4,13 @@ Entities Worker for IA Text Orchestrator
 Consumes messages from RabbitMQ and extracts entities using GLiNER
 """
 
-# ⚠️ CRITICAL: Configure offline mode BEFORE any other imports
-# This must be the FIRST code that executes to prevent HuggingFace internet calls
+# Configure cache paths BEFORE importing transformers/gliner
+# Do NOT set HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1 - these break GLiNER
 import os
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["HF_HOME"] = "/home/app/.cache/huggingface"
+os.environ["TRANSFORMERS_CACHE"] = "/home/app/.cache/huggingface"
+os.environ["HF_DATASETS_CACHE"] = "/home/app/.cache/huggingface"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Prevent hanging in tokenizer initialization
 
 import json
 import logging
@@ -30,6 +30,11 @@ from unidecode import unidecode
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
+from sliding_window import (
+    process_with_sliding_window,
+    estimate_tokens,
+    requires_sliding_window,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -76,63 +81,66 @@ class EntitiesWorker:
     def load_model(self):
         from gliner import GLiNER
         
-        # Model path - use local files only
-        model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_multitask-v0.5")
-        cache_dir = "/home/app/.cache/huggingface"
+        # Model path
+        model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_model")
+        deberta_path = "/models/deberta-v3-large"
         
         logger.info("=" * 70)
         logger.info("🔍 Loading GLiNER Model (Offline Mode)")
         logger.info("=" * 70)
-        logger.info(f"   Model path: {model_path}")
-        logger.info(f"   Cache dir: {cache_dir}")
-        logger.info(f"   Offline mode: HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')}")
-        logger.info(f"   Transformers offline: TRANSFORMERS_OFFLINE={os.environ.get('TRANSFORMERS_OFFLINE')}")
+        logger.info(f"   GLiNER model path: {model_path}")
+        logger.info(f"   DeBERTa backbone path: {deberta_path}")
+        logger.info(f"   HF_HOME: {os.environ.get('HF_HOME')}")
         
         try:
-            # Verify model directory exists and contains any model/config files
-            # Different GLiNER versions use different file names
+            # Verify GLiNER model directory exists
             model_path_obj = Path(model_path)
             if not model_path_obj.exists():
-                raise FileNotFoundError(f"Model directory not found: {model_path}")
+                raise FileNotFoundError(f"GLiNER model directory not found: {model_path}")
             
-            # Check for any config file (config.json, gliner_config.json, etc.)
-            config_files = list(model_path_obj.glob("*.json"))
+            # Check for gliner_config.json (required)
+            config_file = model_path_obj / "gliner_config.json"
+            if not config_file.exists():
+                raise FileNotFoundError(f"gliner_config.json not found in {model_path}")
+            
+            # Check for model weights
             model_files = list(model_path_obj.glob("*.bin")) + list(model_path_obj.glob("*.safetensors"))
-            
-            if not config_files:
-                logger.error(f"❌ No config files found in {model_path}")
-                raise FileNotFoundError(f"No config files found in {model_path}")
-            
             if not model_files:
-                logger.error(f"❌ No model weight files found in {model_path}")
-                raise FileNotFoundError(f"No model files found in {model_path}")
+                raise FileNotFoundError(f"No model weight files (.bin or .safetensors) found in {model_path}")
             
-            logger.info(f"   ✓ Found {len(config_files)} config file(s), {len(model_files)} model file(s)")
+            logger.info(f"   ✓ GLiNER config found: gliner_config.json")
+            logger.info(f"   ✓ GLiNER model weights found: {len(model_files)} file(s)")
             
-            # Verify HuggingFace cache structure exists
-            hub_cache = Path(cache_dir) / "hub"
-            if not hub_cache.exists():
-                logger.warning(f"⚠️  HuggingFace cache not found at {hub_cache}")
-                logger.warning(f"   This may cause issues loading the DeBERTa backbone")
-            else:
-                logger.info(f"   ✓ HuggingFace cache found: {hub_cache}")
-                
-                # Check for DeBERTa in cache
-                deberta_cache = hub_cache / "models--microsoft--deberta-v3-small"
-                if deberta_cache.exists():
-                    logger.info(f"   ✓ DeBERTa backbone found in cache")
-                else:
-                    logger.warning(f"   ⚠️  DeBERTa backbone NOT in cache - may fail")
+            # Verify DeBERTa backbone exists
+            deberta_path_obj = Path(deberta_path)
+            if not deberta_path_obj.exists():
+                raise FileNotFoundError(f"DeBERTa backbone directory not found at {deberta_path}")
             
-            logger.info("🚀 Loading GLiNER model...")
+            # Check for critical tokenizer files
+            # DeBERTa-v3-large uses SentencePiece (spm.model), not fast tokenizer (tokenizer.json)
+            critical_files = ["spm.model", "tokenizer_config.json", "config.json"]
+            missing_files = [f for f in critical_files if not (deberta_path_obj / f).exists()]
+            if missing_files:
+                raise FileNotFoundError(f"Missing DeBERTa tokenizer files in {deberta_path}: {missing_files}")
             
-            # Load model - GLiNER will use the HuggingFace cache for backbone
-            # The cache structure created by snapshot_download allows transformers
-            # to resolve "microsoft/deberta-v3-small" to the local cache
-            self.model = GLiNER.from_pretrained(
-                model_path,
-                local_files_only=True,  # Force offline mode
-            )
+            deberta_files = len(list(deberta_path_obj.glob("*")))
+            logger.info(f"   ✓ DeBERTa backbone found: {deberta_files} file(s)")
+            logger.info(f"   ✓ Tokenizer files verified")
+            
+            # Load GLiNER with offline mode
+            logger.info("\n🚀 Loading GLiNER...")
+            try:
+                self.model = GLiNER.from_pretrained(
+                    model_path,
+                    local_files_only=True  # Force offline mode
+                )
+                logger.info("   ✓ GLiNER model loaded successfully")
+            except KeyboardInterrupt:
+                logger.error("   ❌ GLiNER loading was interrupted")
+                raise
+            except Exception as e:
+                logger.error(f"   ❌ GLiNER loading failed: {e}")
+                raise
             
             logger.info("=" * 70)
             logger.info("✅ GLiNER Model Loaded Successfully")
@@ -147,18 +155,18 @@ class EntitiesWorker:
             logger.error("❌ FAILED TO LOAD GLiNER MODEL")
             logger.error("=" * 70)
             logger.error(f"   Error: {e}")
-            logger.error(f"   Model path: {model_path}")
-            logger.error(f"   Cache dir: {cache_dir}")
+            logger.error(f"   GLiNER path: {model_path}")
+            logger.error(f"   DeBERTa path: {deberta_path}")
             
             import traceback
             logger.error("\nFull traceback:")
             traceback.print_exc()
             
-            logger.error("=" * 70)
+            logger.error("\n" + "=" * 70)
             logger.error("Troubleshooting:")
-            logger.error(f"  1. Verify model files exist: ls -la {model_path}/")
-            logger.error("  2. Verify cache structure: ls -la /home/app/.cache/huggingface/hub/")
-            logger.error("  3. Check DeBERTa in cache: ls -la /home/app/.cache/huggingface/hub/models--microsoft--deberta-v3-small/")
+            logger.error(f"  1. Check GLiNER files: ls -la {model_path}/")
+            logger.error(f"  2. Check DeBERTa files: ls -la {deberta_path}/")
+            logger.error(f"  3. Verify gliner_config.json has: \"model_name\": \"/models/deberta-v3-large\"")
             logger.error("=" * 70)
             
             raise Exception(f"Failed to load GLiNER model: {e}")
@@ -449,18 +457,44 @@ class EntitiesWorker:
                     continue
 
                 try:
-                    entities = self.model.predict_entities(
-                        chunk_text,
-                        entity_types,
-                        threshold=0.1,  # Use low threshold, filter per-type below
-                    )
-
-                    if entities and len(entities) > 0 and isinstance(entities[0], list):
-                        entities_items = entities[0]
-                    elif entities and isinstance(entities, list):
-                        entities_items = entities
+                    # Use sliding window processor if chunk text is large
+                    estimated_tokens = estimate_tokens(chunk_text)
+                    
+                    if requires_sliding_window(chunk_text):
+                        logger.info(
+                            f"Chunk {chunk_id}: {estimated_tokens} tokens detected, "
+                            f"using sliding window approach"
+                        )
+                        # Define a wrapper function for predict_entities
+                        def predict_with_thresholds(text, entity_types, threshold=0.1):
+                            return self.model.predict_entities(
+                                text, entity_types, threshold=threshold
+                            )
+                        
+                        entities_items = process_with_sliding_window(
+                            chunk_text,
+                            predict_with_thresholds,
+                            entity_types,
+                            threshold=0.1,
+                        )
                     else:
-                        entities_items = []
+                        logger.debug(
+                            f"Chunk {chunk_id}: {estimated_tokens} tokens, "
+                            f"processing directly (no sliding window needed)"
+                        )
+                        # Direct processing for small chunks
+                        entities = self.model.predict_entities(
+                            chunk_text,
+                            entity_types,
+                            threshold=0.1,  # Use low threshold, filter per-type below
+                        )
+
+                        if entities and len(entities) > 0 and isinstance(entities[0], list):
+                            entities_items = entities[0]
+                        elif entities and isinstance(entities, list):
+                            entities_items = entities
+                        else:
+                            entities_items = []
 
                     # Filter by per-type threshold
                     for e in entities_items:
@@ -493,6 +527,8 @@ class EntitiesWorker:
                     logger.warning(
                         f"Error extracting entities from chunk {chunk_id}: {e}"
                     )
+                    import traceback
+                    logger.debug(traceback.format_exc())
                     continue
 
             # Deduplicate entities if enabled

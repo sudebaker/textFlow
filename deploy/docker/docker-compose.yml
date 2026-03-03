@@ -123,8 +123,6 @@ services:
     - QUEUE_NAME=extract_text
     - PREFETCH_COUNT=3
     - LOG_LEVEL=info
-    - HF_HUB_OFFLINE=1
-    - TRANSFORMERS_OFFLINE=1
     depends_on:
       redis:
         condition: service_healthy
@@ -147,7 +145,7 @@ services:
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: ia-text-embeddings-worker
     volumes:
-    - ../../models:/models:ro
+    - ../../models:/models
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
@@ -161,8 +159,8 @@ services:
     - GLINER_PER_THRESHOLD=0.30
     - GLINER_ORG_THRESHOLD=0.35
     - GLINER_LOC_THRESHOLD=0.35
-    - GLINER_DATE_THRESHOLD=0.35
-    - GLINER_MONEY_THRESHOLD=0.40
+    - GLINER_DATE_THRESHOLD=0.45
+    - GLINER_MONEY_THRESHOLD=0.55
     depends_on:
       redis:
         condition: service_healthy
@@ -180,8 +178,10 @@ services:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: ia-text-entities-worker
+    mem_limit: 4g
+    memswap_limit: 4g
     volumes:
-    - ../../models:/models:ro
+    - ../../models:/models
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
@@ -189,30 +189,22 @@ services:
     - QUEUE_NAME=entities
     - METRICS_PORT=8002
     - PREFETCH_COUNT=5
-    - HF_HUB_OFFLINE=1
     - HF_HOME=/home/app/.cache/huggingface
-    - TRANSFORMERS_OFFLINE=1
-    - GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
-    - GLINER_MODEL_NAME=urchade/gliner_multitask-v0.5
+    - GLINER_MODEL_PATH=/models/gliner_model
+    - GLINER_MODEL_NAME=urchade/gliner_large-v2.1
     - MAX_LENGTH=384
     - ALLOW_REMOTE_DOWNLOAD=false
     - GLINER_PER_THRESHOLD=0.30
     - GLINER_ORG_THRESHOLD=0.35
     - GLINER_LOC_THRESHOLD=0.35
-    - GLINER_DATE_THRESHOLD=0.35
-    - GLINER_MONEY_THRESHOLD=0.40
+    - GLINER_DATE_THRESHOLD=0.45
+    - GLINER_MONEY_THRESHOLD=0.55
     depends_on:
       redis:
         condition: service_healthy
     networks:
     - backend
     - datastore
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
   metadata-worker:
     build:
       context: ../../

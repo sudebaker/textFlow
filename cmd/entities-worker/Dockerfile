@@ -15,11 +15,9 @@ FROM python:3.11-slim
 LABEL maintainer="ia-text-orchestrator"
 LABEL description="GLiNER Entity Extraction Worker for NER tasks"
 
-# ⭐ Strict Air-Gapped Mode - Set BEFORE any Python imports
-ENV HF_HUB_OFFLINE=1
+# Environment setup
 ENV HF_HOME=/home/app/.cache/huggingface
-ENV TRANSFORMERS_OFFLINE=1
-ENV HF_DATASETS_OFFLINE=1
+ENV PYTHONUNBUFFERED=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,13 +28,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd --create-home --shell /bin/bash app \
     && mkdir -p /models /home/app/.cache/huggingface
 
-# Copy HuggingFace cache with proper structure (CRITICAL for offline mode)
-# This cache contains models with the structure transformers expects
-# COPY --chown=app:app models/huggingface_cache/hub /home/app/.cache/huggingface/hub
-
-# Copy GLiNER model files
-# COPY --chown=app:app models/gliner_multitask-v0.5 /models/gliner_multitask-v0.5
-
 # Copy requirements
 COPY cmd/entities-worker/requirements.txt .
 
@@ -44,26 +35,40 @@ COPY cmd/entities-worker/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.txt
 
+# Copy DeBERTa download script
+COPY cmd/entities-worker/download_deberta_backbone.py .
+
+# Download DeBERTa backbone (needed for GLiNER offline mode)
+# This runs as root to ensure proper cache creation
+# The script will:
+# 1. Download DeBERTa to /home/app/.cache/huggingface (HF cache format)
+# 2. Copy DeBERTa files to /models/deberta-v3-large (flat path for GLiNER)
+RUN python download_deberta_backbone.py
+
+# Copy GLiNER model files
+COPY --chown=app:app models/gliner_model/ /models/gliner_model
+
 # Copy shared packages (events_python)
 COPY pkg/ ./pkg/
 
-# Copy worker code and app structure
+# Copy worker code, sliding window, and app structure
 COPY cmd/entities-worker/worker.py .
+COPY cmd/entities-worker/sliding_window.py .
 COPY cmd/entities-worker/entrypoint.sh /entrypoint.sh
 COPY cmd/entities-worker/app ./app
 
 # Fix permissions
 RUN chown -R app:app /models /app /home/app && chmod +x /entrypoint.sh
 
+# ⚠️  IMPORTANT: Do NOT set HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1 here
+# These break GLiNER internally (it calls model_info() which fails without Hub access)
+# Instead, we use local_files_only=True at load time + correct paths in config
+
 # Switch to app user
 USER app
 
 # Expose metrics port
 EXPOSE 8002
-
-# Environment variables (explicitly set for clarity)
-ENV PYTHONUNBUFFERED=1
-ENV GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
 
 # Run entrypoint script
 CMD ["/entrypoint.sh"]

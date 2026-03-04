@@ -257,8 +257,8 @@ class ExtractionWorker:
                     logger.info(f"Adjusted filename to: {filename}")
 
             response = requests.post(
-                f"{DOCLING_URL}/convert",
-                files={"file": (filename, document_bytes)},
+                f"{DOCLING_URL}/v1/convert/file",
+                files={"files": (filename, document_bytes)},
                 timeout=300,
             )
             logger.info(f"Docling response status: {response.status_code}")
@@ -267,16 +267,18 @@ class ExtractionWorker:
             result = response.json()
             # Docling returns markdown text in "document.export_to_markdown()"
             # The response has "document" key with the DoclingDocument
-            text = result.get("markdown", "") or result.get("text", "")
+            text = result.get("document", {}).get("md_content", "") or result.get("document", {}).get("text_content", "")
 
             metadata = {
-                "docling_pages": result.get("num_pages", 0),
+                "docling_pages": result.get("document", {}).get("pages", []) and len(result.get("document", {}).get("pages", [])),
                 "extraction_method": "base64",
             }
 
             return {"text": text, "metadata": metadata}
 
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Failed to extract text from base64: {e}")
             raise
 
@@ -289,8 +291,8 @@ class ExtractionWorker:
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
 
             response = requests.post(
-                f"{DOCLING_URL}/convert",
-                files={"file": (filename, document_bytes)},
+                f"{DOCLING_URL}/v1/convert/file",
+                files={"files": (filename, document_bytes)},
                 timeout=300,
             )
             logger.info(f"Docling response status: {response.status_code}")
@@ -298,16 +300,18 @@ class ExtractionWorker:
 
             result = response.json()
             # Docling returns markdown text
-            text = result.get("markdown", "") or result.get("text", "")
+            text = result.get("document", {}).get("md_content", "") or result.get("document", {}).get("text_content", "")
 
             metadata = {
-                "docling_pages": result.get("num_pages", 0),
+                "docling_pages": result.get("document", {}).get("pages", []) and len(result.get("document", {}).get("pages", [])),
                 "extraction_method": "file",
             }
 
             return {"text": text, "metadata": metadata}
 
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Failed to extract text from file: {e}")
             raise
 
@@ -340,24 +344,26 @@ class ExtractionWorker:
                     filename = "document.pdf"
 
             response = requests.post(
-                f"{DOCLING_URL}/convert",
-                files={"file": (filename, document_bytes)},
+                f"{DOCLING_URL}/v1/convert/file",
+                files={"files": (filename, document_bytes)},
                 timeout=300,
             )
             response.raise_for_status()
 
             result = response.json()
             # Docling returns markdown text
-            text = result.get("markdown", "") or result.get("text", "")
+            text = result.get("document", {}).get("md_content", "") or result.get("document", {}).get("text_content", "")
 
             metadata = {
-                "docling_pages": result.get("num_pages", 0),
+                "docling_pages": result.get("document", {}).get("pages", []) and len(result.get("document", {}).get("pages", [])),
                 "extraction_method": "url",
             }
 
             return {"text": text, "metadata": metadata}
 
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Failed to extract text from URL: {e}")
             raise
 

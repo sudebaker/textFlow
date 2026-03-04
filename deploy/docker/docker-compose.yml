@@ -22,6 +22,7 @@ services:
           memory: 1G
         reservations:
           memory: 512M
+
   redis:
     image: redis:7-alpine
     container_name: ia-text-redis
@@ -45,6 +46,7 @@ services:
           memory: 1536M
         reservations:
           memory: 1G
+
   orchestrator:
     build:
       context: ../../
@@ -79,8 +81,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      docling:
-        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -93,6 +93,7 @@ services:
     volumes:
     - uploads-data:/app/data/uploads
     - results-data:/app/data/results
+
   resource-manager:
     build:
       context: ../../
@@ -109,13 +110,12 @@ services:
         limits:
           cpus: '0.5'
           memory: 128M
+
   extraction-worker:
     build:
       context: ../../
       dockerfile: cmd/extraction-worker/Dockerfile
     container_name: ia-text-extraction-worker
-    volumes:
-    - ../../data:/app/data:ro
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
@@ -123,6 +123,7 @@ services:
     - QUEUE_NAME=extract_text
     - PREFETCH_COUNT=3
     - LOG_LEVEL=info
+    - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
     depends_on:
       redis:
         condition: service_healthy
@@ -139,6 +140,10 @@ services:
         limits:
           cpus: '1'
           memory: 1G
+    volumes:
+    - uploads-data:/app/data/uploads:ro
+    - /tmp/tiktoken_cache:/tmp/tiktoken_cache
+
   embeddings-worker:
     build:
       context: ../../
@@ -173,6 +178,7 @@ services:
         limits:
           cpus: '2'
           memory: 2G
+
   entities-worker:
     build:
       context: ../../
@@ -205,6 +211,8 @@ services:
     networks:
     - backend
     - datastore
+    restart: unless-stopped
+
   metadata-worker:
     build:
       context: ../../
@@ -231,6 +239,7 @@ services:
         limits:
           cpus: '1'
           memory: 512M
+
   completion-worker:
     build:
       context: ../../
@@ -249,35 +258,8 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 256M
-  prometheus:
-    image: prom/prometheus:v2.48.0
-    container_name: ia-text-prometheus
-    ports:
-    - 127.0.0.1:9091:9090
-    volumes:
-    - ../prometheus:/etc/prometheus
-    - prometheus-data:/prometheus
-    command:
-    - --config.file=/etc/prometheus/prometheus.yml
-    - --storage.tsdb.path=/prometheus
-    - --storage.tsdb.retention.time=15d
-    networks:
-    - frontend
-    restart: unless-stopped
-  grafana:
-    image: grafana/grafana:10.2.3
-    container_name: ia-text-grafana
-    ports:
-    - 3000:3000
-    environment:
-    - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-    volumes:
-    - grafana-data:/var/lib/grafana
-    networks:
-    - frontend
-    restart: unless-stopped
+          memory: 512M
+
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: ia-text-docling
@@ -287,6 +269,12 @@ services:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-auto}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
     - LOG_LEVEL=info
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 12G
     healthcheck:
       test:
       - CMD
@@ -299,6 +287,7 @@ services:
       start_period: 30s
     networks:
     - backend
+
 networks:
   frontend:
     driver: bridge
@@ -308,14 +297,11 @@ networks:
   datastore:
     driver: bridge
     internal: true
+
 volumes:
   redis-data:
     driver: local
   rabbitmq-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
     driver: local
   data:
     driver: local

@@ -30,3 +30,6 @@ go.sum
 .bin/
 deploy/
 data/
+
+# Git worktrees
+.worktrees/

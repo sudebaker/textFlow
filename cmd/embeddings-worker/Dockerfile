@@ -1,11 +1,13 @@
 # Multi-stage build for Embeddings Worker - GPU Enabled
 # ⭐ Auto-detects CUDA and installs appropriate PyTorch version
-FROM python:3.11-slim as base
+FROM python:3.11.12-slim-bookworm as base
 
 # ⭐ AIR-GAPPED MODE: Disable HuggingFace Hub online checks
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HOME=/models
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # ⭐ CUDA CONFIGURATION (auto-detected at runtime)
 ENV CUDA_VISIBLE_DEVICES=0
@@ -51,7 +53,6 @@ RUN mkdir -p /models && chown -R app:app /app /models
 USER app
 
 # Environment variables
-ENV PYTHONUNBUFFERED=1
 ENV MODEL_PATH=/models/bge-m3
 ENV EMBEDDING_BATCH_SIZE_GPU=32
 ENV EMBEDDING_BATCH_SIZE_CPU=2

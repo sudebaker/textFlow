@@ -50,11 +50,11 @@ class Settings(BaseSettings):
     )
 
     entity_threshold_date: float = Field(
-        default=0.60, description="Confidence threshold for DATE entities"
+        default=0.45, description="Confidence threshold for DATE entities"
     )
 
     entity_threshold_money: float = Field(
-        default=0.65, description="Confidence threshold for MONEY entities"
+        default=0.55, description="Confidence threshold for MONEY entities"
     )
 
     # Deduplication Configuration
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
 
     # Model Loading Configuration
     allow_remote_download: bool = Field(
-        default=True,
+        default=False,
         description="Allow downloading model from HuggingFace if not found locally",
     )
 

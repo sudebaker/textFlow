@@ -1,12 +1,14 @@
 module ia-text-orchestrator
 
-go 1.25.5
+go 1.22.5
 
 require (
 	github.com/alicebob/miniredis/v2 v2.36.1
 	github.com/caarlos0/env/v11 v11.2.2
 	github.com/gin-gonic/gin v1.10.0
+	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.19.0
+	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/redis/go-redis/v9 v9.17.3
 	github.com/rs/zerolog v1.33.0
 	github.com/streadway/amqp v1.1.0

@@ -39,6 +39,9 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
         credentials=credentials,
         heartbeat=600,
         blocked_connection_timeout=300,
+        frame_max=131072,  # Increase frame size for large messages
+        connection_attempts=3,
+        retry_delay=2,
     )
 
 

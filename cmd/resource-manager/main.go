@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/signal"
@@ -37,8 +38,12 @@ func main() {
 	logger.Info().Msgf("Server starting on %s", addr)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -52,7 +57,13 @@ func main() {
 	<-quit
 
 	logger.Info().Msg("Shutting down server...")
-	srv.Close()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error().Err(err).Msg("failed to shutdown server gracefully")
+		srv.Close()
+	}
 	logger.Info().Msg("Server stopped")
 }
 

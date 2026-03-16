@@ -12,12 +12,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
@@ -51,14 +53,13 @@ func main() {
 		logger.Fatal().Msgf("Failed to load configuration: %v", err)
 	}
 
+	// Re-initialize logger with configured log level
+	logger = logging.Init(cfg.LogLevel)
+
 	logger.Info().Msg("Starting IA Text Orchestrator")
 
 	// Initialize metrics
 	metrics.Init()
-
-	// Start metrics collector for runtime stats
-	metrics.StartMetricsCollector()
-	logger.Info().Msg("Started runtime metrics collector")
 
 	mqBroker, err = broker.New(cfg)
 	if err != nil {
@@ -76,7 +77,7 @@ func main() {
 	eventBus = events.NewEventBus(redis.GetClient())
 
 	// Initialize comprehensive health checker
-	healthChecker = health.NewHealthChecker(redis, mqBroker)
+	healthChecker = health.NewHealthChecker(redis, mqBroker, cfg)
 	logger.Info().Msg("Health checker initialized")
 
 	r := setupRouter()
@@ -97,6 +98,10 @@ func main() {
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start metrics collector for runtime stats with context-aware shutdown
+	metrics.StartMetricsCollector(ctx)
+	logger.Info().Msg("Started runtime metrics collector")
 
 	// Use errgroup to manage goroutines
 	g, gCtx := errgroup.WithContext(ctx)
@@ -178,6 +183,7 @@ func setupRouter() *gin.Engine {
 
 	v1 := r.Group("/v1")
 	{
+		v1.POST("/documents/process", createJobHandler)
 		v1.POST("/documents/upload", uploadHandler)
 		v1.GET("/documents/:id", getJobHandler)
 		v1.GET("/documents/:id/download", downloadHandler)
@@ -198,10 +204,20 @@ func ginLogger() gin.HandlerFunc {
 		latency := time.Since(start)
 		status := c.Writer.Status()
 
+		// Scrub sensitive data from query string - only log param keys, not values
+		var queryKeys []string
+		if query != "" {
+			u, _ := url.ParseQuery(query)
+			for k := range u {
+				queryKeys = append(queryKeys, k)
+			}
+			sort.Strings(queryKeys)
+		}
+
 		logger.Info().
 			Str("method", c.Request.Method).
 			Str("path", path).
-			Str("query", query).
+			Strs("query_params", queryKeys).
 			Int("status", status).
 			Dur("latency", latency).
 			Str("ip", c.ClientIP()).
@@ -239,8 +255,11 @@ func healthHandler(c *gin.Context) {
 	healthStatus := healthChecker.Check(ctx)
 
 	// Determine HTTP status code
+	// Note: "degraded" status means the service is still operational but at reduced capacity,
+	// so it should return 200 OK to avoid triggering load balancer failover.
+	// Only return 503 Service Unavailable if the service is completely down.
 	httpStatus := http.StatusOK
-	if healthStatus.Status == "degraded" {
+	if healthStatus.Status == "down" {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
@@ -268,7 +287,7 @@ func createJobHandler(c *gin.Context) {
 	}
 
 	// Validate input to prevent DoS and SSRF attacks
-	if err := validateDocumentInput(&req); err != nil {
+	if err := validateDocumentInput(&req, cfg); err != nil {
 		logger.Warn().Err(err).Msg("Document input validation failed")
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error:  "invalid_input",
@@ -343,6 +362,15 @@ func createJobHandler(c *gin.Context) {
 func getJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
+	// Validate jobID format
+	if !validateJobID(jobID) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_job_id",
+			Detail: "job ID format is invalid",
+		})
+		return
+	}
+
 	// Create context with timeout for database operations
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -356,13 +384,10 @@ func getJobHandler(c *gin.Context) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Job status: '%s' (constant: '%s', equal: %v)\n", status, models.StatusCompleted, status == models.StatusCompleted)
-
 	// Get aggregated results (if completed)
 	var results *models.JobResults
 	var resultsErr error
 	if status == models.StatusCompleted {
-		fmt.Fprintf(os.Stderr, "DEBUG: Status is completed, fetching results for job: %s\n", jobID)
 		results, resultsErr = redis.GetJobResults(ctx, jobID)
 		if resultsErr != nil {
 			logger.Error().Err(resultsErr).Msgf("Failed to get job results: %s", jobID)
@@ -390,6 +415,15 @@ func getJobHandler(c *gin.Context) {
 
 func deleteJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
+
+	// Validate jobID format
+	if !validateJobID(jobID) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_job_id",
+			Detail: "job ID format is invalid",
+		})
+		return
+	}
 
 	// Create context with timeout for deletion operations
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -421,11 +455,33 @@ func deleteJobHandler(c *gin.Context) {
 }
 
 func generateJobID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	return uuid.New().String()
+}
+
+// validateJobID validates that a jobID parameter matches expected format (UUID v4)
+// Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (alphanumeric + hyphens, 36 chars)
+func validateJobID(jobID string) bool {
+	if len(jobID) != 36 {
+		return false
+	}
+	// UUID v4 format check: 8-4-4-4-12 hex characters separated by hyphens
+	// This is more lenient than a full UUID regex but sufficient for security
+	for i, ch := range jobID {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if ch != '-' {
+				return false
+			}
+		} else {
+			if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // validateDocumentInput validates the document input to prevent DoS and SSRF attacks
-func validateDocumentInput(req *models.CreateJobRequest) error {
+func validateDocumentInput(req *models.CreateJobRequest, cfg *config.Config) error {
 	const (
 		MaxDocumentSize = 10 * 1024 * 1024 // 10MB
 		MaxURLLength    = 2048
@@ -469,9 +525,11 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 			return fmt.Errorf("URL must have a valid hostname")
 		}
 
-		// Block localhost and loopback addresses
+		// Block localhost and loopback addresses unless explicitly allowed
 		if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
-			return fmt.Errorf("localhost URLs are not allowed")
+			if !cfg.AllowLocalURLs {
+				return fmt.Errorf("localhost URLs are not allowed")
+			}
 		}
 
 		// Block cloud metadata endpoints (SSRF prevention)
@@ -489,24 +547,15 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 
 		// Check if hostname is an IP address
 		if ip := net.ParseIP(hostname); ip != nil {
-			// Block loopback addresses
+			// Block loopback addresses unless explicitly allowed
 			if ip.IsLoopback() {
-				return fmt.Errorf("loopback IP addresses are not allowed: %s", ip.String())
-			}
-			// Block private IP ranges (RFC 1918), but allow Docker network IPs
-			if ip.IsPrivate() {
-				// Check if IP is in Docker's network range (172.16.0.0 - 172.31.255.255)
-				ip4 := ip.To4()
-				if ip4 != nil {
-					// Docker range: 172.16.0.0 - 172.31.255.255
-					if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
-						// Allow Docker network IPs
-					} else {
-						return fmt.Errorf("private IP addresses are not allowed: %s", ip.String())
-					}
-				} else {
-					return fmt.Errorf("private IP addresses are not allowed: %s", ip.String())
+				if !cfg.AllowLocalURLs {
+					return fmt.Errorf("loopback IP addresses are not allowed: %s", ip.String())
 				}
+			}
+			// Block private IP ranges (RFC 1918)
+			if ip.IsPrivate() {
+				return fmt.Errorf("private IP addresses are not allowed: %s", ip.String())
 			}
 			// Block link-local addresses
 			if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
@@ -516,25 +565,27 @@ func validateDocumentInput(req *models.CreateJobRequest) error {
 
 		// Additional check: resolve hostname to ensure it doesn't resolve to private IPs
 		// This prevents DNS rebinding attacks
-		ips, err := net.LookupIP(hostname)
+		// Use context-aware DNS resolution with timeout to prevent indefinite blocking
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resolver := net.Resolver{}
+		ips, err := resolver.LookupIPAddr(ctx, hostname)
 		if err != nil {
 			return fmt.Errorf("failed to resolve hostname: %w", err)
 		}
 
 		for _, ip := range ips {
-			if ip.IsLoopback() {
-				return fmt.Errorf("hostname resolves to loopback IP: %s -> %s", hostname, ip.String())
-			}
-			if ip.IsPrivate() {
-				// Check if in Docker network range
-				ip4 := ip.To4()
-				isDockerIP := ip4 != nil && ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31
-				if !isDockerIP {
-					return fmt.Errorf("hostname resolves to private IP: %s -> %s", hostname, ip.String())
+			if ip.IP.IsLoopback() {
+				if !cfg.AllowLocalURLs {
+					return fmt.Errorf("hostname resolves to loopback IP: %s -> %s", hostname, ip.IP.String())
 				}
 			}
-			if ip.IsLinkLocalUnicast() {
-				return fmt.Errorf("hostname resolves to link-local IP: %s -> %s", hostname, ip.String())
+			if ip.IP.IsPrivate() {
+				return fmt.Errorf("hostname resolves to private IP: %s -> %s", hostname, ip.IP.String())
+			}
+			if ip.IP.IsLinkLocalUnicast() {
+				return fmt.Errorf("hostname resolves to link-local IP: %s -> %s", hostname, ip.IP.String())
 			}
 		}
 	}
@@ -561,10 +612,73 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate file extension
+	allowedExtensions := map[string]bool{
+		".pdf":  true,
+		".txt":  true,
+		".doc":  true,
+		".docx": true,
+		".ppt":  true,
+		".pptx": true,
+		".xls":  true,
+		".xlsx": true,
+		".csv":  true,
+		".json": true,
+	}
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == "" || !allowedExtensions[ext] {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_file_type",
+			Detail: "file type not allowed. Supported types: pdf, txt, doc, docx, ppt, pptx, xls, xlsx, csv, json",
+		})
+		return
+	}
+
 	jobID := generateJobID()
 	filename := filepath.Base(header.Filename)
+
+	// Verify filename doesn't contain directory traversal patterns after Base()
+	if filename != filepath.Base(filename) || strings.Contains(filename, "..") {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_filename",
+			Detail: "filename contains invalid characters",
+		})
+		return
+	}
+
 	safeFilename := fmt.Sprintf("%s_%s", jobID, filename)
 	filePath := filepath.Join(cfg.UploadPath, safeFilename)
+
+	// Final security check: ensure resolved path is still within upload directory
+	absUploadPath, err := filepath.Abs(cfg.UploadPath)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to resolve upload directory")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to save file",
+		})
+		return
+	}
+
+	absFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to resolve file path")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to save file",
+		})
+		return
+	}
+
+	if !strings.HasPrefix(absFilePath, absUploadPath+string(os.PathSeparator)) && absFilePath != absUploadPath {
+		logger.Error().Msgf("path traversal attempt detected: %s not in %s", absFilePath, absUploadPath)
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_path",
+			Detail: "invalid file path",
+		})
+		return
+	}
 
 	if err := os.MkdirAll(cfg.UploadPath, 0755); err != nil {
 		logger.Error().Err(err).Msg("failed to create upload directory")
@@ -653,6 +767,15 @@ func uploadHandler(c *gin.Context) {
 
 func downloadHandler(c *gin.Context) {
 	jobID := c.Param("id")
+
+	// Validate jobID format
+	if !validateJobID(jobID) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_job_id",
+			Detail: "job ID format is invalid",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()

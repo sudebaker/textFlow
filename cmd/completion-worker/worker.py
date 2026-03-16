@@ -46,7 +46,9 @@ class CompletionWorker:
             logger.error(f"Failed to save results to file: {e}")
             return False
 
-    def send_webhook(self, job_id: str, status: str, error: Optional[str] = None) -> bool:
+    def send_webhook(
+        self, job_id: str, status: str, error: Optional[str] = None
+    ) -> bool:
         webhook_url = WEBHOOK_URL
         if not webhook_url:
             return False
@@ -64,7 +66,7 @@ class CompletionWorker:
                 webhook_url,
                 json=payload,
                 timeout=10,
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
             )
             response.raise_for_status()
             logger.info(f"Webhook sent successfully for job {job_id}")
@@ -85,22 +87,23 @@ class CompletionWorker:
         # Group by (label, exact text) - no fuzzy matching
         seen = {}
         result = []
+        index_map = {}  # Maps key to index in result list
 
         for entity in entities:
             key = f"{entity.get('label', '')}:{entity.get('text', '')}"
 
             if key not in seen:
                 # New unique entity
+                index_map[key] = len(result)
                 seen[key] = entity
                 result.append(entity)
             else:
                 # Exact match found - keep highest confidence
                 existing = seen[key]
                 if entity.get("confidence", 0) > existing.get("confidence", 0):
-                    # Update in dictionary
+                    # Update in dictionary and result list
+                    idx = index_map[key]
                     seen[key] = entity
-                    # Update in result list
-                    idx = result.index(existing)
                     result[idx] = entity
 
         logger.info(
@@ -247,13 +250,31 @@ class CompletionWorker:
             logger.error(f"Error handling event: {e}")
 
     def start(self):
-        pubsub = self.redis_client.pubsub()
-        pubsub.subscribe("job:events")
+        """Start the worker and listen for job events with reconnection logic."""
+        backoff_time = 1
+        max_backoff_time = 60
 
-        logger.info("Completion worker started, listening for job events...")
+        while True:
+            try:
+                pubsub = self.redis_client.pubsub()
+                pubsub.subscribe("job:events")
 
-        for message in pubsub.listen():
-            self.handle_event(message)
+                logger.info("Completion worker started, listening for job events...")
+
+                for message in pubsub.listen():
+                    self.handle_event(message)
+
+            except Exception as e:
+                logger.error(f"Error in completion worker pubsub: {e}", exc_info=True)
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
+
+                # Exponential backoff with max cap
+                logger.info(f"Reconnecting in {backoff_time} seconds...")
+                time.sleep(backoff_time)
+                backoff_time = min(backoff_time * 2, max_backoff_time)
 
 
 def main():

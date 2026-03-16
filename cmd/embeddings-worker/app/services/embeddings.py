@@ -153,6 +153,17 @@ class EmbeddingService:
                         str(local_path), device=self.device
                     )
                 else:
+                    # Check if remote downloads are allowed
+                    allow_remote = (
+                        os.getenv("ALLOW_REMOTE_DOWNLOAD", "false").lower() == "true"
+                    )
+                    if not allow_remote:
+                        raise RuntimeError(
+                            f"Local model not found at {model_path} and "
+                            f"ALLOW_REMOTE_DOWNLOAD is disabled. "
+                            f"Cannot download model from HuggingFace."
+                        )
+
                     logger.info(
                         f"Local model not found at {model_path}, downloading from HuggingFace..."
                     )

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	amqp "github.com/streadway/amqp"
+	"ia-text-orchestrator/internal/config"
+	"ia-text-orchestrator/pkg/logging"
 )
 
 func TestRabbitMQBroker_Reconnect(t *testing.T) {
@@ -83,8 +85,13 @@ func TestRabbitMQBroker_CloseStopMonitoring(t *testing.T) {
 
 func TestRabbitMQBroker_PublishReconnectOnNilChannel(t *testing.T) {
 	broker := &RabbitMQBroker{
-		channel: nil,
-		mu:      sync.RWMutex{},
+		channel:  nil,
+		mu:       sync.RWMutex{},
+		stopChan: make(chan struct{}),
+		config: &config.Config{
+			RabbitMQURL: "amqp://guest:guest@localhost:5672/",
+		},
+		logger: logging.GetLogger(),
 	}
 
 	ctx := context.Background()
@@ -97,8 +104,13 @@ func TestRabbitMQBroker_PublishReconnectOnNilChannel(t *testing.T) {
 
 func TestRabbitMQBroker_GetQueueInfoReconnectOnNilChannel(t *testing.T) {
 	broker := &RabbitMQBroker{
-		channel: nil,
-		mu:      sync.RWMutex{},
+		channel:  nil,
+		mu:       sync.RWMutex{},
+		stopChan: make(chan struct{}),
+		config: &config.Config{
+			RabbitMQURL: "amqp://guest:guest@localhost:5672/",
+		},
+		logger: logging.GetLogger(),
 	}
 
 	_, err := broker.GetQueueInfo("test_queue")
@@ -110,8 +122,13 @@ func TestRabbitMQBroker_GetQueueInfoReconnectOnNilChannel(t *testing.T) {
 
 func TestRabbitMQBroker_RedeclareQueuesFailure(t *testing.T) {
 	broker := &RabbitMQBroker{
-		channel: nil,
-		mu:      sync.RWMutex{},
+		channel:  nil,
+		mu:       sync.RWMutex{},
+		stopChan: make(chan struct{}),
+		config: &config.Config{
+			RabbitMQURL: "amqp://guest:guest@localhost:5672/",
+		},
+		logger: logging.GetLogger(),
 	}
 
 	broker.mu.Lock()
@@ -125,20 +142,26 @@ func TestRabbitMQBroker_RedeclareQueuesFailure(t *testing.T) {
 
 func TestRabbitMQBroker_ReconnectMutex(t *testing.T) {
 	broker := &RabbitMQBroker{
-		isReconnecting: false,
-		reconnectMutex: sync.Mutex{},
+		stopChan: make(chan struct{}),
 	}
 
 	var wg sync.WaitGroup
 	iterations := 10
+	successCount := 0
+	var mu sync.Mutex
 
 	for i := 0; i < iterations; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			broker.reconnectMutex.Lock()
-			time.Sleep(10 * time.Millisecond)
-			broker.reconnectMutex.Unlock()
+			// Test that CompareAndSwap works correctly for lock-free synchronization
+			if broker.isReconnecting.CompareAndSwap(false, true) {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+				time.Sleep(10 * time.Millisecond)
+				broker.isReconnecting.Store(false)
+			}
 		}()
 	}
 

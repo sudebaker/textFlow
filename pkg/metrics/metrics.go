@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"runtime"
 	"time"
 
@@ -220,13 +221,19 @@ func Init() {
 }
 
 // StartMetricsCollector starts a goroutine that periodically collects runtime metrics
-func StartMetricsCollector() {
+// and stops when the provided context is cancelled
+func StartMetricsCollector(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			collectRuntimeMetrics()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				collectRuntimeMetrics()
+			}
 		}
 	}()
 }

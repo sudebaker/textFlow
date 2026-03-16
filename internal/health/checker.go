@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ia-text-orchestrator/internal/broker"
+	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/internal/middleware"
 	redisclient "ia-text-orchestrator/internal/redis"
 )
@@ -33,14 +34,16 @@ type HealthStatus struct {
 type HealthChecker struct {
 	redis     *redisclient.RedisClient
 	broker    *broker.RabbitMQBroker
+	config    *config.Config
 	startTime time.Time
 }
 
 // NewHealthChecker creates a new health checker
-func NewHealthChecker(redis *redisclient.RedisClient, broker *broker.RabbitMQBroker) *HealthChecker {
+func NewHealthChecker(redis *redisclient.RedisClient, broker *broker.RabbitMQBroker, cfg *config.Config) *HealthChecker {
 	return &HealthChecker{
 		redis:     redis,
 		broker:    broker,
+		config:    cfg,
 		startTime: time.Now(),
 	}
 }
@@ -124,8 +127,13 @@ func (hc *HealthChecker) checkRabbitMQ(ctx context.Context) CheckResult {
 		}
 	}
 
-	// Get queue info for all queues
-	queues := []string{"embeddings", "entities", "metadata", "extract_text"}
+	// Get queue info for all queues from config
+	queues := []string{
+		hc.config.EmbeddingsQueue,
+		hc.config.EntitiesQueue,
+		hc.config.MetadataQueue,
+		hc.config.ExtractQueue,
+	}
 	queueDetails := make(map[string]interface{})
 
 	for _, queue := range queues {

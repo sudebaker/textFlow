@@ -10,10 +10,15 @@ Consumes messages from RabbitMQ and generates embeddings for each chunk using BA
 """
 
 import os
+import sys
+
+# CRITICAL: Set offline mode BEFORE importing any HuggingFace or transformers packages
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 import json
 import logging
 import signal
-import sys
 import time
 from contextlib import contextmanager
 from typing import Dict, Optional, List, Any
@@ -26,11 +31,9 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
 from app.services.embeddings import EmbeddingService
 
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -177,28 +180,6 @@ class EmbeddingsWorker:
                 )
                 self.event_bus.publish_job_failed(job_id, str(e))
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-
-
-def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-
-    credentials = pika.PlainCredentials(
-        parsed.username or "guest", parsed.password or "guest"
-    )
-
-    return pika.ConnectionParameters(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 5672,
-        virtual_host=parsed.path[1:] if parsed.path else "/",
-        credentials=credentials,
-        heartbeat=1200,  # 20 minutes - sufficient for long-running jobs
-        blocked_connection_timeout=300,
-        frame_max=131072,  # Increase frame size for large embeddings
-        connection_attempts=3,
-        retry_delay=2,
-    )
 
 
 @contextmanager

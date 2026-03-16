@@ -124,8 +124,10 @@ func TestRedisClient_SetAndGetJobResults(t *testing.T) {
 	ctx := context.Background()
 	jobID := "test-job-123"
 	results := &models.JobResults{
-		Text:       "Sample text",
-		Embeddings: []float32{0.1, 0.2, 0.3},
+		Text: "Sample text",
+		Embeddings: map[string]interface{}{
+			"chunk_0": []float32{0.1, 0.2, 0.3},
+		},
 	}
 
 	err := client.SetJobResults(ctx, jobID, results)

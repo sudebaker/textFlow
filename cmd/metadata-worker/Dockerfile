@@ -1,6 +1,9 @@
-FROM python:3.11-slim
+FROM python:3.11.12-slim-bookworm
 
 WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Copy requirements and install dependencies
 COPY cmd/metadata-worker/requirements.txt .

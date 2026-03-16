@@ -15,10 +15,12 @@ import langdetect
 import textstat
 from typing import Dict, Optional, List, Any
 from urllib.parse import urlparse
+from pathlib import Path
 import tiktoken
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -40,21 +42,6 @@ try:
 except Exception:
     logger.warning("tiktoken online failed, using simple tokenization")
     tokenizer = None
-
-
-def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
-    parsed = urlparse(url)
-    credentials = pika.PlainCredentials(
-        parsed.username or "guest", parsed.password or "guest"
-    )
-    return pika.ConnectionParameters(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 5672,
-        virtual_host=parsed.path[1:] if parsed.path else "/",
-        credentials=credentials,
-        heartbeat=600,
-        blocked_connection_timeout=300,
-    )
 
 
 def compute_file_hash(file_bytes: bytes) -> str:
@@ -267,10 +254,13 @@ class ExtractionWorker:
             result = response.json()
             # Docling returns markdown text in "document.export_to_markdown()"
             # The response has "document" key with the DoclingDocument
-            text = result.get("document", {}).get("md_content", "") or result.get("document", {}).get("text_content", "")
+            text = result.get("document", {}).get("md_content", "") or result.get(
+                "document", {}
+            ).get("text_content", "")
 
             metadata = {
-                "docling_pages": result.get("document", {}).get("pages", []) and len(result.get("document", {}).get("pages", [])),
+                "docling_pages": result.get("document", {}).get("pages", [])
+                and len(result.get("document", {}).get("pages", [])),
                 "extraction_method": "base64",
             }
 
@@ -278,6 +268,7 @@ class ExtractionWorker:
 
         except Exception as e:
             import traceback
+
             logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Failed to extract text from base64: {e}")
             raise
@@ -300,10 +291,13 @@ class ExtractionWorker:
 
             result = response.json()
             # Docling returns markdown text
-            text = result.get("document", {}).get("md_content", "") or result.get("document", {}).get("text_content", "")
+            text = result.get("document", {}).get("md_content", "") or result.get(
+                "document", {}
+            ).get("text_content", "")
 
             metadata = {
-                "docling_pages": result.get("document", {}).get("pages", []) and len(result.get("document", {}).get("pages", [])),
+                "docling_pages": result.get("document", {}).get("pages", [])
+                and len(result.get("document", {}).get("pages", [])),
                 "extraction_method": "file",
             }
 
@@ -311,29 +305,38 @@ class ExtractionWorker:
 
         except Exception as e:
             import traceback
+
             logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Failed to extract text from file: {e}")
             raise
 
     def extract_text_from_url(self, document_url: str) -> Dict[str, Any]:
         try:
-            if document_url.startswith(
-                "http://docling:"
-            ) or document_url.startswith("http://docling/"):
+            if document_url.startswith("http://docling:") or document_url.startswith(
+                "http://docling/"
+            ):
                 if "://docling:" in document_url:
                     url_path = document_url.split("/data/uploads/")[-1]
-                    local_path = f"/app/data/uploads/{url_path}"
+                    local_path = Path("/app/data/uploads") / url_path
                 elif "/app/" in document_url:
                     url_path = document_url.split("/app/")[-1]
-                    local_path = f"/app/{url_path}"
+                    local_path = Path("/app") / url_path
                 else:
                     url_path = document_url.split("/data/uploads/")[-1]
-                    local_path = f"/app/data/uploads/{url_path}"
+                    local_path = Path("/app/data/uploads") / url_path
 
-                with open(local_path, "rb") as f:
+                # Validate that resolved path stays within allowed directory
+                try:
+                    resolved_path = local_path.resolve()
+                    allowed_base = Path("/app").resolve()
+                    resolved_path.relative_to(allowed_base)
+                except ValueError:
+                    raise ValueError(f"Path traversal attempt detected: {local_path}")
+
+                with open(resolved_path, "rb") as f:
                     document_bytes = f.read()
 
-                filename = url_path.split("/")[-1]
+                filename = resolved_path.name
             else:
                 response = requests.get(document_url, timeout=30)
                 response.raise_for_status()
@@ -352,10 +355,13 @@ class ExtractionWorker:
 
             result = response.json()
             # Docling returns markdown text
-            text = result.get("document", {}).get("md_content", "") or result.get("document", {}).get("text_content", "")
+            text = result.get("document", {}).get("md_content", "") or result.get(
+                "document", {}
+            ).get("text_content", "")
 
             metadata = {
-                "docling_pages": result.get("document", {}).get("pages", []) and len(result.get("document", {}).get("pages", [])),
+                "docling_pages": result.get("document", {}).get("pages", [])
+                and len(result.get("document", {}).get("pages", [])),
                 "extraction_method": "url",
             }
 
@@ -363,6 +369,7 @@ class ExtractionWorker:
 
         except Exception as e:
             import traceback
+
             logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Failed to extract text from URL: {e}")
             raise
@@ -383,8 +390,7 @@ class ExtractionWorker:
 
             if message.get("document_path"):
                 result = self.extract_text_from_file(
-                    message["document_path"],
-                    os.path.basename(message["document_path"])
+                    message["document_path"], os.path.basename(message["document_path"])
                 )
                 text = result["text"]
             elif message.get("document_base64"):
@@ -402,11 +408,16 @@ class ExtractionWorker:
             else:
                 temp_fd, temp_file_path = tempfile.mkstemp(suffix=".pdf")
                 try:
-                    os.write(temp_fd, base64.b64decode(message.get("document_base64", "")))
+                    os.write(
+                        temp_fd, base64.b64decode(message.get("document_base64", ""))
+                    )
                 finally:
                     os.close(temp_fd)
 
-            document_metadata = extract_pdf_metadata(temp_file_path, os.path.basename(message.get("document_path", "document.pdf")))
+            document_metadata = extract_pdf_metadata(
+                temp_file_path,
+                os.path.basename(message.get("document_path", "document.pdf")),
+            )
 
             text_metadata = analyze_text(text)
 

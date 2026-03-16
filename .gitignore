@@ -24,7 +24,6 @@ coverage/
 __pycache__/
 **/*.pyc
 .go/pkg/mod/
-go.sum
 
 # Otros
 .bin/

@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from app.config.settings import Settings as AppSettings
+
 
 SERVICE_NAME = "gliner-service"
 SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
@@ -27,25 +29,26 @@ CURRENT_VERSION = SERVICE_VERSION
 
 
 class Settings:
+    """Wrapper around AppSettings for compatibility."""
+
     def __init__(self) -> None:
+        self.app_settings = AppSettings()
         self.port = int(os.getenv("PORT", "8080"))
-        self.model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_large")
+        self.model_path = self.app_settings.gliner_model_path
         self.model_name = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
-        self.allow_remote_download = os.getenv(
-            "GLINER_ALLOW_REMOTE_DOWNLOAD", "true"
-        ).lower() in {"1", "true", "yes", "on"}
+        self.allow_remote_download = self.app_settings.allow_remote_download
 
         # Legacy threshold (fallback if per-type not specified)
         self.confidence_threshold = float(
             os.getenv("GLINER_CONFIDENCE_THRESHOLD", "0.5")
         )
 
-        # Per-type thresholds
-        self.threshold_per = float(os.getenv("ENTITY_THRESHOLD_PER", "0.35"))
-        self.threshold_org = float(os.getenv("ENTITY_THRESHOLD_ORG", "0.50"))
-        self.threshold_loc = float(os.getenv("ENTITY_THRESHOLD_LOC", "0.50"))
-        self.threshold_date = float(os.getenv("ENTITY_THRESHOLD_DATE", "0.45"))
-        self.threshold_money = float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.55"))
+        # Use per-type thresholds from app settings
+        self.threshold_per = self.app_settings.entity_threshold_per
+        self.threshold_org = self.app_settings.entity_threshold_org
+        self.threshold_loc = self.app_settings.entity_threshold_loc
+        self.threshold_date = self.app_settings.entity_threshold_date
+        self.threshold_money = self.app_settings.entity_threshold_money
 
         self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "32"))
         self.max_length = int(os.getenv("GLINER_MAX_LENGTH", "512"))

@@ -92,13 +92,23 @@ func main() {
 	if maxSpreadsheetRowsStr == "" {
 		maxSpreadsheetRowsStr = "2000"
 	}
-	maxSpreadsheetRows, _ = strconv.Atoi(maxSpreadsheetRowsStr)
+	maxSpreadsheetRows, err = strconv.Atoi(maxSpreadsheetRowsStr)
+	if err != nil {
+		logger.Warn().Err(err).Str("value", maxSpreadsheetRowsStr).
+			Msg("Invalid MAX_SPREADSHEET_ROWS, using default 2000")
+		maxSpreadsheetRows = 2000
+	}
 
 	maxSpreadsheetSizeMBStr := os.Getenv("MAX_SPREADSHEET_SIZE_MB")
 	if maxSpreadsheetSizeMBStr == "" {
 		maxSpreadsheetSizeMBStr = "5"
 	}
-	maxSpreadsheetSizeMB, _ := strconv.Atoi(maxSpreadsheetSizeMBStr)
+	maxSpreadsheetSizeMB, err := strconv.Atoi(maxSpreadsheetSizeMBStr)
+	if err != nil {
+		logger.Warn().Err(err).Str("value", maxSpreadsheetSizeMBStr).
+			Msg("Invalid MAX_SPREADSHEET_SIZE_MB, using default 5")
+		maxSpreadsheetSizeMB = 5
+	}
 	maxSpreadsheetBytes = int64(maxSpreadsheetSizeMB * 1024 * 1024)
 
 	r := setupRouter()

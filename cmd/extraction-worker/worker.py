@@ -398,7 +398,10 @@ class ExtractionWorker:
             if message.get("document_path"):
                 temp_file_path = message["document_path"]
             else:
-                temp_fd, temp_file_path = tempfile.mkstemp(suffix=".pdf")
+                # Derive file extension from message filename or mime_type
+                filename = message.get("filename", "document")
+                file_ext = Path(filename).suffix or ".bin"
+                temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext)
                 try:
                     os.write(
                         temp_fd, base64.b64decode(message.get("document_base64", ""))

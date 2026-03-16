@@ -76,6 +76,8 @@ services:
     - EMBEDDINGS_QUEUE=embeddings
     - ENTITIES_QUEUE=entities
     - METADATA_QUEUE=metadata
+    - MAX_SPREADSHEET_ROWS=${MAX_SPREADSHEET_ROWS:-2000}
+    - MAX_SPREADSHEET_SIZE_MB=${MAX_SPREADSHEET_SIZE_MB:-5}
     depends_on:
       rabbitmq:
         condition: service_healthy

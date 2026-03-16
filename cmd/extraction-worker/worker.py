@@ -455,8 +455,24 @@ class ExtractionWorker:
             if message.get("entity_types"):
                 job_message["entity_types"] = message["entity_types"]
 
+            # Determine if this is a spreadsheet (reduce pipeline: entities only)
+            is_spreadsheet = False
+            if message.get("mime_type") == "application/spreadsheet":
+                is_spreadsheet = True
+            elif message.get("document_path"):
+                path_lower = message["document_path"].lower()
+                if path_lower.endswith((".csv", ".xls", ".xlsx")):
+                    is_spreadsheet = True
+
+            # Route to appropriate queues
+            if is_spreadsheet:
+                target_queues = ["entities"]
+                logger.info(f"Detected spreadsheet, routing to entities-only pipeline")
+            else:
+                target_queues = ["embeddings", "entities", "metadata"]
+
             job_message_json = json.dumps(job_message)
-            for queue in ["embeddings", "entities", "metadata"]:
+            for queue in target_queues:
                 channel.basic_publish(
                     exchange="",
                     routing_key=queue,

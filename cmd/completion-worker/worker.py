@@ -32,7 +32,15 @@ class CompletionWorker:
     def __init__(self):
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
-        self.required_steps = {"extraction", "embeddings", "entities", "metadata"}
+        # Default required steps for full pipeline
+        self.default_required_steps = {
+            "extraction",
+            "embeddings",
+            "entities",
+            "metadata",
+        }
+        # Spreadsheet pipeline (no embeddings, no metadata)
+        self.spreadsheet_required_steps = {"extraction", "entities"}
 
     def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
         try:
@@ -131,7 +139,35 @@ class CompletionWorker:
 
             logger.info(f"Job {job_id} completed steps: {completed_steps}")
 
-            if self.required_steps.issubset(completed_steps):
+            # Determine required steps based on document type
+            document_metadata_json = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:document"
+            )
+            document_metadata = (
+                json.loads(document_metadata_json) if document_metadata_json else {}
+            )
+            mime_type = document_metadata.get("mime_type", "")
+
+            # Check if it's a spreadsheet
+            is_spreadsheet = "spreadsheet" in mime_type.lower() or mime_type in [
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-excel",
+                "text/csv",
+                "application/zip",  # Excel files may show as ZIP
+            ]
+
+            required_steps = (
+                self.spreadsheet_required_steps
+                if is_spreadsheet
+                else self.default_required_steps
+            )
+
+            logger.info(
+                f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "
+                f"required steps: {required_steps}"
+            )
+
+            if required_steps.issubset(completed_steps):
                 self.finalize_job(job_id)
 
         except Exception as e:

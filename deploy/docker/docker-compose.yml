@@ -150,23 +150,20 @@ services:
     volumes:
     - ../../models:/models
     environment:
+    # ⭐ Offline mode (CRITICAL for air-gapped deployment)
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
     - LOG_LEVEL=info
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=5
-    - HF_HUB_OFFLINE=0
-    - GLINER_MODEL_PATH=/models/modern-gliner
-    - GLINER_MODEL_NAME=knowledgator/modern-gliner-bi-base-v1.0
-    - GLINER_PER_THRESHOLD=0.30
-    - GLINER_ORG_THRESHOLD=0.35
-    - GLINER_LOC_THRESHOLD=0.35
-    - GLINER_DATE_THRESHOLD=0.45
-    - GLINER_MONEY_THRESHOLD=0.55
-    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-}
+    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
     depends_on:
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
     - backend
@@ -177,6 +174,9 @@ services:
         limits:
           cpus: '2'
           memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
   entities-worker:
     build:
       context: ../../
@@ -187,6 +187,9 @@ services:
     volumes:
     - ../../models:/models
     environment:
+    # ⭐ Offline mode (CRITICAL for air-gapped deployment)
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
     - LOG_LEVEL=info
@@ -195,9 +198,8 @@ services:
     - PREFETCH_COUNT=5
     - HF_HOME=/home/app/.cache/huggingface
     - GLINER_MODEL_PATH=/models/gliner-small-v2.1
-    - GLINER_MODEL_NAME=urchade/gliner_large-v2.1
-    - MAX_LENGTH=384
     - ALLOW_REMOTE_DOWNLOAD=false
+    - MAX_LENGTH=384
     - GLINER_PER_THRESHOLD=0.30
     - GLINER_ORG_THRESHOLD=0.35
     - GLINER_LOC_THRESHOLD=0.35
@@ -209,12 +211,22 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
       regex-entity-extractor:
         condition: service_healthy
     networks:
     - backend
     - datastore
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
   regex-entity-extractor:
     build:
       context: ../../

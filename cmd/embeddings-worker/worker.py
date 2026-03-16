@@ -53,6 +53,9 @@ MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
 EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "32"))
 EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
 
+# GPU/CPU device selection
+EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", None)
+
 
 def detect_gpu() -> bool:
     """Check if GPU is available."""
@@ -88,7 +91,7 @@ class EmbeddingsWorker:
             logger.info(f"   Batch size: {self.batch_size} (conservative for CPU)")
 
         logger.info(f"Loading embeddings model from: {MODEL_PATH}")
-        self.service = EmbeddingService(model_path=MODEL_PATH)
+        self.service = EmbeddingService(model_path=MODEL_PATH, device=EMBEDDINGS_DEVICE)
         logger.info("✅ Embeddings model loaded successfully")
 
     def process(self, ch, method, properties, body):

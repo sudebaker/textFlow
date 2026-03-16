@@ -31,35 +31,16 @@ fi
 echo "   ✓ GLiNER model files present at $GLINER_MODEL"
 
 # Verify DeBERTa backbone is available
-HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
-echo "   Checking DeBERTa backbone in: $HF_CACHE"
+DEBERTA_PATH="/models/deberta-v3-small"
+echo "   Checking DeBERTa backbone at: $DEBERTA_PATH"
 
-if find "$HF_CACHE" -name "config.json" -path "*/deberta-v3-large/*" >/dev/null 2>&1; then
-    echo "   ✓ DeBERTa backbone found in HuggingFace cache"
-else
-    echo "⚠️  WARNING: DeBERTa backbone not found in HuggingFace cache"
-    echo "   GLiNER may fail to load. Attempting to download..."
-    
-    # Try to download DeBERTa if HF_HUB_OFFLINE is not set to 1
-    if [ "$HF_HUB_OFFLINE" != "1" ]; then
-        echo "   Downloading DeBERTa v3 Large..."
-        python3 -c "
-import os
-os.environ['HF_HUB_OFFLINE'] = '0'
-os.environ['TRANSFORMERS_OFFLINE'] = '0'
-from transformers import AutoModel
-try:
-    AutoModel.from_pretrained('microsoft/deberta-v3-large', cache_dir='$HF_CACHE')
-    print('✓ DeBERTa download successful')
-except Exception as e:
-    print(f'✗ DeBERTa download failed: {e}')
-    exit(1)
-" || exit 1
-    else
-        echo "❌ ERROR: HF_HUB_OFFLINE=1 but DeBERTa not cached!"
-        exit 1
-    fi
+if [ ! -f "$DEBERTA_PATH/config.json" ]; then
+    echo "❌ ERROR: DeBERTa backbone config not found at $DEBERTA_PATH/config.json"
+    echo "   This is required for GLiNER to load. DeBERTa must be pre-downloaded at build time on the host."
+    exit 1
 fi
+
+echo "   ✓ DeBERTa backbone found at $DEBERTA_PATH"
 
 echo ""
 echo "================================================================================"

@@ -5,6 +5,7 @@ the Go wrapper, but everything now runs natively in Python. The service loads
 the GLiNER model once and keeps it in memory for subsequent requests.
 """
 
+import json
 import logging
 import os
 import platform
@@ -75,6 +76,30 @@ class Settings:
 
     @staticmethod
     def _parse_entity_types(raw: str) -> List[str]:
+        """Parse entity types from various formats: comma-separated or JSON array.
+
+        Handles:
+        - Comma-separated: "PER,ORG,LOC"
+        - With spaces: "PER, ORG, LOC"
+        - JSON array: '["PER", "ORG", "LOC"]'
+
+        Returns clean list without brackets or quotes.
+        """
+        if not raw or not raw.strip():
+            return []
+
+        raw = raw.strip()
+
+        # Try to parse as JSON array first (e.g., from RabbitMQ messages)
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(entry).strip().upper() for entry in parsed if entry]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Fall back to comma-separated parsing
         return [entry.strip().upper() for entry in raw.split(",") if entry.strip()]
 
 

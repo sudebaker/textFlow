@@ -4,10 +4,12 @@ Entities Worker for IA Text Orchestrator
 Consumes messages from RabbitMQ and extracts entities using GLiNER
 """
 
-# Configure cache paths BEFORE importing transformers/gliner
-# Do NOT set HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1 - these break GLiNER
+# Configure cache paths and enforce offline mode BEFORE importing transformers/gliner
 import os
 
+# Enforce offline mode - models are pre-downloaded and mounted as volumes
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HOME"] = "/home/app/.cache/huggingface"
 os.environ["TRANSFORMERS_CACHE"] = "/home/app/.cache/huggingface"
 os.environ["HF_DATASETS_CACHE"] = "/home/app/.cache/huggingface"
@@ -34,6 +36,7 @@ from unidecode import unidecode
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
+from pkg.worker_common.base import handle_retry
 from app.config.settings import Settings as AppSettings
 from sliding_window import (
     process_with_sliding_window,
@@ -63,10 +66,15 @@ METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 GLINER_MODEL_PATH = app_settings.gliner_model_path
 GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
 HF_CACHE_DIR = os.getenv("HF_CACHE_DIR", "/root/.cache/huggingface")
-ENTITY_TYPES = os.getenv("ENTITY_TYPES", "PER,ORG,LOC,DATE,MONEY")
+ENTITY_TYPES = os.getenv(
+    "ENTITY_TYPES", "PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL"
+)
 ALLOW_REMOTE_DOWNLOAD = app_settings.allow_remote_download
 DEDUPLICATION_ENABLED = app_settings.deduplication_enabled
 FUZZY_MATCH_THRESHOLD = app_settings.fuzzy_match_threshold
+REGEX_ENTITY_EXTRACTOR_URL = os.getenv(
+    "REGEX_ENTITY_EXTRACTOR_URL", "http://regex-entity-extractor:8081"
+)
 
 # GPU/CPU device selection
 ENTITIES_DEVICE = os.getenv("ENTITIES_DEVICE", "cpu")
@@ -83,12 +91,43 @@ class EntitiesWorker:
         self.device = ENTITIES_DEVICE
         self.default_entities = [e.strip() for e in ENTITY_TYPES.split(",")]
 
+    @staticmethod
+    def _normalize_entity_types(entity_types) -> list:
+        """Normalize entity_types from various formats to a clean list.
+
+        Handles:
+        - List: ["PER", "ORG"] -> ["PER", "ORG"]
+        - JSON string: '["PER", "ORG"]' -> ["PER", "ORG"]
+        - Comma-separated: "PER,ORG" -> ["PER", "ORG"]
+
+        Returns a clean list without brackets or quotes.
+        """
+        if isinstance(entity_types, list):
+            return [str(t).strip().upper() for t in entity_types if t]
+
+        if not entity_types or not str(entity_types).strip():
+            return []
+
+        entity_types_str = str(entity_types).strip()
+
+        # Try to parse as JSON array first
+        if entity_types_str.startswith("["):
+            try:
+                parsed = json.loads(entity_types_str)
+                if isinstance(parsed, list):
+                    return [str(entry).strip().upper() for entry in parsed if entry]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Fall back to comma-separated parsing
+        return [t.strip().upper() for t in entity_types_str.split(",") if t.strip()]
+
     def load_model(self):
         from gliner import GLiNER
 
         # Model path
         model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_model")
-        deberta_path = "/models/deberta-v3-large"
+        deberta_path = "/models/deberta-v3-small"
 
         logger.info("=" * 70)
         logger.info("🔍 Loading GLiNER Model (Offline Mode)")
@@ -421,6 +460,54 @@ class EntitiesWorker:
 
         return result
 
+    def _extract_regex_entities(self, text: str) -> list:
+        """
+        Call the regex entity extractor service to extract structured entities.
+
+        Returns a list of entities from regex patterns (EMAIL, PHONE, IBAN, DNI, NIF, etc.)
+        on error, returns empty list (graceful degradation).
+        """
+        try:
+            payload = {"text": text}
+            response = requests.post(
+                f"{REGEX_ENTITY_EXTRACTOR_URL}/preprocess", json=payload, timeout=30
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            entities_by_chunk = data.get("entities", {})
+
+            # Flatten the entities dict into a list
+            # entities format from regex service: {0: [{text, label}], 1: [...]}
+            result = []
+            for chunk_id_str, entities_in_chunk in entities_by_chunk.items():
+                if isinstance(entities_in_chunk, list):
+                    for entity in entities_in_chunk:
+                        # Regex service returns {text, label}
+                        # We need {text, label, confidence, start, end, chunk_id}
+                        result.append(
+                            {
+                                "text": entity.get("text", ""),
+                                "label": entity.get("label", ""),
+                                "confidence": 1.0,  # Regex patterns have high confidence (verified)
+                                "start": 0,
+                                "end": 0,
+                                "chunk_id": chunk_id_str,
+                            }
+                        )
+
+            logger.info(f"Extracted {len(result)} entities via regex service")
+            return result
+
+        except requests.RequestException as e:
+            logger.warning(
+                f"Regex entity extractor call failed: {e}. Continuing without regex entities."
+            )
+            return []
+        except Exception as e:
+            logger.warning(f"Error processing regex entities: {e}")
+            return []
+
     def calculate_global_position(
         self, chunk_offset: int, local_start: int, local_end: int
     ) -> tuple:
@@ -449,6 +536,8 @@ class EntitiesWorker:
             chunks = message.get("chunks", [])
 
             entity_types = message.get("entity_types", self.default_entities)
+            # Normalize entity_types to ensure it's a clean list
+            entity_types = self._normalize_entity_types(entity_types)
 
             logger.info(
                 f"Processing entities for job: {job_id} with {len(chunks)} chunks"
@@ -560,6 +649,17 @@ class EntitiesWorker:
                     logger.debug(traceback.format_exc())
                     continue
 
+            # Extract structured entities from regex patterns
+            try:
+                text = self.redis_client.get(f"orchestrator:job:{job_id}:text")
+                if text:
+                    regex_entities = self._extract_regex_entities(text)
+                    all_entities.extend(regex_entities)
+                    logger.info(f"Added {len(regex_entities)} regex-based entities")
+            except Exception as e:
+                logger.warning(f"Failed to extract regex entities: {e}")
+                # Continue anyway - regex extraction is optional
+
             # Deduplicate entities if enabled
             if DEDUPLICATION_ENABLED:
                 all_entities = self.deduplicate_entities(all_entities)
@@ -587,12 +687,18 @@ class EntitiesWorker:
         except Exception as e:
             logger.error(f"Error processing entities: {e}")
             jobs_total.labels(status="error").inc()
-            if job_id:
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:status", mapping={"entities": "error"}
-                )
-                self.event_bus.publish_job_failed(job_id, str(e))
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            handle_retry(
+                job_id=job_id,
+                queue_name=QUEUE_NAME,
+                error=e,
+                ch=ch,
+                method=method,
+                redis_client=self.redis_client,
+                event_bus=self.event_bus,
+                logger=logger,
+                max_retries=3,
+                jobs_total_counter=jobs_total,
+            )
 
 
 @contextmanager

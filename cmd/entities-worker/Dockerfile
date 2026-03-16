@@ -36,18 +36,9 @@ COPY cmd/entities-worker/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.txt
 
-# Copy DeBERTa download script
-COPY cmd/entities-worker/download_deberta_backbone.py .
-
-# Download DeBERTa backbone (needed for GLiNER offline mode)
-# This runs as root to ensure proper cache creation
-# The script will:
-# 1. Download DeBERTa to /home/app/.cache/huggingface (HF cache format)
-# 2. Copy DeBERTa files to /models/deberta-v3-large (flat path for GLiNER)
-RUN python download_deberta_backbone.py
-
-# Copy GLiNER model files
-COPY --chown=app:app models/gliner_model/ /models/gliner_model
+# Enforce offline mode - models are pre-downloaded and mounted as volumes
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 
 # Copy shared packages (events_python)
 COPY pkg/ ./pkg/
@@ -60,10 +51,6 @@ COPY cmd/entities-worker/app ./app
 
 # Fix permissions
 RUN chown -R app:app /models /app /home/app && chmod +x /entrypoint.sh
-
-# ⚠️  IMPORTANT: Do NOT set HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1 here
-# These break GLiNER internally (it calls model_info() which fails without Hub access)
-# Instead, we use local_files_only=True at load time + correct paths in config
 
 # Switch to app user
 USER app

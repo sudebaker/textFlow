@@ -1,4 +1,4 @@
-FROM golang:1.22.5-alpine3.21 AS builder
+FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ RUN go mod download && go mod verify
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o orchestrator ./cmd/orchestrator
 
-FROM alpine:3.19
+FROM alpine:3.20
 
 RUN apk --no-cache add ca-certificates
 

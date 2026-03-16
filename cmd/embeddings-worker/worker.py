@@ -56,8 +56,9 @@ MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
 EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "32"))
 EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
 
-# GPU/CPU device selection
-EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", None)
+# GPU/CPU device selection - normalize empty string to None for auto-detection
+_device_env = os.getenv("EMBEDDINGS_DEVICE", "").strip()
+EMBEDDINGS_DEVICE = _device_env if _device_env else None
 
 
 def detect_gpu() -> bool:

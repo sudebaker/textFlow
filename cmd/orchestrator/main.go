@@ -624,13 +624,16 @@ func uploadHandler(c *gin.Context) {
 		".xlsx": true,
 		".csv":  true,
 		".json": true,
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
 	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
 	if ext == "" || !allowedExtensions[ext] {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error:  "invalid_file_type",
-			Detail: "file type not allowed. Supported types: pdf, txt, doc, docx, ppt, pptx, xls, xlsx, csv, json",
+			Detail: "file type not allowed. Supported types: pdf, txt, doc, docx, ppt, pptx, xls, xlsx, csv, json, jpg, jpeg, png",
 		})
 		return
 	}

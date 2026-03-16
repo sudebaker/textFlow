@@ -68,6 +68,9 @@ ALLOW_REMOTE_DOWNLOAD = app_settings.allow_remote_download
 DEDUPLICATION_ENABLED = app_settings.deduplication_enabled
 FUZZY_MATCH_THRESHOLD = app_settings.fuzzy_match_threshold
 
+# GPU/CPU device selection
+ENTITIES_DEVICE = os.getenv("ENTITIES_DEVICE", "cpu")
+
 # Thresholds per entity type (from canonical settings)
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
 
@@ -77,7 +80,7 @@ class EntitiesWorker:
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
         self.model = None
-        self.device = "cpu"
+        self.device = ENTITIES_DEVICE
         self.default_entities = [e.strip() for e in ENTITY_TYPES.split(",")]
 
     def load_model(self):
@@ -149,6 +152,9 @@ class EntitiesWorker:
                     local_files_only=True,  # Force offline mode
                 )
                 logger.info("   ✓ GLiNER model loaded successfully")
+                if self.device != "cpu":
+                    logger.info(f"   Moving GLiNER to device: {self.device}")
+                    self.model = self.model.to(self.device)
             except KeyboardInterrupt:
                 logger.error("   ❌ GLiNER loading was interrupted")
                 raise

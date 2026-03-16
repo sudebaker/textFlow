@@ -94,15 +94,15 @@ func (tc *TestRedisClient) HGetAll(ctx context.Context, key string) (map[string]
 
 // MustSetJobStatus sets a job status and fails the test on error
 func (tc *TestRedisClient) MustSetJobStatus(ctx context.Context, jobID, status string) {
-	key := "orchestrator:job:" + jobID + ":status"
-	err := tc.client.Set(ctx, key, status, 0).Err()
+	key := "orchestrator:job:" + jobID
+	err := tc.client.HSet(ctx, key, "status", status).Err()
 	require.NoError(tc.t, err)
 }
 
 // MustGetJobStatus gets a job status and asserts it matches expected
 func (tc *TestRedisClient) MustGetJobStatus(ctx context.Context, jobID, expected string) string {
-	key := "orchestrator:job:" + jobID + ":status"
-	val, err := tc.client.Get(ctx, key).Result()
+	key := "orchestrator:job:" + jobID
+	val, err := tc.client.HGet(ctx, key, "status").Result()
 	require.NoError(tc.t, err)
 	assert.Equal(tc.t, expected, val)
 	return val
@@ -128,26 +128,6 @@ func (tc *TestRedisClient) MustSetJobData(ctx context.Context, jobID, dataType s
 
 	err := tc.client.Set(ctx, key, value, 0).Err()
 	require.NoError(tc.t, err)
-}
-
-// Helper to serialize float64 slice
-func serializeFloat64Slice(v []float64) string {
-	result := "["
-	for i, f := range v {
-		if i > 0 {
-			result += ","
-		}
-		result += formatFloat(f)
-	}
-	return result + "]"
-}
-
-func formatFloat(f float64) string {
-	return float64ToString(f)
-}
-
-func float64ToString(f float64) string {
-	return string(rune('0' + int(f))) // Simplified
 }
 
 // TestConfig is a fixture for testing configuration
@@ -308,7 +288,7 @@ func NewAssertionHelpers(t *testing.T) *AssertionHelpers {
 
 // AssertJobStatus asserts the job status matches expected
 func (ah *AssertionHelpers) AssertJobStatus(ctx context.Context, redis *TestRedisClient, jobID, expected string) {
-	actual, err := redis.Get(ctx, "orchestrator:job:"+jobID+":status")
+	actual, err := redis.HGet(ctx, "orchestrator:job:"+jobID, "status")
 	assert.NoError(ah.t, err)
 	assert.Equal(ah.t, expected, actual)
 }

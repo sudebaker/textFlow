@@ -7,10 +7,13 @@ Consumes messages from RabbitMQ and extracts entities using GLiNER
 # Configure cache paths BEFORE importing transformers/gliner
 # Do NOT set HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1 - these break GLiNER
 import os
+
 os.environ["HF_HOME"] = "/home/app/.cache/huggingface"
 os.environ["TRANSFORMERS_CACHE"] = "/home/app/.cache/huggingface"
 os.environ["HF_DATASETS_CACHE"] = "/home/app/.cache/huggingface"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Prevent hanging in tokenizer initialization
+os.environ["TOKENIZERS_PARALLELISM"] = (
+    "false"  # Prevent hanging in tokenizer initialization
+)
 
 import json
 import logging
@@ -30,6 +33,8 @@ from unidecode import unidecode
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
+from app.config.settings import Settings as AppSettings
 from sliding_window import (
     process_with_sliding_window,
     estimate_tokens,
@@ -48,26 +53,23 @@ entities_deduplicated = Counter(
     "entities_worker_deduplicated_total", "Total entities deduplicated"
 )
 
+# Load canonical settings
+app_settings = AppSettings()
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
-GLINER_MODEL_PATH = os.getenv("GLINER_MODEL_PATH", "/models/gliner_multitask-v0.5")
+GLINER_MODEL_PATH = app_settings.gliner_model_path
 GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
 HF_CACHE_DIR = os.getenv("HF_CACHE_DIR", "/root/.cache/huggingface")
 ENTITY_TYPES = os.getenv("ENTITY_TYPES", "PER,ORG,LOC,DATE,MONEY")
-ALLOW_REMOTE_DOWNLOAD = os.getenv("ALLOW_REMOTE_DOWNLOAD", "true").lower() == "true"
-DEDUPLICATION_ENABLED = os.getenv("DEDUPLICATION_ENABLED", "false").lower() == "true"
-FUZZY_MATCH_THRESHOLD = float(os.getenv("FUZZY_MATCH_THRESHOLD", "0.85"))
+ALLOW_REMOTE_DOWNLOAD = app_settings.allow_remote_download
+DEDUPLICATION_ENABLED = app_settings.deduplication_enabled
+FUZZY_MATCH_THRESHOLD = app_settings.fuzzy_match_threshold
 
-# Thresholds per entity type
-ENTITY_THRESHOLDS = {
-    "PER": float(os.getenv("ENTITY_THRESHOLD_PER", "0.35")),
-    "ORG": float(os.getenv("ENTITY_THRESHOLD_ORG", "0.50")),
-    "LOC": float(os.getenv("ENTITY_THRESHOLD_LOC", "0.50")),
-    "DATE": float(os.getenv("ENTITY_THRESHOLD_DATE", "0.45")),
-    "MONEY": float(os.getenv("ENTITY_THRESHOLD_MONEY", "0.55")),
-}
+# Thresholds per entity type (from canonical settings)
+ENTITY_THRESHOLDS = app_settings.get_threshold_map()
 
 
 class EntitiesWorker:
@@ -80,59 +82,71 @@ class EntitiesWorker:
 
     def load_model(self):
         from gliner import GLiNER
-        
+
         # Model path
         model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_model")
         deberta_path = "/models/deberta-v3-large"
-        
+
         logger.info("=" * 70)
         logger.info("🔍 Loading GLiNER Model (Offline Mode)")
         logger.info("=" * 70)
         logger.info(f"   GLiNER model path: {model_path}")
         logger.info(f"   DeBERTa backbone path: {deberta_path}")
         logger.info(f"   HF_HOME: {os.environ.get('HF_HOME')}")
-        
+
         try:
             # Verify GLiNER model directory exists
             model_path_obj = Path(model_path)
             if not model_path_obj.exists():
-                raise FileNotFoundError(f"GLiNER model directory not found: {model_path}")
-            
+                raise FileNotFoundError(
+                    f"GLiNER model directory not found: {model_path}"
+                )
+
             # Check for gliner_config.json (required)
             config_file = model_path_obj / "gliner_config.json"
             if not config_file.exists():
                 raise FileNotFoundError(f"gliner_config.json not found in {model_path}")
-            
+
             # Check for model weights
-            model_files = list(model_path_obj.glob("*.bin")) + list(model_path_obj.glob("*.safetensors"))
+            model_files = list(model_path_obj.glob("*.bin")) + list(
+                model_path_obj.glob("*.safetensors")
+            )
             if not model_files:
-                raise FileNotFoundError(f"No model weight files (.bin or .safetensors) found in {model_path}")
-            
+                raise FileNotFoundError(
+                    f"No model weight files (.bin or .safetensors) found in {model_path}"
+                )
+
             logger.info(f"   ✓ GLiNER config found: gliner_config.json")
             logger.info(f"   ✓ GLiNER model weights found: {len(model_files)} file(s)")
-            
+
             # Verify DeBERTa backbone exists
             deberta_path_obj = Path(deberta_path)
             if not deberta_path_obj.exists():
-                raise FileNotFoundError(f"DeBERTa backbone directory not found at {deberta_path}")
-            
+                raise FileNotFoundError(
+                    f"DeBERTa backbone directory not found at {deberta_path}"
+                )
+
             # Check for critical tokenizer files
             # DeBERTa-v3-large uses SentencePiece (spm.model), not fast tokenizer (tokenizer.json)
             critical_files = ["spm.model", "tokenizer_config.json", "config.json"]
-            missing_files = [f for f in critical_files if not (deberta_path_obj / f).exists()]
+            missing_files = [
+                f for f in critical_files if not (deberta_path_obj / f).exists()
+            ]
             if missing_files:
-                raise FileNotFoundError(f"Missing DeBERTa tokenizer files in {deberta_path}: {missing_files}")
-            
+                raise FileNotFoundError(
+                    f"Missing DeBERTa tokenizer files in {deberta_path}: {missing_files}"
+                )
+
             deberta_files = len(list(deberta_path_obj.glob("*")))
             logger.info(f"   ✓ DeBERTa backbone found: {deberta_files} file(s)")
             logger.info(f"   ✓ Tokenizer files verified")
-            
+
             # Load GLiNER with offline mode
             logger.info("\n🚀 Loading GLiNER...")
             try:
                 self.model = GLiNER.from_pretrained(
                     model_path,
-                    local_files_only=True  # Force offline mode
+                    local_files_only=True,  # Force offline mode
                 )
                 logger.info("   ✓ GLiNER model loaded successfully")
             except KeyboardInterrupt:
@@ -141,7 +155,7 @@ class EntitiesWorker:
             except Exception as e:
                 logger.error(f"   ❌ GLiNER loading failed: {e}")
                 raise
-            
+
             logger.info("=" * 70)
             logger.info("✅ GLiNER Model Loaded Successfully")
             logger.info("=" * 70)
@@ -157,18 +171,21 @@ class EntitiesWorker:
             logger.error(f"   Error: {e}")
             logger.error(f"   GLiNER path: {model_path}")
             logger.error(f"   DeBERTa path: {deberta_path}")
-            
+
             import traceback
+
             logger.error("\nFull traceback:")
             traceback.print_exc()
-            
+
             logger.error("\n" + "=" * 70)
             logger.error("Troubleshooting:")
             logger.error(f"  1. Check GLiNER files: ls -la {model_path}/")
             logger.error(f"  2. Check DeBERTa files: ls -la {deberta_path}/")
-            logger.error(f"  3. Verify gliner_config.json has: \"model_name\": \"/models/deberta-v3-large\"")
+            logger.error(
+                f'  3. Verify gliner_config.json has: "model_name": "/models/deberta-v3-large"'
+            )
             logger.error("=" * 70)
-            
+
             raise Exception(f"Failed to load GLiNER model: {e}")
 
     def _extract_dates(self, text: str) -> List[Dict]:
@@ -176,12 +193,12 @@ class EntitiesWorker:
 
         dates = []
         patterns = [
-            r"\\d{1,2}/\\d{1,2}/\\d{2,4}",
-            r"\\d{1,2}-\\d{1,2}-\\d{2,4}",
-            r"\\d{4}-\\d{2}-\\d{2}",
-            r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{1,2},?\\s+\\d{4}",
-            r"\\d{1,2}\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{4}",
-            r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+\\d{1,2}\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)",
+            r"\d{1,2}/\d{1,2}/\d{2,4}",
+            r"\d{1,2}-\d{1,2}-\d{2,4}",
+            r"\d{4}-\d{2}-\d{2}",
+            r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}",
+            r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}",
+            r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)",
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -201,10 +218,10 @@ class EntitiesWorker:
 
         money = []
         patterns = [
-            r"\\$\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
-            r"\\d+(?:,\\d{3})*(?:\\.\\d{2})?\\s*(?:USD|EUR|GBP)",
-            r"€\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
-            r"£\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+            r"\$\d+(?:,\d{3})*(?:\.\d{2})?",
+            r"\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:USD|EUR|GBP)",
+            r"€\d+(?:,\d{3})*(?:\.\d{2})?",
+            r"£\d+(?:,\d{3})*(?:\.\d{2})?",
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -224,7 +241,7 @@ class EntitiesWorker:
 
         orgs = []
         patterns = [
-            r"(?:Inc\\.|LLC|Corp\\.|Ltd\\.|S\\.A\\.|S\\.L\\.|B\\.V\\.|GmbH)",
+            r"(?:Inc\.|LLC|Corp\.|Ltd\.|S\.A\.|S\.L\.|B\.V\.|GmbH)",
             r"(?:University|Institute|Foundation|Association|Corporation)",
             r"(?:Bank|Insurance|Financial|Media|Tech|Software|Hardware)",
         ]
@@ -267,7 +284,7 @@ class EntitiesWorker:
         import re
 
         persons = []
-        pattern = r"\\b[A-Z][a-z]+\\s+[A-Z][a-z]+\\b"
+        pattern = r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b"
         exclude = {
             "The",
             "This",
@@ -459,18 +476,19 @@ class EntitiesWorker:
                 try:
                     # Use sliding window processor if chunk text is large
                     estimated_tokens = estimate_tokens(chunk_text)
-                    
+
                     if requires_sliding_window(chunk_text):
                         logger.info(
                             f"Chunk {chunk_id}: {estimated_tokens} tokens detected, "
                             f"using sliding window approach"
                         )
+
                         # Define a wrapper function for predict_entities
                         def predict_with_thresholds(text, entity_types, threshold=0.1):
                             return self.model.predict_entities(
                                 text, entity_types, threshold=threshold
                             )
-                        
+
                         entities_items = process_with_sliding_window(
                             chunk_text,
                             predict_with_thresholds,
@@ -489,7 +507,11 @@ class EntitiesWorker:
                             threshold=0.1,  # Use low threshold, filter per-type below
                         )
 
-                        if entities and len(entities) > 0 and isinstance(entities[0], list):
+                        if (
+                            entities
+                            and len(entities) > 0
+                            and isinstance(entities[0], list)
+                        ):
                             entities_items = entities[0]
                         elif entities and isinstance(entities, list):
                             entities_items = entities
@@ -528,6 +550,7 @@ class EntitiesWorker:
                         f"Error extracting entities from chunk {chunk_id}: {e}"
                     )
                     import traceback
+
                     logger.debug(traceback.format_exc())
                     continue
 
@@ -564,25 +587,6 @@ class EntitiesWorker:
                 )
                 self.event_bus.publish_job_failed(job_id, str(e))
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-
-
-def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-
-    credentials = pika.PlainCredentials(
-        parsed.username or "guest", parsed.password or "guest"
-    )
-
-    return pika.ConnectionParameters(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 5672,
-        virtual_host=parsed.path[1:] if parsed.path else "/",
-        credentials=credentials,
-        heartbeat=600,
-        blocked_connection_timeout=300,
-    )
 
 
 @contextmanager

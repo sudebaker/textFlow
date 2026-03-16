@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ia-text-orchestrator/internal/broker"
+	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/internal/events"
 	"ia-text-orchestrator/internal/models"
 	redisclient "ia-text-orchestrator/internal/redis"
@@ -16,13 +17,15 @@ type Pipeline struct {
 	broker   *broker.RabbitMQBroker
 	redis    *redisclient.RedisClient
 	eventBus *events.EventBus
+	config   *config.Config
 }
 
-func NewPipeline(b *broker.RabbitMQBroker, r *redisclient.RedisClient) *Pipeline {
+func NewPipeline(b *broker.RabbitMQBroker, r *redisclient.RedisClient, cfg *config.Config) *Pipeline {
 	return &Pipeline{
 		broker:   b,
 		redis:    r,
 		eventBus: events.NewEventBus(r.GetClient()),
+		config:   cfg,
 	}
 }
 
@@ -111,7 +114,7 @@ func (p *Pipeline) processEmbeddings(ctx context.Context, jobID, text string) er
 		JobID: jobID,
 	}
 
-	if err := p.broker.Publish(ctx, "embeddings", jobMsg); err != nil {
+	if err := p.broker.Publish(ctx, p.config.EmbeddingsQueue, jobMsg); err != nil {
 		return err
 	}
 
@@ -126,7 +129,7 @@ func (p *Pipeline) processEntities(ctx context.Context, jobID, text string) erro
 		JobID: jobID,
 	}
 
-	if err := p.broker.Publish(ctx, "entities", jobMsg); err != nil {
+	if err := p.broker.Publish(ctx, p.config.EntitiesQueue, jobMsg); err != nil {
 		return err
 	}
 
@@ -141,7 +144,7 @@ func (p *Pipeline) processMetadata(ctx context.Context, jobID, text string) erro
 		JobID: jobID,
 	}
 
-	if err := p.broker.Publish(ctx, "metadata", jobMsg); err != nil {
+	if err := p.broker.Publish(ctx, p.config.MetadataQueue, jobMsg); err != nil {
 		return err
 	}
 

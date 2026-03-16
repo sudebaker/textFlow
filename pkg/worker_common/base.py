@@ -212,6 +212,7 @@ class BaseWorker:
         self.requires_gpu = requires_gpu
         self.metrics_port = metrics_port
         self._shutdown_requested = False
+        self._rabbitmq_connected = False
 
         # Setup logging
         self.logger = setup_logging(worker_name)
@@ -286,14 +287,11 @@ class BaseWorker:
                 checks["redis"] = f"error: {e}"
                 status = "unhealthy"
 
-            # Check RabbitMQ (basic check)
-            try:
-                params = parse_rabbitmq_url(self.rabbitmq_url)
-                connection = pika.BlockingConnection(params)
-                connection.close()
+            # Check RabbitMQ (check cached status, don't create per-request connection)
+            if self._rabbitmq_connected:
                 checks["rabbitmq"] = "ok"
-            except Exception as e:
-                checks["rabbitmq"] = f"error: {e}"
+            else:
+                checks["rabbitmq"] = "connecting"
                 status = "degraded"
 
             return jsonify(
@@ -396,6 +394,9 @@ class BaseWorker:
         while not self._shutdown_requested:
             try:
                 with rabbitmq_connection(self.rabbitmq_url) as (connection, channel):
+                    # Mark as connected
+                    self._rabbitmq_connected = True
+
                     # Declare queue
                     channel.queue_declare(queue=self.queue_name, durable=True)
                     self.logger.info(f"Consuming from queue: {self.queue_name}")
@@ -410,6 +411,7 @@ class BaseWorker:
                     channel.start_consuming()
 
             except Exception as e:
+                self._rabbitmq_connected = False
                 self.logger.error(f"RabbitMQ connection error: {e}")
                 if not self._shutdown_requested:
                     time.sleep(5)

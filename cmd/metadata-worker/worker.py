@@ -25,6 +25,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 # In Docker: worker.py is at /app/worker.py, pkg is at /app/pkg
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -161,34 +162,11 @@ class MetadataWorker:
             jobs_total.labels(status="error").inc()
             if job_id:
                 self.redis_client.hset(
-                    f"job:{job_id}:status", mapping={"metadata": "error"}
+                    f"orchestrator:job:{job_id}:status", mapping={"metadata": "error"}
                 )
                 # Publish failed event
                 self.event_bus.publish_job_failed(job_id, str(e))
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-
-
-def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
-    """Parse AMQP URL and return ConnectionParameters.
-
-    Supports URLs like: amqp://user:pass@host:port/vhost
-    """
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-
-    credentials = pika.PlainCredentials(
-        parsed.username or "guest", parsed.password or "guest"
-    )
-
-    return pika.ConnectionParameters(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 5672,
-        virtual_host=parsed.path[1:] if parsed.path else "/",
-        credentials=credentials,
-        heartbeat=600,
-        blocked_connection_timeout=300,
-    )
 
 
 @contextmanager

@@ -109,25 +109,19 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 
 func (cb *CircuitBreaker) beforeRequest() error {
 	cb.mu.Lock()
-	state := cb.state
-	cb.mu.Unlock()
+	defer cb.mu.Unlock()
 
-	switch state {
+	switch cb.state {
 	case StateOpen:
 		return ErrCircuitOpen
 	case StateHalfOpen:
-		cb.mu.Lock()
 		cb.requests++
 		if cb.requests > int(cb.settings.MaxRequests) {
-			cb.mu.Unlock()
 			return ErrCircuitTooMany
 		}
-		cb.mu.Unlock()
 	case StateClosed:
-		cb.mu.Lock()
 		cb.requests++
 		cb.windowCounts.Requests++
-		cb.mu.Unlock()
 	}
 
 	return nil

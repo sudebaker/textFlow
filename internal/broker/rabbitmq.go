@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
-	amqp "github.com/streadway/amqp"
 	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/internal/models"
 	"ia-text-orchestrator/pkg/logging"
@@ -29,9 +30,9 @@ type RabbitMQBroker struct {
 	logger         zerolog.Logger
 	mu             sync.RWMutex
 	closedChan     <-chan *amqp.Error
-	reconnectMutex sync.Mutex
 	stopChan       chan struct{}
-	isReconnecting bool
+	closeOnce      sync.Once
+	isReconnecting atomic.Bool
 }
 
 func New(cfg *config.Config) (*RabbitMQBroker, error) {
@@ -183,7 +184,12 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 			b.mu.RUnlock()
 			b.logger.Warn().Msgf("Channel is nil, triggering reconnect (attempt %d/3)", attempt+1)
 			b.reconnect()
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			// Context-aware sleep: respect context cancellation during backoff
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+			case <-time.After(time.Duration(attempt+1) * time.Second):
+			}
 			continue
 		}
 
@@ -205,7 +211,12 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 			metrics.RabbitMQErrors.Inc()
 			b.logger.Warn().Err(err).Msgf("Publish failed, attempting reconnection (attempt %d/3)", attempt+1)
 			b.reconnect()
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			// Context-aware sleep: respect context cancellation during backoff
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+			case <-time.After(time.Duration(attempt+1) * time.Second):
+			}
 			continue
 		}
 
@@ -398,7 +409,9 @@ type QueueInfo struct {
 }
 
 func (b *RabbitMQBroker) Close() error {
-	close(b.stopChan)
+	b.closeOnce.Do(func() {
+		close(b.stopChan)
+	})
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -445,13 +458,12 @@ func (b *RabbitMQBroker) startMonitoring() {
 }
 
 func (b *RabbitMQBroker) reconnect() {
-	b.reconnectMutex.Lock()
-	if b.isReconnecting {
-		b.reconnectMutex.Unlock()
+	// Use CompareAndSwap for lock-free atomic operation
+	// Only proceed if we successfully transition from false to true
+	if !b.isReconnecting.CompareAndSwap(false, true) {
+		// Already reconnecting, skip
 		return
 	}
-	b.isReconnecting = true
-	b.reconnectMutex.Unlock()
 
 	backoff := InitialBackoff
 	attempts := 0
@@ -459,7 +471,7 @@ func (b *RabbitMQBroker) reconnect() {
 	for attempts < MaxReconnectAttempts {
 		select {
 		case <-b.stopChan:
-			b.isReconnecting = false
+			b.isReconnecting.Store(false)
 			return
 		default:
 		}
@@ -468,7 +480,13 @@ func (b *RabbitMQBroker) reconnect() {
 		b.channel = nil
 		b.mu.Unlock()
 
-		time.Sleep(backoff)
+		// Context-aware sleep: respect stopChan during backoff
+		select {
+		case <-b.stopChan:
+			b.isReconnecting.Store(false)
+			return
+		case <-time.After(backoff):
+		}
 
 		b.mu.Lock()
 		conn, err := amqp.Dial(b.config.RabbitMQURL)
@@ -515,11 +533,11 @@ func (b *RabbitMQBroker) reconnect() {
 
 		metrics.RabbitMQReconnects.Inc()
 		b.logger.Info().Msg("Successfully reconnected to RabbitMQ and redeclared queues")
-		b.isReconnecting = false
+		b.isReconnecting.Store(false)
 		return
 	}
 
-	b.isReconnecting = false
+	b.isReconnecting.Store(false)
 	metrics.RabbitMQReconnectErrors.Inc()
 	b.logger.Error().Msgf("Failed to reconnect after %d attempts", MaxReconnectAttempts)
 }

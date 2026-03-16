@@ -2,7 +2,7 @@
 # Multi-stage build for air-gapped deployment
 
 # Stage 1: Builder (for any compilation needs)
-FROM python:3.11-slim as builder
+FROM python:3.11.12-slim-bookworm as builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Stage 2: Final image
-FROM python:3.11-slim
+FROM python:3.11.12-slim-bookworm
 
 LABEL maintainer="ia-text-orchestrator"
 LABEL description="GLiNER Entity Extraction Worker for NER tasks"
@@ -18,6 +18,7 @@ LABEL description="GLiNER Entity Extraction Worker for NER tasks"
 # Environment setup
 ENV HF_HOME=/home/app/.cache/huggingface
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

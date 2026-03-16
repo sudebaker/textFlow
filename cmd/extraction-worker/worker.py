@@ -244,7 +244,7 @@ class ExtractionWorker:
                     logger.info(f"Adjusted filename to: {filename}")
 
             response = requests.post(
-                f"{DOCLING_URL}/convert",
+                f"{DOCLING_URL}/v1/convert/file",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
@@ -252,11 +252,11 @@ class ExtractionWorker:
             response.raise_for_status()
 
             result = response.json()
-            text = result.get("markdown", "") or result.get("text", "")
+            doc = result.get("document", {})
+            text = doc.get("md_content") or doc.get("text_content") or ""
 
             metadata = {
-                "docling_pages": result.get("document", {}).get("pages", [])
-                and len(result.get("document", {}).get("pages", [])),
+                "docling_pages": doc.get("pages") and len(doc.get("pages", [])),
                 "extraction_method": "base64",
             }
 
@@ -278,7 +278,7 @@ class ExtractionWorker:
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
 
             response = requests.post(
-                f"{DOCLING_URL}/convert",
+                f"{DOCLING_URL}/v1/convert/file",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
@@ -286,12 +286,11 @@ class ExtractionWorker:
             response.raise_for_status()
 
             result = response.json()
-            # Docling returns markdown text
-            text = result.get("markdown", "") or result.get("text", "")
+            doc = result.get("document", {})
+            text = doc.get("md_content") or doc.get("text_content") or ""
 
             metadata = {
-                "docling_pages": result.get("document", {}).get("pages", [])
-                and len(result.get("document", {}).get("pages", [])),
+                "docling_pages": doc.get("pages") and len(doc.get("pages", [])),
                 "extraction_method": "file",
             }
 
@@ -341,19 +340,18 @@ class ExtractionWorker:
                     filename = "document.pdf"
 
             response = requests.post(
-                f"{DOCLING_URL}/convert",
+                f"{DOCLING_URL}/v1/convert/file",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
             response.raise_for_status()
 
             result = response.json()
-            # Docling returns markdown text
-            text = result.get("markdown", "") or result.get("text", "")
+            doc = result.get("document", {})
+            text = doc.get("md_content") or doc.get("text_content") or ""
 
             metadata = {
-                "docling_pages": result.get("document", {}).get("pages", [])
-                and len(result.get("document", {}).get("pages", [])),
+                "docling_pages": doc.get("pages") and len(doc.get("pages", [])),
                 "extraction_method": "url",
             }
 

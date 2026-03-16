@@ -244,7 +244,7 @@ class ExtractionWorker:
                     logger.info(f"Adjusted filename to: {filename}")
 
             response = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
+                f"{DOCLING_URL}/convert",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
@@ -252,11 +252,7 @@ class ExtractionWorker:
             response.raise_for_status()
 
             result = response.json()
-            # Docling returns markdown text in "document.export_to_markdown()"
-            # The response has "document" key with the DoclingDocument
-            text = result.get("document", {}).get("md_content", "") or result.get(
-                "document", {}
-            ).get("text_content", "")
+            text = result.get("markdown", "") or result.get("text", "")
 
             metadata = {
                 "docling_pages": result.get("document", {}).get("pages", [])
@@ -282,7 +278,7 @@ class ExtractionWorker:
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
 
             response = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
+                f"{DOCLING_URL}/convert",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
@@ -291,9 +287,7 @@ class ExtractionWorker:
 
             result = response.json()
             # Docling returns markdown text
-            text = result.get("document", {}).get("md_content", "") or result.get(
-                "document", {}
-            ).get("text_content", "")
+            text = result.get("markdown", "") or result.get("text", "")
 
             metadata = {
                 "docling_pages": result.get("document", {}).get("pages", [])
@@ -347,7 +341,7 @@ class ExtractionWorker:
                     filename = "document.pdf"
 
             response = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
+                f"{DOCLING_URL}/convert",
                 files={"files": (filename, document_bytes)},
                 timeout=300,
             )
@@ -355,9 +349,7 @@ class ExtractionWorker:
 
             result = response.json()
             # Docling returns markdown text
-            text = result.get("document", {}).get("md_content", "") or result.get(
-                "document", {}
-            ).get("text_content", "")
+            text = result.get("markdown", "") or result.get("text", "")
 
             metadata = {
                 "docling_pages": result.get("document", {}).get("pages", [])

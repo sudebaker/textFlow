@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,6 +43,10 @@ var (
 	eventBus      *events.EventBus
 	healthChecker *health.HealthChecker
 	logger        zerolog.Logger
+
+	// Spreadsheet validation limits
+	maxSpreadsheetRows  int
+	maxSpreadsheetBytes int64
 )
 
 func main() {
@@ -79,6 +86,20 @@ func main() {
 	// Initialize comprehensive health checker
 	healthChecker = health.NewHealthChecker(redis, mqBroker, cfg)
 	logger.Info().Msg("Health checker initialized")
+
+	// Spreadsheet size limits
+	maxSpreadsheetRowsStr := os.Getenv("MAX_SPREADSHEET_ROWS")
+	if maxSpreadsheetRowsStr == "" {
+		maxSpreadsheetRowsStr = "2000"
+	}
+	maxSpreadsheetRows, _ = strconv.Atoi(maxSpreadsheetRowsStr)
+
+	maxSpreadsheetSizeMBStr := os.Getenv("MAX_SPREADSHEET_SIZE_MB")
+	if maxSpreadsheetSizeMBStr == "" {
+		maxSpreadsheetSizeMBStr = "5"
+	}
+	maxSpreadsheetSizeMB, _ := strconv.Atoi(maxSpreadsheetSizeMBStr)
+	maxSpreadsheetBytes = int64(maxSpreadsheetSizeMB * 1024 * 1024)
 
 	r := setupRouter()
 
@@ -638,6 +659,58 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
+	// Check spreadsheet size and row limits
+	if ext == ".csv" || ext == ".xls" || ext == ".xlsx" {
+		// Check file size
+		if header.Size > maxSpreadsheetBytes {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{
+				Error:  "file_too_large",
+				Detail: fmt.Sprintf("spreadsheet exceeds size limit of %d MB", maxSpreadsheetBytes/1024/1024),
+			})
+			return
+		}
+
+		// For CSV, count rows
+		if ext == ".csv" {
+			fileContent, err := ioutil.ReadAll(file)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, models.ErrorResponse{
+					Error:  "read_error",
+					Detail: "could not read file",
+				})
+				return
+			}
+
+			reader := csv.NewReader(bytes.NewReader(fileContent))
+			recordCount := 0
+			for {
+				_, err := reader.Read()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					c.JSON(http.StatusBadRequest, models.ErrorResponse{
+						Error:  "csv_parse_error",
+						Detail: "could not parse CSV file",
+					})
+					return
+				}
+				recordCount++
+			}
+
+			if recordCount > maxSpreadsheetRows {
+				c.JSON(http.StatusBadRequest, models.ErrorResponse{
+					Error:  "too_many_rows",
+					Detail: fmt.Sprintf("CSV exceeds row limit of %d rows (%d rows found)", maxSpreadsheetRows, recordCount),
+				})
+				return
+			}
+
+			// Rewind file for later use
+			file.Seek(0, 0)
+		}
+	}
+
 	jobID := generateJobID()
 	filename := filepath.Base(header.Filename)
 
@@ -745,6 +818,11 @@ func uploadHandler(c *gin.Context) {
 		MIMEType:      header.Header.Get("Content-Type"),
 		EntityTypes:   entityTypesList,
 		NotifyWebhook: notifyWebhook,
+	}
+
+	// Mark document type for pipeline routing
+	if ext == ".csv" || ext == ".xls" || ext == ".xlsx" {
+		jobMsg.MIMEType = "application/spreadsheet" // Use existing MIMEType field to mark it
 	}
 
 	if err := mqBroker.Publish(ctx, cfg.ExtractQueue, jobMsg); err != nil {

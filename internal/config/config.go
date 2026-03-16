@@ -30,6 +30,7 @@ type Config struct {
 	WebhookURL         string        `env:"WEBHOOK_URL" default:""`
 	UploadPath         string        `env:"UPLOAD_PATH" default:"/app/data/uploads"`
 	ResultsPath        string        `env:"RESULTS_PATH" default:"/app/data/results"`
+	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
 }
 
 func (c *Config) ParseLogLevel() zerolog.Level {

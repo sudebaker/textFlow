@@ -22,7 +22,6 @@ services:
           memory: 1G
         reservations:
           memory: 512M
-
   redis:
     image: redis:7-alpine
     container_name: ia-text-redis
@@ -46,7 +45,6 @@ services:
           memory: 1536M
         reservations:
           memory: 1G
-
   orchestrator:
     build:
       context: ../../
@@ -78,6 +76,7 @@ services:
     - METADATA_QUEUE=metadata
     - MAX_SPREADSHEET_ROWS=${MAX_SPREADSHEET_ROWS:-2000}
     - MAX_SPREADSHEET_SIZE_MB=${MAX_SPREADSHEET_SIZE_MB:-5}
+    - JOB_TIMEOUT=5m
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -95,7 +94,6 @@ services:
     volumes:
     - uploads-data:/app/data/uploads
     - results-data:/app/data/results
-
   resource-manager:
     build:
       context: ../../
@@ -112,7 +110,6 @@ services:
         limits:
           cpus: '0.5'
           memory: 128M
-
   extraction-worker:
     build:
       context: ../../
@@ -145,7 +142,6 @@ services:
     volumes:
     - uploads-data:/app/data/uploads:ro
     - /tmp/tiktoken_cache:/tmp/tiktoken_cache
-
   embeddings-worker:
     build:
       context: ../../
@@ -181,7 +177,6 @@ services:
         limits:
           cpus: '2'
           memory: 2G
-
   entities-worker:
     build:
       context: ../../
@@ -199,7 +194,7 @@ services:
     - METRICS_PORT=8002
     - PREFETCH_COUNT=5
     - HF_HOME=/home/app/.cache/huggingface
-    - GLINER_MODEL_PATH=/models/gliner_model
+    - GLINER_MODEL_PATH=/models/gliner-small-v2.1
     - GLINER_MODEL_NAME=urchade/gliner_large-v2.1
     - MAX_LENGTH=384
     - ALLOW_REMOTE_DOWNLOAD=false
@@ -209,14 +204,46 @@ services:
     - GLINER_DATE_THRESHOLD=0.45
     - GLINER_MONEY_THRESHOLD=0.55
     - ENTITIES_DEVICE=${ENTITIES_DEVICE:-cpu}
+    - ENTITY_TYPES=PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL
+    - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
     depends_on:
       redis:
+        condition: service_healthy
+      regex-entity-extractor:
         condition: service_healthy
     networks:
     - backend
     - datastore
     restart: unless-stopped
-
+  regex-entity-extractor:
+    build:
+      context: ../../
+      dockerfile: cmd/regex-entity-extractor/Dockerfile
+    container_name: ia-text-regex-entity-extractor
+    environment:
+    - LOG_LEVEL=info
+    - HTTP_PORT=8081
+    ports:
+    - 8081:8081
+    networks:
+    - backend
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --tries=1
+      - --spider
+      - http://localhost:8081/health
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
   metadata-worker:
     build:
       context: ../../
@@ -243,7 +270,6 @@ services:
         limits:
           cpus: '1'
           memory: 512M
-
   completion-worker:
     build:
       context: ../../
@@ -263,7 +289,6 @@ services:
         limits:
           cpus: '0.5'
           memory: 512M
-
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: ia-text-docling
@@ -291,7 +316,6 @@ services:
       start_period: 30s
     networks:
     - backend
-
 networks:
   frontend:
     driver: bridge
@@ -301,7 +325,6 @@ networks:
   datastore:
     driver: bridge
     internal: true
-
 volumes:
   redis-data:
     driver: local

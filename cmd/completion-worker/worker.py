@@ -177,43 +177,49 @@ class CompletionWorker:
         try:
             logger.info(f"Finalizing job: {job_id}")
 
-            meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
+            # Use Redis pipeline to fetch all required data in a single round-trip
+            pipe = self.redis_client.pipeline()
+            pipe.hgetall(f"orchestrator:job:{job_id}:meta")
+            pipe.hgetall(f"orchestrator:job:{job_id}:status")
+            pipe.get(f"orchestrator:job:{job_id}:text")
+            pipe.get(f"orchestrator:job:{job_id}:metadata:document")
+            pipe.get(f"orchestrator:job:{job_id}:metadata:text")
+            pipe.get(f"orchestrator:job:{job_id}:chunks")
+            pipe.get(f"orchestrator:job:{job_id}:embeddings")
+            pipe.get(f"orchestrator:job:{job_id}:entities_raw")
+            (
+                meta,
+                status_data,
+                text,
+                document_metadata_json,
+                text_metadata_json,
+                chunks_json,
+                embeddings_json,
+                entities_raw_json,
+            ) = pipe.execute()
+
             created_at_timestamp = int(meta.get("created_at", time.time()))
             created_at = datetime.fromtimestamp(created_at_timestamp).isoformat()
             completed_at = datetime.fromtimestamp(int(time.time())).isoformat()
 
-            status_data = self.redis_client.hgetall(f"orchestrator:job:{job_id}:status")
             if status_data and status_data.get("status") == "completed":
                 logger.info(f"Job {job_id} already finalized, skipping")
                 return
 
-            text = self.redis_client.get(f"orchestrator:job:{job_id}:text") or ""
+            text = text or ""
 
-            document_metadata_json = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:document"
-            )
             document_metadata = (
                 json.loads(document_metadata_json) if document_metadata_json else {}
             )
 
-            text_metadata_json = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:text"
-            )
             text_metadata = json.loads(text_metadata_json) if text_metadata_json else {}
 
-            chunks_json = self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
             chunks = json.loads(chunks_json) if chunks_json else []
 
-            embeddings_json = self.redis_client.get(
-                f"orchestrator:job:{job_id}:embeddings"
-            )
             embeddings_raw = json.loads(embeddings_json) if embeddings_json else {}
             embeddings = {"model": "BAAI/bge-m3", "dimension": 1024, **embeddings_raw}
 
             # Read RAW entities from entities-worker (before dedup)
-            entities_raw_json = self.redis_client.get(
-                f"orchestrator:job:{job_id}:entities_raw"
-            )
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
 
             # Apply deduplication at the end (now that we have all entities from all chunks)

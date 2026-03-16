@@ -412,6 +412,16 @@ class ExtractionWorker:
                 os.path.basename(message.get("document_path", "document.pdf")),
             )
 
+            # Guard: fail if Docling returned empty text (likely file type mismatch)
+            if not text:
+                actual_mime = document_metadata.get("mime_type", "unknown")
+                declared_mime = message.get("mime_type", "unknown")
+                raise ValueError(
+                    f"Empty text extracted from document. "
+                    f"Actual MIME type: {actual_mime}, declared: {declared_mime}. "
+                    f"File may be corrupt or have wrong extension."
+                )
+
             text_metadata = analyze_text(text)
 
             chunks = chunk_text(text)

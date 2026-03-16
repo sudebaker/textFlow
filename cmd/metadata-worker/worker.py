@@ -26,6 +26,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
+from pkg.worker_common.base import handle_retry
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -160,13 +161,18 @@ class MetadataWorker:
         except Exception as e:
             logger.error(f"Error processing metadata: {e}")
             jobs_total.labels(status="error").inc()
-            if job_id:
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:status", mapping={"metadata": "error"}
-                )
-                # Publish failed event
-                self.event_bus.publish_job_failed(job_id, str(e))
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            handle_retry(
+                job_id=job_id,
+                queue_name=QUEUE_NAME,
+                error=e,
+                ch=ch,
+                method=method,
+                redis_client=self.redis_client,
+                event_bus=self.event_bus,
+                logger=logger,
+                max_retries=3,
+                jobs_total_counter=jobs_total,
+            )
 
 
 @contextmanager

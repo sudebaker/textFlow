@@ -26,10 +26,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
 	"ia-text-orchestrator/internal/broker"
 	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/internal/events"
 	"ia-text-orchestrator/internal/health"
+	"ia-text-orchestrator/internal/middleware"
 	"ia-text-orchestrator/internal/models"
 	redisclient "ia-text-orchestrator/internal/redis"
 	"ia-text-orchestrator/pkg/logging"
@@ -166,6 +168,26 @@ func main() {
 		}
 	})
 
+	// Job timeout watchdog - expire stuck jobs
+	g.Go(func() error {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		logger.Info().Msg("Job timeout watchdog started")
+
+		for {
+			select {
+			case <-gCtx.Done():
+				logger.Info().Msg("Job timeout watchdog stopped")
+				return nil
+			case <-ticker.C:
+				if err := redis.ExpireStuckJobs(gCtx, cfg.JobTimeout); err != nil {
+					logger.Warn().Err(err).Msg("Failed to expire stuck jobs")
+				}
+			}
+		}
+	})
+
 	// Handle shutdown signals
 	g.Go(func() error {
 		quit := make(chan os.Signal, 1)
@@ -208,6 +230,13 @@ func setupRouter() *gin.Engine {
 	r.Use(gin.Recovery())
 	r.Use(ginLogger())
 	r.Use(metricsMiddleware())
+
+	// Rate limiter: 100 requests per second per IP, burst of 10
+	limiter := middleware.NewRateLimiter(
+		rate.Limit(100),
+		10,
+	)
+	r.Use(limiter.Middleware())
 
 	r.GET("/health", healthHandler)
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
@@ -360,7 +389,6 @@ func createJobHandler(c *gin.Context) {
 		JobID:          jobID,
 		DocumentBase64: req.DocumentBase64,
 		DocumentURL:    req.DocumentURL,
-		EntityTypes:    req.EntityTypes,
 	}
 
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
@@ -795,12 +823,6 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	entityTypes := c.PostForm("entity_types")
-	var entityTypesList []string
-	if entityTypes != "" {
-		entityTypesList = strings.Split(entityTypes, ",")
-	}
-
 	notifyWebhook := c.PostForm("notify_webhook")
 	if notifyWebhook == "" {
 		notifyWebhook = cfg.WebhookURL
@@ -826,7 +848,6 @@ func uploadHandler(c *gin.Context) {
 		JobID:         jobID,
 		DocumentPath:  filePath,
 		MIMEType:      header.Header.Get("Content-Type"),
-		EntityTypes:   entityTypesList,
 		NotifyWebhook: notifyWebhook,
 	}
 

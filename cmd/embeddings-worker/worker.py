@@ -29,6 +29,9 @@ import requests
 import torch
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
+sys.path.insert(0, "/app")
+from pkg.events_python import EventBus
+from pkg.worker_common.base import parse_rabbitmq_url, handle_retry
 from app.services.embeddings import EmbeddingService
 
 sys.path.insert(0, "/app")
@@ -177,12 +180,18 @@ class EmbeddingsWorker:
         except Exception as e:
             logger.error(f"Error processing embeddings: {e}")
             jobs_total.labels(status="error").inc()
-            if job_id:
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:status", mapping={"embeddings": "error"}
-                )
-                self.event_bus.publish_job_failed(job_id, str(e))
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            handle_retry(
+                job_id=job_id,
+                queue_name=QUEUE_NAME,
+                error=e,
+                ch=ch,
+                method=method,
+                redis_client=self.redis_client,
+                event_bus=self.event_bus,
+                logger=logger,
+                max_retries=3,
+                jobs_total_counter=jobs_total,
+            )
 
 
 @contextmanager

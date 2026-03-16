@@ -346,6 +346,97 @@ func (c *RedisClient) HealthCheck() error {
 	return c.client.Ping(ctx).Err()
 }
 
+// ExpireStuckJobs finds jobs that have been processing for longer than the timeout
+// and marks them as failed.
+func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration) error {
+	// Scan for all job:meta keys
+	var cursor uint64
+	var count int64 = 100
+
+	for {
+		keys, newCursor, err := c.client.Scan(ctx, cursor, c.key("job", "*", "meta"), count).Result()
+		if err != nil {
+			return fmt.Errorf("failed to scan job meta keys: %w", err)
+		}
+
+		now := time.Now()
+
+		for _, metaKey := range keys {
+			// Extract job ID from key (format: orchestrator:job:{id}:meta)
+			parts := strings.Split(metaKey, ":")
+			if len(parts) < 4 {
+				continue
+			}
+			jobID := parts[2]
+
+			// Get created_at timestamp
+			createdAtStr, err := c.client.HGet(ctx, metaKey, "created_at").Result()
+			if err != nil {
+				if err == redis.Nil {
+					continue
+				}
+				c.logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to read job created_at")
+				continue
+			}
+
+			// Parse timestamp
+			createdAt, err := time.Parse(time.RFC3339, createdAtStr)
+			if err != nil {
+				// Try parsing as Unix timestamp (for backward compatibility)
+				unixSeconds := 0
+				fmt.Sscanf(createdAtStr, "%d", &unixSeconds)
+				if unixSeconds > 0 {
+					createdAt = time.Unix(int64(unixSeconds), 0)
+				} else {
+					c.logger.Warn().Str("job_id", jobID).Str("created_at", createdAtStr).
+						Msg("Failed to parse job created_at timestamp")
+					continue
+				}
+			}
+
+			// Check if job has exceeded timeout
+			if now.Sub(createdAt) > timeout {
+				// Check current status
+				statusStr, err := c.client.HGet(ctx, c.key("job", jobID, "status"), "status").Result()
+				if err != nil && err != redis.Nil {
+					c.logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to read job status")
+					continue
+				}
+
+				// Only expire jobs in pending/processing/extracting state
+				if statusStr == "pending" || statusStr == "processing" || statusStr == "extracting" {
+					c.logger.Warn().
+						Str("job_id", jobID).
+						Dur("elapsed", now.Sub(createdAt)).
+						Dur("timeout", timeout).
+						Str("status", statusStr).
+						Msg("Job exceeded timeout, marking as failed")
+
+					// Mark job as failed
+					errorMsg := fmt.Sprintf("Job timeout after %v", timeout)
+					if err := c.SetJobError(ctx, jobID, errorMsg); err != nil {
+						c.logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to set job error")
+					}
+
+					// Update status
+					if err := c.client.HSet(ctx, c.key("job", jobID, "status"),
+						"status", "failed",
+						"error", errorMsg).Err(); err != nil {
+						c.logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to update job status")
+					}
+				}
+			}
+		}
+
+		cursor = newCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return nil
+}
+
 func (c *RedisClient) Close() error {
 	return c.client.Close()
 }

@@ -4,12 +4,46 @@ Event-driven microservices: Go orchestrator + Python workers (RabbitMQ, Redis, U
 
 ---
 
+## Air-Gapped Deployment (HARD REQUIREMENT)
+
+**This system is designed for on-premise, fully air-gapped deployment** — no internet access at build or runtime.
+
+### Model Files (CRITICAL)
+
+1. **Location on host:** `models/` directory (e.g., `/home/amphora/Proyectos/ia-text-ochestrator/models/`)
+2. **Mounted into containers:** `-v ../../models:/models` in docker-compose
+3. **Pre-downloaded on host:** All model files must already exist locally before building:
+   - `models/bge-m3/` → embeddings-worker (BAAI/bge-m3 model)
+   - `models/deberta-v3-small/` → GLiNER backbone tokenizer (must have: `config.json`, `pytorch_model.bin`, `spm.model`, `tokenizer_config.json`)
+   - `models/gliner-small-v2.1/` → GLiNER entity extractor (must have: `gliner_config.json`, `pytorch_model.bin`)
+   - `models/modern-gliner/` → embeddings-worker GLiNER variant
+
+### Docker Build Rules
+
+- ✅ **Allowed:** `pip install`, `go get` (build-time dependencies)
+- ❌ **FORBIDDEN:** `RUN python download_*.py`, `wget model_url`, `HF hub downloads`, HuggingFace Hub API calls at build time
+- ✅ **Enforced:** `ENV HF_HUB_OFFLINE=1` + `ENV TRANSFORMERS_OFFLINE=1` in production Dockerfiles (after model loading code)
+- ✅ **Required:** `local_files_only=True` when loading models from transformers/GLiNER
+
+### Model Config Paths
+
+- `models/gliner-small-v2.1/gliner_config.json` must have `"model_name": "/models/deberta-v3-small"` (absolute path, not HF identifier)
+- DeBERTa tokenizer files already exist at `models/deberta-v3-small/` (no separate download needed)
+
+### Verification
+
+Test offline mode:
+```bash
+docker run --network=none entities-worker  # Should start without internet
+```
+
+---
+
 ## Known Issues (CRITICAL)
 
-1. **Entities Worker Offline**: GLiNER makes unauthorized HF calls. Extracts ~35 entities vs 150-200. Test: `docker run --network=none entities-worker`
+1. **Entities Worker Offline**: GLiNER with local models now works correctly with `local_files_only=True` + offline env vars
 2. **Entity Deduplication**: Set `DEDUPLICATION_ENABLED=false` (threshold too aggressive)
 3. **Date/Money Thresholds**: Use `ENTITY_THRESHOLD_DATE=0.45`, `MONEY=0.55`
-4. **DEBUG Statements**: `cmd/orchestrator/main.go:355-356` - remove before prod
 
 ---
 

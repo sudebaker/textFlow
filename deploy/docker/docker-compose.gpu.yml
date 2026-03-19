@@ -1,0 +1,55 @@
+# GPU-Accelerated Deployment Override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Prerequisites: NVIDIA GPU, nvidia-docker, CUDA 11.8+ installed on host
+
+services:
+  docling:
+    image: quay.io/docling-project/docling-serve:latest-cuda12
+    environment:
+      - DOCLING_DEVICE=cuda:0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 8G  # GPU offloads models to VRAM, reduces system RAM needed
+    healthcheck:
+      start_period: 60s  # CUDA initialization takes longer
+
+  embeddings-worker:
+    build:
+      args:
+        CUDA_VERSION: cu118  # CUDA 11.8 support
+    environment:
+      - EMBEDDINGS_DEVICE=cuda
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: '4'
+          memory: 6G  # GPU reduces system RAM pressure
+
+  entities-worker:
+    build:
+      args:
+        CUDA_VERSION: cu118  # CUDA 11.8 support
+    environment:
+      - ENTITIES_DEVICE=cuda
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 6G  # GPU offloads GLiNER to VRAM

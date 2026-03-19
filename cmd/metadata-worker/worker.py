@@ -10,13 +10,11 @@ import logging
 import signal
 import sys
 import time
-from contextlib import contextmanager
 from typing import Dict, Optional
 from datetime import datetime
 import hashlib
 import mimetypes
 
-import pika
 import redis
 import requests
 from prometheus_client import Counter, Histogram, start_http_server
@@ -25,8 +23,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 # In Docker: worker.py is at /app/worker.py, pkg is at /app/pkg
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
-from pkg.worker_common.rabbitmq import parse_rabbitmq_url
-from pkg.worker_common.base import handle_retry
+from pkg.worker_common.rabbitmq import connect_rabbitmq, declare_queue
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -161,42 +158,7 @@ class MetadataWorker:
         except Exception as e:
             logger.error(f"Error processing metadata: {e}")
             jobs_total.labels(status="error").inc()
-            handle_retry(
-                job_id=job_id,
-                queue_name=QUEUE_NAME,
-                error=e,
-                ch=ch,
-                method=method,
-                redis_client=self.redis_client,
-                event_bus=self.event_bus,
-                logger=logger,
-                max_retries=3,
-                jobs_total_counter=jobs_total,
-            )
-
-
-@contextmanager
-def connect_rabbitmq(url: str, max_retries: int = 5):
-    """Connect to RabbitMQ with retry logic."""
-    for attempt in range(max_retries):
-        try:
-            params = parse_rabbitmq_url(url)
-            connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-            prefetch_count = int(os.getenv("PREFETCH_COUNT", "10"))
-            channel.basic_qos(prefetch_count=prefetch_count)
-            logger.info(
-                f"Connected to RabbitMQ at {params.host}:{params.port} with prefetch_count={prefetch_count}"
-            )
-            yield connection, channel
-            return
-        except Exception as e:
-            logger.warning(
-                f"Failed to connect to RabbitMQ (attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            if attempt < max_retries - 1:
-                time.sleep(2**attempt)
-    raise Exception("Failed to connect to RabbitMQ after max retries")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 
 def signal_handler(signum, frame):
@@ -217,9 +179,13 @@ def main():
 
     while True:
         try:
-            with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
+            with connect_rabbitmq(RABBITMQ_URL, prefetch_count=10) as (
+                connection,
+                channel,
+            ):
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
+                declare_queue(channel, QUEUE_NAME)
                 channel.basic_consume(
                     queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False
                 )

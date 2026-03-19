@@ -389,6 +389,7 @@ func createJobHandler(c *gin.Context) {
 		JobID:          jobID,
 		DocumentBase64: req.DocumentBase64,
 		DocumentURL:    req.DocumentURL,
+		Filename:       req.Filename,
 	}
 
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {

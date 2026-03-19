@@ -3,14 +3,18 @@ RabbitMQ connection utilities for workers.
 """
 
 import logging
+import os
 import time
 import urllib.parse
 from contextlib import contextmanager
-from typing import Generator, Tuple
+from typing import Generator, Optional, Tuple
 
 import pika
 
 logger = logging.getLogger(__name__)
+
+# Dead Letter Exchange config — must match internal/broker/rabbitmq.go
+DLX_EXCHANGE = "document_processor_dlx"
 
 
 def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
@@ -45,44 +49,92 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
     )
 
 
+def declare_queue(channel, queue_name: str, durable: bool = True) -> None:
+    """Declare a durable queue with DLX arguments matching the Go orchestrator.
+
+    This is idempotent — safe to call from both workers and orchestrator.
+    The DLX args must match internal/broker/rabbitmq.go:declareQueue().
+
+    Args:
+        channel: An open pika channel.
+        queue_name: Name of the queue to declare.
+        durable: Whether the queue survives broker restarts.
+    """
+    channel.queue_declare(
+        queue=queue_name,
+        durable=durable,
+        arguments={
+            "x-dead-letter-exchange": DLX_EXCHANGE,
+            "x-dead-letter-routing-key": f"{queue_name}_failed",
+        },
+    )
+
+
 @contextmanager
-def rabbitmq_connection(
-    url: str, max_retries: int = 5
+def connect_rabbitmq(
+    url: str,
+    max_retries: int = 5,
+    prefetch_count: Optional[int] = None,
 ) -> Generator[
     Tuple[pika.BlockingConnection, pika.adapters.blocking_connection.BlockingChannel],
     None,
     None,
 ]:
-    """
-    Context manager for RabbitMQ connection with retry logic.
+    """Connect to RabbitMQ with retry logic for the initial connection only.
+
+    Yields (connection, channel). The retry loop only covers the initial
+    connection attempt — exceptions raised inside the caller's ``with`` block
+    propagate normally so that the outer ``while True`` reconnection loop can
+    handle them.
 
     Args:
-        url: RabbitMQ connection URL
-        max_retries: Maximum number of connection attempts
+        url: RabbitMQ connection URL.
+        max_retries: Maximum number of initial connection attempts.
+        prefetch_count: QoS prefetch count. Defaults to PREFETCH_COUNT env var
+            or 5 if unset.
 
     Yields:
-        Tuple of (connection, channel)
+        Tuple of (connection, channel).
 
     Raises:
-        Exception: If connection fails after max_retries
-
-    Example:
-        >>> with rabbitmq_connection(RABBITMQ_URL) as (conn, channel):
-        >>>     channel.basic_qos(prefetch_count=5)
-        >>>     # Use channel...
+        Exception: If the initial connection fails after max_retries.
     """
+    if prefetch_count is None:
+        prefetch_count = int(os.getenv("PREFETCH_COUNT", "5"))
+
+    connection = None
+    params = None
     for attempt in range(max_retries):
         try:
             params = parse_rabbitmq_url(url)
             connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-            logger.info(f"Connected to RabbitMQ at {params.host}:{params.port}")
-            yield connection, channel
-            return
+            break
         except Exception as e:
             logger.warning(
-                f"Failed to connect to RabbitMQ (attempt {attempt + 1}/{max_retries}): {e}"
+                f"Failed to connect to RabbitMQ "
+                f"(attempt {attempt + 1}/{max_retries}): {e}"
             )
             if attempt < max_retries - 1:
                 time.sleep(2**attempt)
-    raise Exception("Failed to connect to RabbitMQ after max retries")
+
+    if connection is None:
+        raise Exception(f"Failed to connect to RabbitMQ after {max_retries} retries")
+
+    channel = connection.channel()
+    channel.basic_qos(prefetch_count=prefetch_count)
+    logger.info(
+        f"Connected to RabbitMQ at {params.host}:{params.port} "
+        f"with prefetch_count={prefetch_count}"
+    )
+
+    try:
+        yield connection, channel
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+# Backward compatibility alias — BaseWorker imports rabbitmq_connection
+rabbitmq_connection = connect_rabbitmq

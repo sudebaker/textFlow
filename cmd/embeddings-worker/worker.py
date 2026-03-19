@@ -20,7 +20,6 @@ import json
 import logging
 import signal
 import time
-from contextlib import contextmanager
 from typing import Dict, Optional, List, Any
 
 import pika
@@ -31,7 +30,11 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
-from pkg.worker_common.rabbitmq import parse_rabbitmq_url
+from pkg.worker_common.rabbitmq import (
+    parse_rabbitmq_url,
+    connect_rabbitmq,
+    declare_queue,
+)
 from app.services.embeddings import EmbeddingService
 
 logging.basicConfig(
@@ -181,29 +184,6 @@ class EmbeddingsWorker:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 
-@contextmanager
-def connect_rabbitmq(url: str, max_retries: int = 5):
-    for attempt in range(max_retries):
-        try:
-            params = parse_rabbitmq_url(url)
-            connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-            prefetch_count = int(os.getenv("PREFETCH_COUNT", "5"))
-            channel.basic_qos(prefetch_count=prefetch_count)
-            logger.info(
-                f"Connected to RabbitMQ at {params.host}:{params.port} with prefetch_count={prefetch_count}"
-            )
-            yield connection, channel
-            return
-        except Exception as e:
-            logger.warning(
-                f"Failed to connect to RabbitMQ (attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            if attempt < max_retries - 1:
-                time.sleep(2**attempt)
-    raise Exception("Failed to connect to RabbitMQ after max retries")
-
-
 def signal_handler(signum, frame):
     logger.info("Received shutdown signal, stopping worker...")
     sys.exit(0)
@@ -226,6 +206,7 @@ def main():
             with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
+                declare_queue(channel, QUEUE_NAME)
                 channel.basic_consume(
                     queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False
                 )

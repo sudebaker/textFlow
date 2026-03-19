@@ -9,17 +9,14 @@ ENV HF_HOME=/models
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# ⭐ CUDA CONFIGURATION (auto-detected at runtime)
-ENV CUDA_VISIBLE_DEVICES=0
-ENV NVIDIA_VISIBLE_DEVICES=0
-ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+# CUDA CONFIGURATION (set by docker-compose override for GPU deployments)
+# ENV CUDA_VISIBLE_DEVICES will be set at runtime, not in image
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch: CUDA optional via build arg, defaults to CPU
@@ -30,13 +27,15 @@ RUN if [ -n "$CUDA_VERSION" ]; then \
         pip install --no-cache-dir \
             torch torchvision torchaudio \
             --index-url https://download.pytorch.org/whl/${CUDA_VERSION}; \
+    else \
+        pip install --no-cache-dir torch torchvision torchaudio; \
     fi
 
 # Set working directory
 WORKDIR /app
 
 # Copy requirements first for better caching
-COPY cmd/embeddings-worker/requirements.txt .
+COPY cmd/embeddings-worker/requirements-base.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create app user

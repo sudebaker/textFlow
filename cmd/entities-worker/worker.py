@@ -682,14 +682,13 @@ class EntitiesWorker:
                 f"Entities completed for job: {job_id} in {duration:.2f}s, found {len(all_entities)} entities"
             )
 
-             ch.basic_ack(delivery_tag=method.delivery_tag)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as e:
             logger.error(f"Error processing entities: {e}")
             jobs_total.labels(status="error").inc()
             # Nack the message to requeue it for retry
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-
 
 
 @contextmanager

@@ -40,7 +40,6 @@ from urllib.parse import urlparse
 import pika
 import redis
 import requests
-import uvicorn
 from prometheus_client import (
     Counter,
     Histogram,
@@ -383,13 +382,19 @@ class BaseWorker:
 
         # Start health check server in background thread
         health_port = self.metrics_port + 1000
-        health_thread = threading.Thread(
-            target=lambda: uvicorn.run(
+
+        def start_uvicorn():
+            import uvicorn
+
+            uvicorn.run(
                 self.app,
                 host="0.0.0.0",
                 port=health_port,
                 log_level="warning",
-            ),
+            )
+
+        health_thread = threading.Thread(
+            target=start_uvicorn,
             daemon=True,
         )
         health_thread.start()

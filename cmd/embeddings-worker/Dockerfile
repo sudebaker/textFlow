@@ -24,11 +24,10 @@ RUN apt-get update && apt-get install -y \
 #        docker build                                 (for CPU)
 ARG CUDA_VERSION=""
 RUN if [ -n "$CUDA_VERSION" ]; then \
-        pip install --no-cache-dir \
-            torch torchvision torchaudio \
+        pip install --no-cache-dir torch \
             --index-url https://download.pytorch.org/whl/${CUDA_VERSION}; \
     else \
-        pip install --no-cache-dir torch torchvision torchaudio; \
+        pip install --no-cache-dir torch; \
     fi
 
 # Set working directory

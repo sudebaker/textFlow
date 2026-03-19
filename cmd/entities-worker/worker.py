@@ -36,7 +36,7 @@ from unidecode import unidecode
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
-from pkg.worker_common.base import handle_retry
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 from app.config.settings import Settings as AppSettings
 from sliding_window import (
     process_with_sliding_window,
@@ -682,23 +682,14 @@ class EntitiesWorker:
                 f"Entities completed for job: {job_id} in {duration:.2f}s, found {len(all_entities)} entities"
             )
 
-            ch.basic_ack(delivery_tag=method.delivery_tag)
+             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as e:
             logger.error(f"Error processing entities: {e}")
             jobs_total.labels(status="error").inc()
-            handle_retry(
-                job_id=job_id,
-                queue_name=QUEUE_NAME,
-                error=e,
-                ch=ch,
-                method=method,
-                redis_client=self.redis_client,
-                event_bus=self.event_bus,
-                logger=logger,
-                max_retries=3,
-                jobs_total_counter=jobs_total,
-            )
+            # Nack the message to requeue it for retry
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
 
 
 @contextmanager

@@ -183,8 +183,6 @@ services:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: ia-text-entities-worker
-    mem_limit: 4g
-    memswap_limit: 4g
     volumes:
     - ../../models:/models
     environment:

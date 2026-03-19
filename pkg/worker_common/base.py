@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 import pika
 import redis
 import requests
+import uvicorn
 from prometheus_client import (
     Counter,
     Histogram,
@@ -55,88 +56,6 @@ sys.path.insert(0, "/app")
 
 from pkg.events_python import EventBus
 from pkg.logging_python import setup_logging, JobLogger
-
-
-def handle_retry(
-    job_id: str,
-    queue_name: str,
-    error: Exception,
-    ch: Any,
-    method: Any,
-    redis_client: redis.Redis,
-    event_bus: EventBus,
-    logger: logging.Logger,
-    max_retries: int = 3,
-    jobs_total_counter: Optional[Any] = None,
-) -> None:
-    """
-    Handle transient error with exponential backoff retry logic.
-
-    Args:
-        job_id: Job ID for tracking retries
-        queue_name: Queue name for the retry counter key
-        error: The exception that occurred
-        ch: RabbitMQ channel
-        method: Delivery method
-        redis_client: Redis client
-        event_bus: Event bus for publishing job events
-        logger: Logger instance
-        max_retries: Maximum number of retries (default 3)
-        jobs_total_counter: Prometheus counter (optional)
-    """
-    retry_key = f"orchestrator:job:{job_id}:retry:{queue_name}"
-    retry_count = 0
-
-    try:
-        retry_count = int(redis_client.get(retry_key) or 0)
-    except Exception:
-        retry_count = 0
-
-    if retry_count >= max_retries:
-        # Max retries exceeded - dead-letter the job
-        logger.error(
-            f"Job {job_id} exceeded max retries ({max_retries}) on queue {queue_name}. "
-            f"Dead-lettering message. Error: {error}"
-        )
-        if jobs_total_counter:
-            jobs_total_counter.labels(status="max_retries_exceeded").inc()
-
-        if job_id:
-            try:
-                redis_client.hset(
-                    f"orchestrator:job:{job_id}:status",
-                    mapping={
-                        "status": "failed",
-                        "error": f"Max retries exceeded: {str(error)}",
-                    },
-                )
-                event_bus.publish_job_failed(
-                    job_id, f"Max retries exceeded: {str(error)}"
-                )
-            except Exception as redis_error:
-                logger.error(f"Failed to update job status: {redis_error}")
-
-        # Reject without requeue
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-    else:
-        # Retry with exponential backoff
-        retry_count += 1
-        backoff_seconds = min(2**retry_count, 60)  # Cap at 60 seconds
-
-        logger.warning(
-            f"Job {job_id} failed on queue {queue_name} "
-            f"(retry {retry_count}/{max_retries}). "
-            f"Retrying in {backoff_seconds}s. Error: {error}"
-        )
-
-        # Store retry count in Redis with TTL
-        redis_client.setex(retry_key, 3600, str(retry_count))  # 1 hour TTL
-
-        # Sleep before requeuing
-        time.sleep(backoff_seconds)
-
-        # Reject and requeue
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 
 def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
@@ -463,17 +382,18 @@ class BaseWorker:
         self.logger.info(f"Metrics server started on port {self.metrics_port}")
 
         # Start health check server in background thread
+        health_port = self.metrics_port + 1000
         health_thread = threading.Thread(
-            target=self.app.run,
-            kwargs={
-                "host": "0.0.0.0",
-                "port": self.metrics_port + 1000,
-                "debug": False,
-            },
+            target=lambda: uvicorn.run(
+                self.app,
+                host="0.0.0.0",
+                port=health_port,
+                log_level="warning",
+            ),
             daemon=True,
         )
         health_thread.start()
-        self.logger.info(f"Health server started on port {self.metrics_port + 1000}")
+        self.logger.info(f"Health server started on port {health_port}")
 
         # Main processing loop
         while not self._shutdown_requested:
@@ -507,7 +427,9 @@ class BaseWorker:
         """
         Handle incoming message from RabbitMQ.
 
-        Override this method in subclasses for custom processing.
+        Override process_message() in subclasses for custom processing.
+        Transient errors (ConnectionError, TimeoutError) trigger automatic retry.
+        Permanent errors (ValueError, etc.) are dead-lettered.
 
         Args:
             ch: RabbitMQ channel
@@ -537,28 +459,118 @@ class BaseWorker:
                 extra={"job_id": job_id, "duration": duration},
             )
 
+        except (ConnectionError, TimeoutError, redis.ConnectionError) as e:
+            # Transient error — trigger automatic retry with exponential backoff
+            duration = time.time() - start_time
+            self.jobs_total.labels(status="transient_error").inc()
+
+            self.logger.warning(
+                f"Job {job_id} encountered transient error: {e}",
+                extra={"job_id": job_id, "error": str(e)},
+            )
+
+            # Auto-retry with exponential backoff
+            self._handle_transient_error(job_id, ch, method, e)
+
         except Exception as e:
+            # Permanent error — dead-letter the job
             duration = time.time() - start_time
             self.jobs_total.labels(status="error").inc()
 
             self.logger.error(
-                f"Job {job_id} failed: {e}",
+                f"Job {job_id} failed permanently: {e}",
                 extra={"job_id": job_id, "error": str(e)},
             )
 
             # Update job status in Redis
             if job_id:
                 try:
-                    self.redis_client.hset(
+                    self.redis_client.set(
                         f"orchestrator:job:{job_id}:status",
-                        mapping={"status": "error", "error": str(e)},
+                        "failed",
+                    )
+                    self.redis_client.set(
+                        f"orchestrator:job:{job_id}:error",
+                        str(e),
                     )
                     self.event_bus.publish_job_failed(job_id, str(e))
                 except Exception as redis_error:
                     self.logger.error(f"Failed to update job status: {redis_error}")
 
-            # Reject message (requeue if transient error)
+            # Dead-letter the message (no requeue)
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    def _handle_transient_error(
+        self, job_id: str, ch, method, error: Exception, max_retries: int = 3
+    ) -> None:
+        """
+        Handle transient error with exponential backoff retry logic.
+
+        Automatically retries transient errors (ConnectionError, TimeoutError) up to
+        max_retries times with exponential backoff: 2^retry_count seconds (capped at 60s).
+
+        Args:
+            job_id: Job ID for tracking retries
+            ch: RabbitMQ channel
+            method: Delivery method
+            error: The transient exception that occurred
+            max_retries: Maximum number of retries (default 3)
+        """
+        retry_key = f"orchestrator:job:{job_id}:retry:{self.queue_name}"
+        retry_count = 0
+
+        try:
+            retry_count = int(self.redis_client.get(retry_key) or 0)
+        except Exception:
+            retry_count = 0
+
+        if retry_count >= max_retries:
+            # Max retries exceeded - dead-letter the job
+            self.logger.error(
+                f"Job {job_id} exceeded max retries ({max_retries}) on queue {self.queue_name}. "
+                f"Dead-lettering. Error: {error}"
+            )
+            self.jobs_total.labels(status="max_retries_exceeded").inc()
+
+            if job_id:
+                try:
+                    self.redis_client.set(
+                        f"orchestrator:job:{job_id}:status",
+                        "failed",
+                    )
+                    self.redis_client.set(
+                        f"orchestrator:job:{job_id}:error",
+                        f"Max retries exceeded: {str(error)}",
+                    )
+                    self.event_bus.publish_job_failed(
+                        job_id, f"Max retries exceeded: {str(error)}"
+                    )
+                except Exception as redis_error:
+                    self.logger.error(f"Failed to update job status: {redis_error}")
+
+            # Reject without requeue
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        else:
+            # Retry with exponential backoff
+            retry_count += 1
+            backoff_seconds = min(2**retry_count, 60)  # Cap at 60 seconds
+
+            self.logger.info(
+                f"Job {job_id} will retry in {backoff_seconds}s "
+                f"(attempt {retry_count}/{max_retries})"
+            )
+
+            # Store retry count in Redis with TTL
+            self.redis_client.setex(retry_key, 3600, str(retry_count))  # 1 hour TTL
+
+            # Sleep before requeuing
+            # NOTE: This blocks the consumer thread for up to 60 seconds per retry.
+            # For high-throughput scenarios, consider using a separate delayed queue
+            # or dead-letter exchange with TTL instead of blocking.
+            time.sleep(backoff_seconds)
+
+            # Reject and requeue (message goes back to queue)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def process_message(self, message: Dict) -> Any:
         """
@@ -577,75 +589,3 @@ class BaseWorker:
     def should_shutdown(self) -> bool:
         """Check if shutdown has been requested."""
         return self._shutdown_requested
-
-    def handle_retry(
-        self,
-        job_id: str,
-        queue_name: str,
-        error: Exception,
-        ch: pika.adapters.blocking_connection.BlockingChannel,
-        method: pika.spec.Basic.Deliver,
-        max_retries: int = 3,
-    ) -> None:
-        """
-        Handle transient error with exponential backoff retry logic.
-
-        Args:
-            job_id: Job ID for tracking retries
-            queue_name: Queue name for the retry counter key
-            error: The exception that occurred
-            ch: RabbitMQ channel
-            method: Delivery method
-            max_retries: Maximum number of retries (default 3)
-        """
-        retry_key = f"orchestrator:job:{job_id}:retry:{queue_name}"
-        retry_count = 0
-
-        try:
-            retry_count = int(self.redis_client.get(retry_key) or 0)
-        except Exception:
-            retry_count = 0
-
-        if retry_count >= max_retries:
-            # Max retries exceeded - dead-letter the job
-            self.logger.error(
-                f"Job {job_id} exceeded max retries ({max_retries}) on queue {queue_name}. "
-                f"Dead-lettering message. Error: {error}"
-            )
-            self.jobs_total.labels(status="max_retries_exceeded").inc()
-            if job_id:
-                try:
-                    self.redis_client.hset(
-                        f"orchestrator:job:{job_id}:status",
-                        mapping={
-                            "status": "failed",
-                            "error": f"Max retries exceeded: {str(error)}",
-                        },
-                    )
-                    self.event_bus.publish_job_failed(
-                        job_id, f"Max retries exceeded: {str(error)}"
-                    )
-                except Exception as redis_error:
-                    self.logger.error(f"Failed to update job status: {redis_error}")
-
-            # Reject without requeue
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        else:
-            # Retry with exponential backoff
-            retry_count += 1
-            backoff_seconds = min(2**retry_count, 60)  # Cap at 60 seconds
-
-            self.logger.warning(
-                f"Job {job_id} failed on queue {queue_name} "
-                f"(retry {retry_count}/{max_retries}). "
-                f"Retrying in {backoff_seconds}s. Error: {error}"
-            )
-
-            # Store retry count in Redis with TTL
-            self.redis_client.setex(retry_key, 3600, str(retry_count))  # 1 hour TTL
-
-            # Sleep before requeuing
-            time.sleep(backoff_seconds)
-
-            # Reject and requeue
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)

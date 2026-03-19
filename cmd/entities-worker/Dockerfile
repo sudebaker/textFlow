@@ -1,15 +1,7 @@
 # GLiNER Entity Extraction Worker - Python
 # Multi-stage build for air-gapped deployment
 
-# Stage 1: Builder (for any compilation needs)
-FROM python:3.11.12-slim-bookworm as builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Stage 2: Final image
+# Final image (no unused builder stage)
 FROM python:3.11.12-slim-bookworm
 
 LABEL maintainer="ia-text-orchestrator"
@@ -22,6 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,9 +24,9 @@ RUN useradd --create-home --shell /bin/bash app \
     && mkdir -p /models /home/app/.cache/huggingface
 
 # Copy requirements
-COPY cmd/entities-worker/requirements.txt .
+COPY cmd/entities-worker/requirements-base.txt ./requirements.txt
 
-# Install Python dependencies
+# Install Python dependencies (excluding torch)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.txt
 
@@ -43,6 +37,8 @@ ARG CUDA_VERSION=""
 RUN if [ -n "$CUDA_VERSION" ]; then \
         pip install --no-cache-dir torch \
             --index-url https://download.pytorch.org/whl/${CUDA_VERSION}; \
+    else \
+        pip install --no-cache-dir torch; \
     fi
 
 # Enforce offline mode - models are pre-downloaded and mounted as volumes

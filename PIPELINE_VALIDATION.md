@@ -1,7 +1,7 @@
 # IA Text Orchestrator - Pipeline Validation Report
 
 ## Date: 2026-03-19
-## Status: ✅ **PRODUCTION-READY** (CPU validated, GPU support ready)
+## Status: ✅ **PRODUCTION-READY** (CPU validated, GPU support ready but untested)
 
 ---
 
@@ -416,14 +416,14 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 
 ## Performance Impact of Improvements
 
-| Aspect | Before | After | Improvement |
-|--------|--------|-------|-------------|
+| Aspect | Before | After | Status |
+|--------|--------|-------|--------|
 | Docling startup (no models) | ~2-3 min | ~30 sec | 4-6x faster |
 | Entity extraction quality | 6 entities | 8+ entities | ~30% more valid entities |
 | Job timeout recovery | Never | Auto (30 min) | Prevents stuck jobs |
 | Transient error recovery | Permanent failure | Auto-retry | 99% more resilient |
 | Observability | None | Full metrics | Complete visibility |
-| GPU deployment ready | Not available | Tested & ready | 10-15x faster processing |
+| GPU deployment | Not available | Ready (untested) | Requires GPU hardware to validate |
 
 | Component | Version | Status | Notes |
 |-----------|---------|--------|-------|

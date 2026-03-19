@@ -36,6 +36,15 @@ COPY cmd/entities-worker/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.txt
 
+# Install PyTorch: CUDA optional via build arg, defaults to CPU
+# Usage: docker build --build-arg CUDA_VERSION=cu118 (for GPU)
+#        docker build                                 (for CPU)
+ARG CUDA_VERSION=""
+RUN if [ -n "$CUDA_VERSION" ]; then \
+        pip install --no-cache-dir torch \
+            --index-url https://download.pytorch.org/whl/${CUDA_VERSION}; \
+    fi
+
 # Enforce offline mode - models are pre-downloaded and mounted as volumes
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1

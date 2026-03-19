@@ -5,7 +5,7 @@ node_modules/
 **/node_modules/
 
 # Modelos / binarios grandes
-models/
+/models/
 **/*.safetensors
 **/*.pt
 **/*.bin

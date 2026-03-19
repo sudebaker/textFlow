@@ -74,6 +74,7 @@ type JobMessage struct {
 	DocumentPath   string `json:"document_path,omitempty"`
 	DocumentBase64 string `json:"document_base64,omitempty"`
 	DocumentURL    string `json:"document_url,omitempty"`
+	Filename       string `json:"filename,omitempty"`
 	MIMEType       string `json:"mime_type,omitempty"`
 	NotifyWebhook  string `json:"notify_webhook,omitempty"`
 }

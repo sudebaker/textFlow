@@ -21,7 +21,7 @@ except ImportError:
 # Configuration
 ORCHESTRATOR_URL = "http://localhost:8080"
 TEST_DOCUMENT_PATH = "/home/amphora/Proyectos/ia-text-ochestrator/data/input/sentencia-fiscal-garcia-ortiz.pdf"
-MAX_WAIT_TIME = 300  # 5 minutes maximum
+MAX_WAIT_TIME = 1800  # 30 minutes — CPU mode is slow for large docs
 POLL_INTERVAL = 5  # Check status every 5 seconds
 
 

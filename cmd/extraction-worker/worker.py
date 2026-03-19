@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import signal
 import sys
 import json
 import base64
@@ -22,7 +23,11 @@ from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
-from pkg.worker_common.rabbitmq import parse_rabbitmq_url
+from pkg.worker_common.rabbitmq import (
+    parse_rabbitmq_url,
+    connect_rabbitmq,
+    declare_queue,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -45,6 +50,14 @@ METRICS_PORT = int(os.getenv("METRICS_PORT", "8004"))
 CHUNK_SIZE_TOKENS = int(os.getenv("CHUNK_SIZE_TOKENS", "512"))
 CHUNK_OVERLAP_TOKENS = int(os.getenv("CHUNK_OVERLAP_TOKENS", "50"))
 EXIFTOOL_PATH = os.getenv("EXIFTOOL_PATH", "/usr/bin/exiftool")
+
+# Docling OCR settings — disable by default (text PDFs don't need OCR).
+# Set DOCLING_DO_OCR=true to re-enable; change DOCLING_OCR_ENGINE to easyocr
+# only if EasyOCR model files are present under /models/docling/EasyOcr/.
+DOCLING_DO_OCR = os.getenv("DOCLING_DO_OCR", "false").lower() == "true"
+DOCLING_OCR_ENGINE = os.getenv("DOCLING_OCR_ENGINE", "rapidocr")
+# Maximum seconds to wait for a single docling conversion (async polling).
+DOCLING_CONVERSION_TIMEOUT = int(os.getenv("DOCLING_CONVERSION_TIMEOUT", "1800"))
 
 try:
     tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -239,6 +252,71 @@ class ExtractionWorker:
         except:
             pass
 
+    def _docling_convert(self, document_bytes: bytes, filename: str) -> Dict[str, Any]:
+        """Submit a document to docling via the async endpoint and poll until done.
+
+        Using the async flow avoids hitting uvicorn's per-request timeout, which
+        is ~120 s by default and too short for large PDFs on CPU.
+        """
+        # Submit conversion job asynchronously
+        submit_resp = requests.post(
+            f"{DOCLING_URL}/v1/convert/file/async",
+            files={"files": (filename, document_bytes)},
+            data={
+                "do_ocr": str(DOCLING_DO_OCR).lower(),
+                "ocr_engine": DOCLING_OCR_ENGINE,
+                # Use placeholder instead of embedded base64 to keep output size
+                # manageable. Embedded images inflate markdown to tens of MB,
+                # producing thousands of unnecessary chunks downstream.
+                "image_export_mode": "placeholder",
+            },
+            timeout=30,
+        )
+        submit_resp.raise_for_status()
+        task_id = submit_resp.json()["task_id"]
+        logger.info(f"Docling async task submitted: {task_id}")
+
+        # Poll until task_status is 'success' or 'failure'.
+        # Use docling's long-poll ?wait= param so the server holds the connection
+        # up to N seconds before returning, reducing polling frequency.
+        # A minimum sleep of 5 s between iterations guards against tight-looping
+        # if docling returns immediately (e.g. task still queued).
+        poll_deadline = time.time() + DOCLING_CONVERSION_TIMEOUT
+        while True:
+            remaining = poll_deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Docling conversion timed out after {DOCLING_CONVERSION_TIMEOUT}s"
+                    f" (task_id={task_id})"
+                )
+            wait_secs = min(30, remaining)
+            status_resp = requests.get(
+                f"{DOCLING_URL}/v1/status/poll/{task_id}",
+                params={"wait": wait_secs},
+                timeout=wait_secs + 10,
+            )
+            status_resp.raise_for_status()
+            status_data = status_resp.json()
+            task_status = status_data.get("task_status", "")
+            logger.info(f"Docling task {task_id} status: {task_status}")
+
+            if task_status == "success":
+                break
+            if task_status in ("failure", "error"):
+                raise RuntimeError(
+                    f"Docling conversion failed (task_id={task_id}): {status_data}"
+                )
+            # Still pending/processing — sleep before next poll to avoid spinning
+            time.sleep(5)
+
+        # Fetch the result
+        result_resp = requests.get(
+            f"{DOCLING_URL}/v1/result/{task_id}",
+            timeout=30,
+        )
+        result_resp.raise_for_status()
+        return result_resp.json()
+
     def extract_text_from_base64(
         self, document_base64: str, filename: str = "document"
     ) -> Dict[str, Any]:
@@ -246,21 +324,13 @@ class ExtractionWorker:
             document_bytes = base64.b64decode(document_base64)
             logger.info(f"Decoded {len(document_bytes)} bytes, filename: {filename}")
 
-            # Detectar si es PDF por los magic bytes
+            # Detect PDF by magic bytes
             if document_bytes[:4] == b"%PDF":
                 if not filename.lower().endswith(".pdf"):
                     filename = filename + ".pdf"
                     logger.info(f"Adjusted filename to: {filename}")
 
-            response = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
-                files={"files": (filename, document_bytes)},
-                timeout=300,
-            )
-            logger.info(f"Docling response status: {response.status_code}")
-            response.raise_for_status()
-
-            result = response.json()
+            result = self._docling_convert(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
 
@@ -286,15 +356,7 @@ class ExtractionWorker:
                 document_bytes = f.read()
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
 
-            response = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
-                files={"files": (filename, document_bytes)},
-                timeout=300,
-            )
-            logger.info(f"Docling response status: {response.status_code}")
-            response.raise_for_status()
-
-            result = response.json()
+            result = self._docling_convert(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
 
@@ -348,14 +410,7 @@ class ExtractionWorker:
                 if "." not in filename:
                     filename = "document.pdf"
 
-            response = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
-                files={"files": (filename, document_bytes)},
-                timeout=300,
-            )
-            response.raise_for_status()
-
-            result = response.json()
+            result = self._docling_convert(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
 
@@ -394,7 +449,10 @@ class ExtractionWorker:
                 )
                 text = result["text"]
             elif message.get("document_base64"):
-                result = self.extract_text_from_base64(message["document_base64"])
+                result = self.extract_text_from_base64(
+                    message["document_base64"],
+                    filename=message.get("filename", "document"),
+                )
                 text = result["text"]
             elif message.get("document_url"):
                 result = self.extract_text_from_url(message["document_url"])
@@ -533,24 +591,39 @@ class ExtractionWorker:
                     pass
 
 
+def signal_handler(signum, frame):
+    logger.info("Received shutdown signal, stopping worker...")
+    sys.exit(0)
+
+
 def main():
-    # Start Prometheus metrics server
-    logger.info(f"Starting metrics server on port {METRICS_PORT}")
+    logger.info("Starting Extraction Worker")
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     start_http_server(METRICS_PORT)
+    logger.info(f"Metrics server started on port {METRICS_PORT}")
 
     worker = ExtractionWorker()
 
-    params = parse_rabbitmq_url(RABBITMQ_URL)
-    connection = pika.BlockingConnection(params)
-    channel = connection.channel()
-
-    channel.basic_qos(prefetch_count=PREFETCH_COUNT)
-    channel.basic_consume(
-        queue=QUEUE_NAME, on_message_callback=worker.process_message, auto_ack=False
-    )
-
-    logger.info(f"Extraction worker started. Consuming from queue: {QUEUE_NAME}")
-    channel.start_consuming()
+    while True:
+        try:
+            with connect_rabbitmq(RABBITMQ_URL, prefetch_count=PREFETCH_COUNT) as (
+                connection,
+                channel,
+            ):
+                declare_queue(channel, QUEUE_NAME)
+                logger.info(f"Consuming from queue: {QUEUE_NAME}")
+                channel.basic_consume(
+                    queue=QUEUE_NAME,
+                    on_message_callback=worker.process_message,
+                    auto_ack=False,
+                )
+                channel.start_consuming()
+        except Exception as e:
+            logger.error(f"RabbitMQ connection error: {e}")
+            time.sleep(5)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import hashlib
 import subprocess
 import tempfile
 import logging
+import time
 import pika
 import redis
 import requests
@@ -17,6 +18,7 @@ from typing import Dict, Optional, List, Any
 from urllib.parse import urlparse
 from pathlib import Path
 import tiktoken
+from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
@@ -27,11 +29,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Prometheus metrics
+jobs_total = Counter("extraction_worker_jobs_total", "Total jobs processed", ["status"])
+job_duration = Histogram(
+    "extraction_worker_job_duration_seconds", "Job processing duration in seconds"
+)
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
 DOCLING_URL = os.getenv("DOCLING_URL", "http://docling:5001")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "extract_text")
 PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "3"))
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8004"))
 
 CHUNK_SIZE_TOKENS = int(os.getenv("CHUNK_SIZE_TOKENS", "512"))
 CHUNK_OVERLAP_TOKENS = int(os.getenv("CHUNK_OVERLAP_TOKENS", "50"))
@@ -367,6 +376,7 @@ class ExtractionWorker:
     def process_message(self, ch, method, properties, body):
         job_id = None
         temp_file_path = None
+        start_time = time.time()
 
         try:
             message = json.loads(body)
@@ -499,6 +509,10 @@ class ExtractionWorker:
             ch.basic_ack(delivery_tag=method.delivery_tag)
             logger.info(f"Text extraction completed for job: {job_id}")
 
+            # Record metrics
+            job_duration.observe(time.time() - start_time)
+            jobs_total.labels(status="success").inc()
+
         except Exception as e:
             logger.error(f"Error processing extraction: {e}")
             if job_id:
@@ -508,6 +522,9 @@ class ExtractionWorker:
                 self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
                 self.event_bus.publish_job_failed(job_id, str(e))
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+            # Record failure metrics
+            jobs_total.labels(status="error").inc()
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
@@ -517,6 +534,10 @@ class ExtractionWorker:
 
 
 def main():
+    # Start Prometheus metrics server
+    logger.info(f"Starting metrics server on port {METRICS_PORT}")
+    start_http_server(METRICS_PORT)
+
     worker = ExtractionWorker()
 
     params = parse_rabbitmq_url(RABBITMQ_URL)

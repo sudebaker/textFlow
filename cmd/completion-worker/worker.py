@@ -13,6 +13,7 @@ import redis
 import requests
 from datetime import datetime
 from typing import Dict, Any, Optional
+from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
@@ -21,11 +22,21 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Prometheus metrics
+jobs_finalized_total = Counter(
+    "completion_worker_jobs_finalized_total", "Total jobs finalized", ["status"]
+)
+job_finalization_duration = Histogram(
+    "completion_worker_job_finalization_duration_seconds",
+    "Job finalization duration in seconds",
+)
 
 
 class CompletionWorker:
@@ -174,6 +185,7 @@ class CompletionWorker:
             logger.error(f"Error checking job completion: {e}")
 
     def finalize_job(self, job_id: str):
+        finalization_start_time = time.time()
         try:
             logger.info(f"Finalizing job: {job_id}")
 
@@ -263,6 +275,10 @@ class CompletionWorker:
                 f"Job {job_id} finalized: chunks={len(chunks)}, entities={len(entities)}"
             )
 
+            # Record metrics
+            job_finalization_duration.observe(time.time() - finalization_start_time)
+            jobs_finalized_total.labels(status="success").inc()
+
         except Exception as e:
             logger.error(f"Error finalizing job: {e}", exc_info=True)
             self.redis_client.hset(
@@ -273,6 +289,10 @@ class CompletionWorker:
             )
             self.send_webhook(job_id, "failed", str(e))
             self.event_bus.publish_job_failed(job_id, str(e))
+
+            # Record failure metrics
+            job_finalization_duration.observe(time.time() - finalization_start_time)
+            jobs_finalized_total.labels(status="error").inc()
 
     def handle_event(self, message):
         try:
@@ -320,6 +340,10 @@ class CompletionWorker:
 
 
 def main():
+    # Start Prometheus metrics server
+    logger.info(f"Starting metrics server on port {METRICS_PORT}")
+    start_http_server(METRICS_PORT)
+
     worker = CompletionWorker()
     worker.start()
 

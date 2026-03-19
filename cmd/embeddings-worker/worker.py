@@ -31,7 +31,6 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
-from pkg.worker_common.base import parse_rabbitmq_url
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 from app.services.embeddings import EmbeddingService
 

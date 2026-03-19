@@ -160,7 +160,8 @@ services:
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=5
-    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
+    - EMBEDDINGS_DEVICE=cuda
+    - CUDA_VISIBLE_DEVICES=0
     depends_on:
       redis:
         condition: service_healthy
@@ -174,10 +175,14 @@ services:
       resources:
         limits:
           cpus: '2'
-          memory: 2G
+          memory: 6G
         reservations:
           cpus: '1'
           memory: 1G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   entities-worker:
     build:
       context: ../../
@@ -205,7 +210,8 @@ services:
     - GLINER_DATE_THRESHOLD=0.45
     - GLINER_MONEY_THRESHOLD=0.55
     - DEDUPLICATION_ENABLED=false
-    - ENTITIES_DEVICE=${ENTITIES_DEVICE:-cpu}
+    - ENTITIES_DEVICE=cuda
+    - CUDA_VISIBLE_DEVICES=0
     - ENTITY_TYPES=PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL
     - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
     depends_on:
@@ -223,10 +229,14 @@ services:
       resources:
         limits:
           cpus: '1'
-          memory: 4G
+          memory: 6G
         reservations:
           cpus: '0.5'
           memory: 2G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   regex-entity-extractor:
     build:
       context: ../../
@@ -310,7 +320,7 @@ services:
     volumes:
     - ../../models/docling:/models/docling
     environment:
-    - DOCLING_DEVICE=${DOCLING_DEVICE:-auto}
+    - DOCLING_DEVICE=cuda:0
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
     - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=info
@@ -321,7 +331,11 @@ services:
         limits:
           memory: 16G
         reservations:
-          memory: 12G
+          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
       test:
       - CMD

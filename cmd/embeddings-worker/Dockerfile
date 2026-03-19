@@ -22,12 +22,15 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch with CUDA (auto-detect CUDA version)
-# This works with CUDA 11.8, 12.1, 12.2, 12.4
-# COMMENTED for offline mode - will fail if models needed
-# RUN pip install --no-cache-dir \
-#     torch torchvision torchaudio \
-#     --index-url https://download.pytorch.org/whl/cu118
+# Install PyTorch: CUDA optional via build arg, defaults to CPU
+# Usage: docker build --build-arg CUDA_VERSION=cu118 (for GPU)
+#        docker build                                 (for CPU)
+ARG CUDA_VERSION=""
+RUN if [ -n "$CUDA_VERSION" ]; then \
+        pip install --no-cache-dir \
+            torch torchvision torchaudio \
+            --index-url https://download.pytorch.org/whl/${CUDA_VERSION}; \
+    fi
 
 # Set working directory
 WORKDIR /app

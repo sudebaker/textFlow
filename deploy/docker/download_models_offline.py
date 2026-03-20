@@ -167,32 +167,39 @@ def verify_cache_structure(cache_dir: Path):
 
 
 def download_docling_models(output_dir: Path) -> bool:
-    """Download Docling artifacts into a host directory using docling-tools."""
+    """Download Docling artifacts into a host directory by copying from Docker image cache."""
     print("📥 Downloading Docling models")
     print(f"   Output: {output_dir}")
 
     try:
         output_dir.mkdir(exist_ok=True, parents=True)
-        docker_volume = f"{output_dir.resolve()}:/models/docling"
-
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            docker_volume,
-            "quay.io/docling-project/docling-serve:latest",
-            "docling-tools",
-            "models",
-            "download",
-            "-o",
-            "/models/docling",
-        ]
-
-        subprocess.run(cmd, check=True)
-
+        
+        # Use docker create + docker cp to avoid permission issues with volume mounts
+        image = "quay.io/docling-project/docling-serve:latest"
+        
+        # Create a temporary container
+        container_id = subprocess.check_output(
+            ["docker", "create", image], text=True
+        ).strip()
+        
+        try:
+            # Copy models from container to host
+            subprocess.run(
+                [
+                    "docker", "cp",
+                    f"{container_id}:/opt/app-root/src/.cache/docling/models/.",
+                    str(output_dir),
+                ],
+                check=True,
+            )
+        finally:
+            # Clean up container
+            subprocess.run(["docker", "rm", container_id], check=False)
+        
         file_count = sum(1 for f in output_dir.rglob("*") if f.is_file())
+        dir_count = sum(1 for d in output_dir.iterdir() if d.is_dir())
         print("✅ Docling models downloaded successfully")
+        print(f"   Directories: {dir_count}")
         print(f"   Files: {file_count}")
         print()
         return True

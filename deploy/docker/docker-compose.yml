@@ -190,6 +190,7 @@ services:
     container_name: ia-text-entities-worker
     volumes:
     - ../../models:/models
+    - ../../models/huggingface_cache:/home/app/.cache/huggingface
     environment:
     # ⭐ Offline mode (CRITICAL for air-gapped deployment)
     - HF_HUB_OFFLINE=1

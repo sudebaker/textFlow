@@ -36,7 +36,8 @@ class Settings:
         self.app_settings = AppSettings()
         self.port = int(os.getenv("PORT", "8080"))
         self.model_path = self.app_settings.gliner_model_path
-        self.model_name = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
+        self.model_name = os.getenv(
+            "GLINER_MODEL_NAME", "urchade/gliner_small-v2.1")
         self.allow_remote_download = self.app_settings.allow_remote_download
 
         # Legacy threshold (fallback if per-type not specified)
@@ -54,7 +55,8 @@ class Settings:
         self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "32"))
         self.max_length = int(os.getenv("GLINER_MAX_LENGTH", "512"))
         self.default_entity_types = self._parse_entity_types(
-            os.getenv("GLINER_DEFAULT_ENTITY_TYPES", ",".join(DEFAULT_ENTITY_TYPES))
+            os.getenv("GLINER_DEFAULT_ENTITY_TYPES",
+                      ",".join(DEFAULT_ENTITY_TYPES))
         )
         self.use_mock = os.getenv("GLINER_USE_MOCK", "false").lower() in {
             "1",
@@ -269,7 +271,8 @@ class GLiNERAdapter:
                 return
             except Exception as e:
                 self.model_status = "unavailable"
-                self.logger.error(f"Failed to load model from HuggingFace: {e}")
+                self.logger.error(
+                    f"Failed to load model from HuggingFace: {e}")
                 raise
         else:
             self.model_status = "missing_model"
@@ -402,7 +405,8 @@ class GLiNERAdapter:
 
 
 settings = Settings()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(SERVICE_NAME)
 
 adapter = GLiNERAdapter(settings, logger)
@@ -427,7 +431,8 @@ REQUEST_COUNT = Counter(
     "gliner_requests_total", "Total GLiNER requests", ["endpoint", "status"]
 )
 REQUEST_LATENCY = Histogram(
-    "gliner_request_latency_ms", "Request latency in milliseconds", ["endpoint"]
+    "gliner_request_latency_ms", "Request latency in milliseconds", [
+        "endpoint"]
 )
 
 
@@ -442,7 +447,8 @@ async def add_metrics(request: Request, call_next):
         raise
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        REQUEST_COUNT.labels(endpoint=request.url.path, status=str(status_code)).inc()
+        REQUEST_COUNT.labels(endpoint=request.url.path,
+                             status=str(status_code)).inc()
         REQUEST_LATENCY.labels(endpoint=request.url.path).observe(elapsed_ms)
     return response
 
@@ -495,7 +501,8 @@ async def extract_entities_batch(payload: BatchExtractRequest):
 )
 async def health():
     checks = adapter.health()
-    status = "healthy" if checks.get("model") in {"ready", "mock"} else "degraded"
+    status = "healthy" if checks.get(
+        "model") in {"ready", "mock"} else "degraded"
 
     return HealthResponse(
         status=status,

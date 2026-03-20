@@ -4,104 +4,39 @@ Event-driven microservices: Go orchestrator + Python workers (RabbitMQ, Redis, U
 
 ---
 
-## Air-Gapped Deployment (HARD REQUIREMENT)
-
-**This system is designed for on-premise, fully air-gapped deployment** — no internet access at build or runtime.
-
-### Model Files (CRITICAL)
-
-1. **Location on host:** `models/` directory (e.g., `/path/to/textflow/models/`)
-2. **Mounted into containers:** `-v ../../models:/models` in docker-compose
-3. **Pre-downloaded on host:** All model files must already exist locally before building:
-   - `models/bge-m3/` → embeddings-worker (BAAI/bge-m3 model)
-   - `models/deberta-v3-small/` → GLiNER backbone tokenizer (must have: `config.json`, `pytorch_model.bin`, `spm.model`, `tokenizer_config.json`)
-   - `models/gliner-small-v2.1/` → GLiNER entity extractor (must have: `gliner_config.json`, `pytorch_model.bin`)
-   - `models/modern-gliner/` → embeddings-worker GLiNER variant
-
-### Docker Build Rules
-
-- ✅ **Allowed:** `pip install`, `go get` (build-time dependencies)
-- ❌ **FORBIDDEN:** `RUN python download_*.py`, `wget model_url`, `HF hub downloads`, HuggingFace Hub API calls at build time
-- ✅ **Enforced:** `ENV HF_HUB_OFFLINE=1` + `ENV TRANSFORMERS_OFFLINE=1` in production Dockerfiles (after model loading code)
-- ✅ **Required:** `local_files_only=True` when loading models from transformers/GLiNER
-
-### Model Config Paths
-
-- `models/gliner-small-v2.1/gliner_config.json` must have `"model_name": "/models/deberta-v3-small"` (absolute path, not HF identifier)
-- DeBERTa tokenizer files already exist at `models/deberta-v3-small/` (no separate download needed)
-
-### Verification
-
-Test offline mode:
-```bash
-docker run --network=none entities-worker  # Should start without internet
-```
-
----
-
-## Known Issues (CRITICAL)
-
-1. **Entities Worker Offline**: GLiNER with local models now works correctly with `local_files_only=True` + offline env vars
-2. **Entity Deduplication**: Set `DEDUPLICATION_ENABLED=false` (threshold too aggressive)
-3. **Date/Money Thresholds**: Use `ENTITY_THRESHOLD_DATE=0.45`, `MONEY=0.55`
-
----
-
 ## Build / Test Commands
 
 ```bash
 make help                  # Show all commands
-make infra-up             # Start RabbitMQ, Redis, Unstructured
-make infra-down           # Stop infrastructure
-make docker-up/down       # Start/stop all with docker-compose
-make run-orchestrator     # Run orchestrator (port 8080)
-make run-embeddings-worker
-make run-entities-worker
-make run-workers          # All workers
-make test                 # Go tests
-make test-coverage        # With coverage HTML
-make test-python          # Python tests
-make lint / lint-fix      # golangci-lint
-make format               # go fmt + black + isort
-make build                # Build binaries
+make infra-up              # Start RabbitMQ, Redis, Docling
+make infra-down            # Stop infrastructure
+make docker-up/down        # Start/stop all with docker-compose
+make run-orchestrator      # Run orchestrator (port 8080)
+make run-embeddings-worker # Run embeddings worker
+make run-entities-worker   # Run entities worker ⚠️ offline-critical
+make run-workers           # All workers
+make test                  # Run all Go tests
+make test-coverage         # With coverage HTML
+make test-python           # Run all Python tests
+make lint / lint-fix       # golangci-lint
+make format                # go fmt + black + isort
+make build                 # Build binaries
 ```
 
 ### Single Tests
 
-**Go:** `go test -v ./internal/redis/...` | `-run TestFunc`
+**Go:** `go test -v ./internal/redis/...` | `-run TestFunc` | `./internal/redis/client_test.go`
 
-**Python:** `pytest cmd/embeddings-worker/tests/test_api.py -v` | `::test_name`
+**Python:** 
+- `pytest cmd/embeddings-worker/tests/test_chunking.py -v`
+- `pytest cmd/embeddings-worker/tests/test_chunking.py::TestChunkingService::test_basic_chunking -v`
+- `pytest cmd/entities-worker/tests/test_api.py -v`
 
----
-
-## Project Structure
-
-```
-cmd/              # Services: orchestrator (Go, 8080), resource-manager (Go, 9090),
-                  # embeddings-worker, entities-worker (⚠️), extraction-worker, 
-                  # metadata-worker, completion-worker (Python)
-internal/         # Go: broker/, config/, events/, middleware/, models/, redis/
-pkg/              # Shared: logging/, metrics/, events_python.py, worker_common/base.py
-```
-
----
-
-## Python Worker Pattern (BaseWorker)
-
-```python
-import sys; sys.path.insert(0, "/app")
-from pkg.worker_common.base import BaseWorker
-
-class MyWorker(BaseWorker):
-    def __init__(self):
-        super().__init__(worker_name="my-worker", queue_name="my_queue", 
-                         metrics_port=8001, requires_gpu=False)
-
-    def process_message(self, message: dict):
-        return result  # Store via self.redis_client, publish via self.event_bus
-
-if __name__ == "__main__":
-    MyWorker().run()
+**Entities Worker Offline:**
+```bash
+python cmd/entities-worker/offline_diagnosis.py
+python cmd/entities-worker/test_offline_ner.py
+docker run --network=none entities-worker python test_offline_ner.py
 ```
 
 ---
@@ -124,6 +59,7 @@ from pkg.worker_common.base import BaseWorker
 ```
 
 ### Naming
+
 | Element | Convention | Example |
 |---------|------------|---------|
 | Python classes | PascalCase | `EmbeddingService` |
@@ -134,6 +70,8 @@ from pkg.worker_common.base import BaseWorker
 | Go unexported | camelCase | `jobTTL` |
 
 ### Error Handling
+
+**Python:**
 ```python
 try:
     result = process(data)
@@ -145,6 +83,7 @@ except Exception as e:
     raise HTTPException(status_code=500, detail="Processing error")
 ```
 
+**Go:**
 ```go
 result, err := client.GetJobStatus(ctx, jobID)
 if err != nil {
@@ -154,9 +93,20 @@ if err != nil {
 ```
 
 ### Config
-```python
-# Python: pydantic_settings.BaseSettings with env_prefix
-# Go: struct with env tags: `env:"VAR_NAME,required"` or `default:"value"`
+
+**Python:** `pydantic_settings.BaseSettings` with `env_prefix`
+**Go:** struct with `env:"VAR_NAME,required"` or `default:"value"` tags
+
+---
+
+## Project Structure
+
+```
+cmd/              # Orchestrator (Go, 8080), resource-manager (Go, 9090),
+                  # embeddings-worker, entities-worker, extraction-worker,
+                  # metadata-worker, completion-worker (Python)
+internal/         # Go: broker/, config/, events/, middleware/, models/, redis/
+pkg/              # shared: logging/, metrics/, events_python.py, worker_common/base.py
 ```
 
 ---
@@ -175,32 +125,26 @@ if err != nil {
 
 ---
 
-## Required Env Vars
+## Air-Gapped Deployment (CRITICAL)
+
+**No internet at build or runtime.**
+
+### Model Files
+
+Mount `-v ../../models:/models` with:
+- `models/bge-m3/` → embeddings-worker
+- `models/deberta-v3-small/` → GLiNER backbone (config.json, pytorch_model.bin, spm.model, tokenizer_config.json)
+- `models/gliner-small-v2.1/` → GLiNER extractor (gliner_config.json, pytorch_model.bin)
+- `models/modern-gliner/` → embeddings-worker GLiNER variant
+
+### Docker Build Rules
+
+- ✅ `pip install`, `go get`
+- ❌ `RUN python download_*.py`, `wget`, HF Hub API
+- ✅ `ENV HF_HUB_OFFLINE=1` + `ENV TRANSFORMERS_OFFLINE=1`
+- ✅ `local_files_only=True` when loading models
+
+### Verification
 
 ```bash
-REDIS_URL=redis://localhost:6379
-RABBITMQ_URL=amqp://localhost:5672/
-UNSTRUCTURED_URL=http://localhost:8000
-GLINER_MODEL_PATH=/models/gliner_multitask-v0.5
-TRANSFORMERS_OFFLINE=1
-HF_HUB_OFFLINE=1
-ALLOW_REMOTE_DOWNLOAD=false
-DEDUPLICATION_ENABLED=false
-ENTITY_THRESHOLD_DATE=0.45
-ENTITY_THRESHOLD_MONEY=0.55
-```
-
----
-
-## Quick Start
-
-```bash
-make infra-up
-curl http://localhost:8080/health
-make run-orchestrator
-make run-embeddings-worker && make run-entities-worker
-curl -X POST http://localhost:8080/v1/documents/process \
-  -H "Content-Type: application/json" \
-  -d '{"document_url": "https://example.com/doc.pdf"}'
-redis-cli GET "orchestrator:job:{job_id}:entities"
-```
+docker run --network=none entities-worker

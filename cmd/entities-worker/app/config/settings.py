@@ -22,12 +22,12 @@ class Settings(BaseSettings):
 
     # GLiNER Model Configuration
     gliner_model_path: str = Field(
-        default="/models/gliner_large",
+        default="/models/gliner-small-v2.1",
         description="Path to GLiNER model (local or HuggingFace model name)",
     )
 
     gliner_model_size: str = Field(
-        default="large", description="Model size: small, base, large"
+        default="small", description="Model size: small, base, large"
     )
 
     # Entity Types Configuration

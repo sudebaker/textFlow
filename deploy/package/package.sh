@@ -41,17 +41,20 @@ log()  { echo "[package] $*"; }
 warn() { echo "[package] WARNING: $*" >&2; }
 die()  { echo "[package] ERROR: $*" >&2; exit 1; }
 
-# Convert an image reference to a safe filename (replace / : with -)
+# Convert an image reference to a safe filename.
 # Rules:
 #   - strip registry host prefix (anything before last '/')
-#   - if tag is "latest", omit it (e.g. docker-orchestrator:latest -> docker-orchestrator.tar.gz)
-#   - otherwise append tag with dash (e.g. rabbitmq:3.12-management -> rabbitmq-3.12-management.tar.gz)
+#   - for built images (docker-* prefix): strip `:latest` from filename
+#     e.g. docker-orchestrator:latest -> docker-orchestrator.tar.gz
+#   - for external images: always include the tag
+#     e.g. rabbitmq:3.12-management  -> rabbitmq-3.12-management.tar.gz
+#     e.g. docling-serve:latest      -> docling-serve-latest.tar.gz
 image_to_filename() {
   local img="$1"
   local base tag
   base=$(basename "${img%%:*}")   # strip tag, then basename
   tag="${img##*:}"
-  if [[ "$tag" == "latest" ]]; then
+  if [[ "$base" == docker-* && "$tag" == "latest" ]]; then
     echo "${base}.tar.gz"
   else
     echo "${base}-${tag}.tar.gz"
@@ -138,7 +141,7 @@ cp "$COMPOSE_GPU"             "$DIST_DIR/config/docker-compose.gpu.yml"
 if [[ -f ".env.example" ]]; then
   cp ".env.example" "$DIST_DIR/config/.env.example"
 else
-  warn ".env.example not found at repo root — skipping"
+  die ".env.example not found at repo root — bundle would be incomplete without it"
 fi
 
 # ---------------------------------------------------------------------------

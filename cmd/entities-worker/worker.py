@@ -5,6 +5,31 @@ Consumes messages from RabbitMQ and extracts entities using GLiNER
 """
 
 # Configure cache paths and enforce offline mode BEFORE importing transformers/gliner
+from sliding_window import (
+    process_with_sliding_window,
+    estimate_tokens,
+    requires_sliding_window,
+)
+from app.config.settings import Settings as AppSettings
+from pkg.worker_common.rabbitmq import (
+    parse_rabbitmq_url,
+    connect_rabbitmq,
+    declare_queue,
+)
+from pkg.events_python import EventBus
+from unidecode import unidecode
+from rapidfuzz import fuzz
+from prometheus_client import Counter, Histogram, Gauge, start_http_server
+import requests
+import redis
+import pika
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+import time
+import sys
+import signal
+import logging
+import json
 import os
 
 # Enforce offline mode - models are pre-downloaded and mounted as volumes
@@ -17,43 +42,20 @@ os.environ["TOKENIZERS_PARALLELISM"] = (
     "false"  # Prevent hanging in tokenizer initialization
 )
 
-import json
-import logging
-import signal
-import sys
-import time
-from typing import Dict, List, Optional, Any
-from pathlib import Path
-
-import pika
-import redis
-import requests
-from prometheus_client import Counter, Histogram, Gauge, start_http_server
-from rapidfuzz import fuzz
-from unidecode import unidecode
 
 sys.path.insert(0, "/app")
-from pkg.events_python import EventBus
-from pkg.worker_common.rabbitmq import (
-    parse_rabbitmq_url,
-    connect_rabbitmq,
-    declare_queue,
-)
-from app.config.settings import Settings as AppSettings
-from sliding_window import (
-    process_with_sliding_window,
-    estimate_tokens,
-    requires_sliding_window,
-)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-jobs_total = Counter("entities_worker_jobs_total", "Total jobs processed", ["status"])
-job_duration = Histogram("entities_worker_job_duration_seconds", "Job duration")
-gpu_available = Gauge("entities_worker_gpu_available", "GPU availability", ["device"])
+jobs_total = Counter("entities_worker_jobs_total",
+                     "Total jobs processed", ["status"])
+job_duration = Histogram(
+    "entities_worker_job_duration_seconds", "Job duration")
+gpu_available = Gauge("entities_worker_gpu_available",
+                      "GPU availability", ["device"])
 entities_deduplicated = Counter(
     "entities_worker_deduplicated_total", "Total entities deduplicated"
 )
@@ -66,7 +68,7 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 GLINER_MODEL_PATH = app_settings.gliner_model_path
-GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_large-v2.1")
+GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_small-v2.1")
 HF_CACHE_DIR = os.getenv("HF_CACHE_DIR", "/root/.cache/huggingface")
 ENTITY_TYPES = os.getenv(
     "ENTITY_TYPES", "PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL"
@@ -128,7 +130,8 @@ class EntitiesWorker:
         from gliner import GLiNER
 
         # Model path
-        model_path = os.getenv("GLINER_MODEL_PATH", "/models/gliner_model")
+        model_path = os.getenv("GLINER_MODEL_PATH",
+                               "/models/gliner-small-v2.1")
         deberta_path = "/models/deberta-v3-small"
 
         logger.info("=" * 70)
@@ -149,7 +152,8 @@ class EntitiesWorker:
             # Check for gliner_config.json (required)
             config_file = model_path_obj / "gliner_config.json"
             if not config_file.exists():
-                raise FileNotFoundError(f"gliner_config.json not found in {model_path}")
+                raise FileNotFoundError(
+                    f"gliner_config.json not found in {model_path}")
 
             # Check for model weights
             model_files = list(model_path_obj.glob("*.bin")) + list(
@@ -161,7 +165,8 @@ class EntitiesWorker:
                 )
 
             logger.info(f"   ✓ GLiNER config found: gliner_config.json")
-            logger.info(f"   ✓ GLiNER model weights found: {len(model_files)} file(s)")
+            logger.info(
+                f"   ✓ GLiNER model weights found: {len(model_files)} file(s)")
 
             # Verify DeBERTa backbone exists
             deberta_path_obj = Path(deberta_path)
@@ -172,7 +177,8 @@ class EntitiesWorker:
 
             # Check for critical tokenizer files
             # DeBERTa-v3-large uses SentencePiece (spm.model), not fast tokenizer (tokenizer.json)
-            critical_files = ["spm.model", "tokenizer_config.json", "config.json"]
+            critical_files = ["spm.model",
+                              "tokenizer_config.json", "config.json"]
             missing_files = [
                 f for f in critical_files if not (deberta_path_obj / f).exists()
             ]
@@ -182,7 +188,8 @@ class EntitiesWorker:
                 )
 
             deberta_files = len(list(deberta_path_obj.glob("*")))
-            logger.info(f"   ✓ DeBERTa backbone found: {deberta_files} file(s)")
+            logger.info(
+                f"   ✓ DeBERTa backbone found: {deberta_files} file(s)")
             logger.info(f"   ✓ Tokenizer files verified")
 
             # Load GLiNER with offline mode
@@ -229,7 +236,7 @@ class EntitiesWorker:
             logger.error(f"  1. Check GLiNER files: ls -la {model_path}/")
             logger.error(f"  2. Check DeBERTa files: ls -la {deberta_path}/")
             logger.error(
-                f'  3. Verify gliner_config.json has: "model_name": "/models/deberta-v3-large"'
+                '  3. Verify gliner_config.json has: "model_name": "/models/deberta-v3-small"'
             )
             logger.error("=" * 70)
 
@@ -418,7 +425,8 @@ class EntitiesWorker:
                     similarity = (
                         fuzz.ratio(
                             self.normalize_entity_text(text),
-                            self.normalize_entity_text(existing_entity["text"]),
+                            self.normalize_entity_text(
+                                existing_entity["text"]),
                         )
                         / 100.0
                     )
@@ -429,7 +437,8 @@ class EntitiesWorker:
                             "confidence", 0
                         ):
                             existing_entity["confidence"] = entity["confidence"]
-                            existing_entity["text"] = text  # Keep original text
+                            # Keep original text
+                            existing_entity["text"] = text
 
                         # Track positions (optional, for multiple occurrences)
                         if "positions" not in existing_entity:
@@ -491,7 +500,8 @@ class EntitiesWorker:
                             {
                                 "text": entity.get("text", ""),
                                 "label": entity.get("label", ""),
-                                "confidence": 1.0,  # Regex patterns have high confidence (verified)
+                                # Regex patterns have high confidence (verified)
+                                "confidence": 1.0,
                                 "start": 0,
                                 "end": 0,
                                 "chunk_id": chunk_id_str,
@@ -547,7 +557,8 @@ class EntitiesWorker:
             logger.info(f"Entity types: {entity_types}")
 
             if not chunks:
-                chunks_json = self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+                chunks_json = self.redis_client.get(
+                    f"orchestrator:job:{job_id}:chunks")
                 if chunks_json:
                     chunks = json.loads(chunks_json)
                 else:
@@ -555,7 +566,8 @@ class EntitiesWorker:
                         f"No chunks found in message or Redis for job: {job_id}"
                     )
                     jobs_total.labels(status="no_chunks").inc()
-                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                    ch.basic_nack(
+                        delivery_tag=method.delivery_tag, requeue=False)
                     return
 
             all_entities = []
@@ -565,7 +577,8 @@ class EntitiesWorker:
                 chunk_id = chunk.get("chunk_id")
                 chunk_text = chunk.get("text", "")
                 # Get chunk offset from either field name (support both formats)
-                chunk_offset = chunk.get("start_offset") or chunk.get("offset") or 0
+                chunk_offset = chunk.get(
+                    "start_offset") or chunk.get("offset") or 0
 
                 if not chunk_text:
                     continue
@@ -657,7 +670,8 @@ class EntitiesWorker:
                 if text:
                     regex_entities = self._extract_regex_entities(text)
                     all_entities.extend(regex_entities)
-                    logger.info(f"Added {len(regex_entities)} regex-based entities")
+                    logger.info(
+                        f"Added {len(regex_entities)} regex-based entities")
             except Exception as e:
                 logger.warning(f"Failed to extract regex entities: {e}")
                 # Continue anyway - regex extraction is optional

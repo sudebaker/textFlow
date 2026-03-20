@@ -189,7 +189,7 @@ MODELS_SIZE=$(du -sh "$DIST_DIR/models.tar.gz" | awk '{print $1}')
 } > "$DIST_DIR/MANIFEST.txt"
 
 for img in "${BUILT_IMAGES[@]}" "${EXTERNAL_IMAGES[@]}"; do
-  digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo "")
+  digest=$(docker inspect --format='{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$img" 2>/dev/null || echo "")
   if [[ -z "$digest" ]]; then
     # Fall back to image ID (short 12-char) for locally-built images with no digest
     short_id=$(docker inspect --format='{{slice .Id 7 19}}' "$img" 2>/dev/null || echo "unavailable")

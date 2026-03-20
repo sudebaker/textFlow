@@ -43,7 +43,8 @@ die()  { echo "[package] ERROR: $*" >&2; exit 1; }
 
 # Convert an image reference to a safe filename.
 # Rules:
-#   - strip registry host prefix (anything before last '/')
+#   - strip registry host/org prefix (anything before last '/') using basename
+#     on the tag-stripped portion, so registry:port/image:tag works correctly
 #   - for built images (docker-* prefix): strip `:latest` from filename
 #     e.g. docker-orchestrator:latest -> docker-orchestrator.tar.gz
 #   - for external images: always include the tag
@@ -51,8 +52,9 @@ die()  { echo "[package] ERROR: $*" >&2; exit 1; }
 #     e.g. docling-serve:latest      -> docling-serve-latest.tar.gz
 image_to_filename() {
   local img="$1"
-  local base tag
-  base=$(basename "${img%%:*}")   # strip tag, then basename
+  local no_tag base tag
+  no_tag="${img%:*}"             # strip tag (last colon only)
+  base=$(basename "$no_tag")     # strip registry/org prefix
   tag="${img##*:}"
   if [[ "$base" == docker-* && "$tag" == "latest" ]]; then
     echo "${base}.tar.gz"
@@ -75,6 +77,8 @@ done
 # ---------------------------------------------------------------------------
 # Preflight checks
 # ---------------------------------------------------------------------------
+docker info > /dev/null 2>&1 || die "Docker daemon is not running or not accessible"
+
 if [[ ! -f "$COMPOSE_BASE" ]]; then
   die "Compose file not found: $COMPOSE_BASE (run from repo root)"
 fi
@@ -109,11 +113,14 @@ fi
 # ---------------------------------------------------------------------------
 save_image() {
   local img="$1"
-  local filename
+  local filename dest tmp
   filename=$(image_to_filename "$img")
-  local dest="$DIST_DIR/images/$filename"
+  dest="$DIST_DIR/images/$filename"
+  tmp="${dest}.tmp"
+  trap 'rm -f "$tmp"' ERR
   log "  Saving $img -> $dest ..."
-  docker save "$img" | gzip > "$dest"
+  docker save "$img" | gzip > "$tmp"
+  mv "$tmp" "$dest"
 }
 
 log "Saving built images ..."
@@ -185,7 +192,7 @@ for img in "${BUILT_IMAGES[@]}" "${EXTERNAL_IMAGES[@]}"; do
   digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo "")
   if [[ -z "$digest" ]]; then
     # Fall back to image ID (short 12-char) for locally-built images with no digest
-    short_id=$(docker inspect --format='{{.Id}}' "$img" 2>/dev/null | cut -c8-19 || echo "unavailable")
+    short_id=$(docker inspect --format='{{slice .Id 7 19}}' "$img" 2>/dev/null || echo "unavailable")
     echo "  $img  sha256:$short_id" >> "$DIST_DIR/MANIFEST.txt"
   else
     # Use the digest, abbreviated to 12 chars after "sha256:"

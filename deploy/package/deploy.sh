@@ -10,7 +10,7 @@ set -euo pipefail
 # Config
 # ---------------------------------------------------------------------------
 DIST_DIR="dist"
-REMOTE_DIR="~/ia-text-deployment/"
+REMOTE_DIR="ia-text-deployment/"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -20,24 +20,15 @@ warn() { echo "[deploy] WARNING: $*" >&2; }
 die()  { echo "[deploy] ERROR: $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Usage
-# ---------------------------------------------------------------------------
-usage() {
-  echo "Usage: bash deploy/package/deploy.sh <user@host|host>"
-  echo ""
-  echo "Transfers dist/ to <host>:~/ia-text-deployment/ using rsync."
-  echo ""
-  echo "Examples:"
-  echo "  bash deploy/package/deploy.sh 10.0.0.5"
-  echo "  bash deploy/package/deploy.sh admin@10.0.0.5"
-  exit 1
-}
-
-# ---------------------------------------------------------------------------
 # Parse args
 # ---------------------------------------------------------------------------
 if [[ $# -lt 1 ]]; then
-  die "Missing required argument: <host>"$'\n'"$(usage 2>&1 || true)"
+  echo "Usage: bash deploy/package/deploy.sh <user@host|host>" >&2
+  echo "" >&2
+  echo "Examples:" >&2
+  echo "  bash deploy/package/deploy.sh 10.0.0.5" >&2
+  echo "  bash deploy/package/deploy.sh user@10.0.0.5" >&2
+  exit 1
 fi
 
 TARGET="$1"

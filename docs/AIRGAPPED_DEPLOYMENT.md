@@ -161,13 +161,13 @@ docker compose -f config/docker-compose.yml ps
 # Confirm the orchestrator is healthy
 curl http://localhost:8080/health
 
-# Submit a test document (replace with an actual file path)
-curl -X POST http://localhost:8080/api/v1/jobs \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@/path/to/test.pdf"
+# Submit a test document (actual endpoint is POST /api/v1/documents/process)
+curl -X POST http://localhost:8080/api/v1/documents/process \
+  -H "Content-Type: application/json" \
+  -d '{"document_url": "http://example.com/test.pdf"}'
 
 # Check RabbitMQ queues
-open http://localhost:15672   # guest / guest by default
+# Navigate to: http://localhost:15672 (guest / guest by default)
 ```
 
 ---
@@ -214,7 +214,8 @@ models/
 │   ├── pytorch_model.bin
 │   ├── spm.model
 │   └── tokenizer_config.json
-└── modern-gliner/           # embeddings-worker: GLiNER variant
+├── modern-gliner/           # embeddings-worker: GLiNER variant
+└── docling/                 # docling-serve: document conversion artifacts
 ```
 
 ---

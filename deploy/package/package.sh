@@ -6,6 +6,19 @@
 
 set -euo pipefail
 
+_cleanup() {
+  local exit_code=$?
+  if [[ $exit_code -ne 0 ]]; then
+    if declare -f warn > /dev/null 2>&1; then
+      warn "Interrupted or failed (exit ${exit_code}) — removing partial dist/ to prevent stale bundle"
+    else
+      echo "[package] WARNING: Interrupted or failed (exit ${exit_code}) — removing partial dist/ to prevent stale bundle" >&2
+    fi
+    rm -rf "$DIST_DIR"
+  fi
+}
+trap _cleanup EXIT
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

@@ -24,7 +24,8 @@ log "Repo root: $REPO_ROOT"
 # Preflight: check Docker daemon (package.sh requires it)
 # ---------------------------------------------------------------------------
 if ! docker info > /dev/null 2>&1; then
-  die "Docker daemon is not running or not accessible — required by package.sh"
+  warn "Docker daemon is not running or not accessible — skipping test"
+  exit 75
 fi
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ fi
 if [[ ! -d "models" ]]; then
   warn "models/ directory not found — skipping full package.sh run"
   warn "Mount or copy ML models into models/ before running this test"
-  exit 0
+  exit 75
 fi
 
 # ---------------------------------------------------------------------------
@@ -92,7 +93,9 @@ check_dir  "dist/images"
 check_dir  "dist/config"
 check_file "dist/models.tar.gz"
 check_file "dist/MANIFEST.txt"
-check_file "dist/install.sh"
+check_nonempty "dist/install.sh"
+[[ -x "dist/install.sh" ]] || die "dist/install.sh is not executable"
+log "  [OK] dist/install.sh is executable"
 
 # ---------------------------------------------------------------------------
 # 2. models.tar.gz is a readable archive

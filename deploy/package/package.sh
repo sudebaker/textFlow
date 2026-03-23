@@ -143,8 +143,9 @@ tar -czf "$DIST_DIR/models.tar.gz" "$MODELS_DIR"
 # Step 5: Copy compose files + .env.example
 # ---------------------------------------------------------------------------
 log "Copying config files ..."
-cp "$COMPOSE_BASE"            "$DIST_DIR/config/docker-compose.yml"
-cp "$COMPOSE_GPU"             "$DIST_DIR/config/docker-compose.gpu.yml"
+sed 's|../../models|../models|g' "$COMPOSE_BASE" > "$DIST_DIR/config/docker-compose.yml"
+sed 's|../../models|../models|g' "$COMPOSE_GPU"  > "$DIST_DIR/config/docker-compose.gpu.yml"
+log "  Rewrote ../../models -> ../models for target deployment layout"
 if [[ -f ".env.example" ]]; then
   cp ".env.example" "$DIST_DIR/config/.env.example"
 else

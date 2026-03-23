@@ -191,7 +191,7 @@ wait_for_health() {
   while (( attempt <= max_attempts )); do
     local response
     response=$(curl -sf http://localhost:8080/health 2>/dev/null || true)
-    if echo "$response" | grep -q '"status":"ok"'; then
+    if echo "$response" | grep -qE '"status"\s*:\s*"(healthy|ok)"'; then
       log "✓ Orchestrator is healthy"
       return 0
     fi

@@ -6,6 +6,10 @@
 
 set -euo pipefail
 
+# DIST_DIR must be defined before the trap so _cleanup can reference it safely
+# under set -u even if the script exits before reaching the Config section.
+DIST_DIR="dist"
+
 _cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
@@ -22,7 +26,7 @@ trap _cleanup EXIT
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DIST_DIR="dist"
+DIST_DIR="dist"  # canonical assignment; duplicated above solely for the trap guard
 COMPOSE_BASE="deploy/docker/docker-compose.yml"
 COMPOSE_GPU="deploy/docker/docker-compose.gpu.yml"
 MODELS_DIR="models"
@@ -97,6 +101,9 @@ fi
 # Derive BUILT_IMAGES from compose
 # ---------------------------------------------------------------------------
 log "Deriving built images from $COMPOSE_BASE ..."
+# MODELS_PATH=/tmp: dummy value to satisfy the :? required-variable guard in
+# docker-compose.yml during config parsing. We only need the service structure
+# (which services have build: keys), not the actual bind-mount paths.
 _compose_json=$(MODELS_PATH=/tmp docker compose -f "$COMPOSE_BASE" config --format json) \
   || die "docker compose config failed — check $COMPOSE_BASE and ensure Docker daemon is running"
 mapfile -t BUILT_IMAGES < <(

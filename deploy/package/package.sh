@@ -15,17 +15,9 @@ COMPOSE_GPU="deploy/docker/docker-compose.gpu.yml"
 MODELS_DIR="models"
 INSTALL_SRC="deploy/package/install.sh"
 
-# Built images (project name = "docker" because compose files live in deploy/docker/)
-BUILT_IMAGES=(
-  "docker-orchestrator:latest"
-  "docker-embeddings-worker:latest"
-  "docker-entities-worker:latest"
-  "docker-extraction-worker:latest"
-  "docker-metadata-worker:latest"
-  "docker-completion-worker:latest"
-  "docker-resource-manager:latest"
-  "docker-regex-entity-extractor:latest"
-)
+# Built images — derived dynamically from compose after preflight (jq required)
+# Project name = "docker" (compose files live in deploy/docker/)
+BUILT_IMAGES=()
 
 # External / pulled images
 EXTERNAL_IMAGES=(
@@ -78,6 +70,7 @@ done
 # Preflight checks
 # ---------------------------------------------------------------------------
 docker info > /dev/null 2>&1 || die "Docker daemon is not running or not accessible"
+command -v jq > /dev/null 2>&1 || die "jq is not installed. Install: sudo apt-get install jq"
 
 if [[ ! -f "$COMPOSE_BASE" ]]; then
   die "Compose file not found: $COMPOSE_BASE (run from repo root)"
@@ -86,6 +79,20 @@ fi
 if [[ ! -d "$MODELS_DIR" ]]; then
   die "models/ directory not found at $(pwd)/models — mount or copy ML models before packaging"
 fi
+
+# ---------------------------------------------------------------------------
+# Derive BUILT_IMAGES from compose
+# ---------------------------------------------------------------------------
+log "Deriving built images from $COMPOSE_BASE ..."
+_compose_json=$(MODELS_PATH=/tmp docker compose -f "$COMPOSE_BASE" config --format json) \
+  || die "docker compose config failed — check $COMPOSE_BASE and ensure Docker daemon is running"
+mapfile -t BUILT_IMAGES < <(
+  jq -r '.services | to_entries[]
+         | select(.value.build != null)
+         | "docker-\(.key):latest"' <<< "$_compose_json"
+)
+[[ ${#BUILT_IMAGES[@]} -gt 0 ]] || die "No buildable services found in $COMPOSE_BASE — check compose file"
+log "  Found ${#BUILT_IMAGES[@]} built image(s): ${BUILT_IMAGES[*]}"
 
 # ---------------------------------------------------------------------------
 # Step 1: Clean and recreate dist/

@@ -12,9 +12,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log()  { echo "[install] $*"; }
-warn() { echo "[install] WARNING: $*" >&2; }
-die()  { echo "[install] ERROR: $*" >&2; exit 1; }
+SCRIPT_NAME="install"
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # ---------------------------------------------------------------------------
 # 1. check_prerequisites

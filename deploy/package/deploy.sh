@@ -15,9 +15,9 @@ REMOTE_DIR="ia-text-deployment/"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log()  { echo "[deploy] $*"; }
-warn() { echo "[deploy] WARNING: $*" >&2; }
-die()  { echo "[deploy] ERROR: $*" >&2; exit 1; }
+SCRIPT_NAME="deploy"
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # ---------------------------------------------------------------------------
 # Parse args

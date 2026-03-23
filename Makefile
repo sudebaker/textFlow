@@ -1,6 +1,6 @@
 # Makefile for ia-text-orchestrator
 
-.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models docker-build-offline docker-build-models
+.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models docker-build-offline docker-build-models package package-skip-build deploy install-remote
 
 # Variables
 GO_VERSION?=1.22
@@ -179,6 +179,26 @@ docker-build-models: ## Build images using local models (100% offline after setu
 
 docker-build-offline: setup-models docker-build-models
 	@echo -e "${GREEN}🎉 Build complete! You can now deploy without internet.${NC}"
+
+***REMOVED***=================
+# Air-Gapped Packaging & Deployment
+***REMOVED***=================
+
+package: ## Build images and create air-gapped deployment bundle in dist/
+	@echo -e "${YELLOW}Packaging deployment bundle...${NC}"
+	@bash deploy/package/package.sh
+
+package-skip-build: ## Create deployment bundle without rebuilding images
+	@echo -e "${YELLOW}Packaging deployment bundle (skip image build)...${NC}"
+	@bash deploy/package/package.sh --skip-build
+
+deploy: ## Transfer bundle to target via rsync (requires HOST=<ip>)
+	@test -n "$(HOST)" || (echo "ERROR: HOST is required. Usage: make deploy HOST=10.0.0.5"; exit 1)
+	@bash deploy/package/deploy.sh $(HOST)
+
+install-remote: ## Run install.sh on target machine (requires HOST=<ip>)
+	@test -n "$(HOST)" || (echo "ERROR: HOST is required. Usage: make install-remote HOST=10.0.0.5"; exit 1)
+	@ssh $(HOST) "bash ~/ia-text-deployment/install.sh"
 
 ***REMOVED***=================
 # Documentation

@@ -159,7 +159,7 @@ if [[ -f "$INSTALL_SRC" ]]; then
   cp "$INSTALL_SRC" "$DIST_DIR/install.sh"
   chmod +x "$DIST_DIR/install.sh"
 else
-  warn "$INSTALL_SRC not found — install.sh will NOT be included in bundle (create it as Task 3)"
+  warn "$INSTALL_SRC not found — install.sh will NOT be included in bundle"
 fi
 
 # ---------------------------------------------------------------------------

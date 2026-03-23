@@ -7,17 +7,18 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-log()  { echo "[test_package] $*"; }
-warn() { echo "[test_package] WARNING: $*" >&2; }
-die()  { echo "[test_package] ERROR: $*" >&2; exit 1; }
-
-# ---------------------------------------------------------------------------
 # Resolve repo root and cd into it
 # ---------------------------------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
+# Helpers (sourced from deploy/package/lib.sh)
+# ---------------------------------------------------------------------------
+SCRIPT_NAME="test_package"
+# shellcheck source=deploy/package/lib.sh
+source "deploy/package/lib.sh"
+
 log "Repo root: $REPO_ROOT"
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,7 @@ check_file "dist/MANIFEST.txt"
 check_nonempty "dist/install.sh"
 [[ -x "dist/install.sh" ]] || die "dist/install.sh is not executable"
 log "  [OK] dist/install.sh is executable"
+check_file "dist/lib.sh"
 
 # ---------------------------------------------------------------------------
 # 2. models.tar.gz is a readable archive

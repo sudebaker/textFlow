@@ -37,9 +37,9 @@ EXTERNAL_IMAGES=(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log()  { echo "[package] $*"; }
-warn() { echo "[package] WARNING: $*" >&2; }
-die()  { echo "[package] ERROR: $*" >&2; exit 1; }
+SCRIPT_NAME="package"
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Convert an image reference to a safe filename.
 # Rules:
@@ -155,6 +155,9 @@ fi
 # ---------------------------------------------------------------------------
 # Step 6: Copy install.sh
 # ---------------------------------------------------------------------------
+# Always bundle lib.sh (install.sh sources it)
+cp "deploy/package/lib.sh" "$DIST_DIR/lib.sh"
+
 if [[ -f "$INSTALL_SRC" ]]; then
   cp "$INSTALL_SRC" "$DIST_DIR/install.sh"
   chmod +x "$DIST_DIR/install.sh"

@@ -149,7 +149,7 @@ services:
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: ia-text-embeddings-worker
     volumes:
-    - ../../models:/models
+    - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}:/models
     environment:
     # ⭐ Offline mode (CRITICAL for air-gapped deployment)
     - HF_HUB_OFFLINE=1
@@ -189,8 +189,8 @@ services:
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: ia-text-entities-worker
     volumes:
-    - ../../models:/models
-    - ../../models/huggingface_cache:/home/app/.cache/huggingface
+    - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}:/models
+    - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}/huggingface_cache:/home/app/.cache/huggingface
     environment:
     # ⭐ Offline mode (CRITICAL for air-gapped deployment)
     - HF_HUB_OFFLINE=1
@@ -319,7 +319,7 @@ services:
     ports:
     - 8000:5001
     volumes:
-    - ../../models/docling:/models/docling
+    - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}/docling:/models/docling
     environment:
     - DOCLING_DEVICE=cuda:0
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}

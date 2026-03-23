@@ -128,6 +128,7 @@ configure_env() {
   _set_env_var "HF_HUB_OFFLINE" "1"
   _set_env_var "TRANSFORMERS_OFFLINE" "1"
   _set_env_var "ALLOW_REMOTE_DOWNLOAD" "false"
+  _set_env_var "MODELS_PATH" "../models"
 
   log "✓ Air-gapped mode enabled"
 }

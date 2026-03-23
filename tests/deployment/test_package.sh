@@ -113,6 +113,17 @@ check_file "dist/config/docker-compose.yml"
 check_file "dist/config/docker-compose.gpu.yml"
 check_file "dist/config/.env.example"
 
+# Verify no hardcoded ../../models remain in bundled compose (Task 2 regression guard)
+if grep -q '../../models' dist/config/docker-compose.yml; then
+  die "dist/config/docker-compose.yml still contains hardcoded ../../models — MODELS_PATH substitution lost"
+fi
+log "  [OK] no hardcoded ../../models in dist/config/docker-compose.yml"
+
+if grep -q '../../models' dist/config/docker-compose.gpu.yml; then
+  die "dist/config/docker-compose.gpu.yml still contains hardcoded ../../models — MODELS_PATH substitution lost"
+fi
+log "  [OK] no hardcoded ../../models in dist/config/docker-compose.gpu.yml"
+
 # ---------------------------------------------------------------------------
 # 4. MANIFEST.txt is non-empty
 # ---------------------------------------------------------------------------

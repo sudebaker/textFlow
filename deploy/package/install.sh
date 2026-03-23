@@ -61,18 +61,27 @@ load_images() {
     die "images/ directory not found — bundle may be incomplete"
   fi
 
+  local tars=()
+  # Use find with -print0 / read -d '' to safely handle any filename
+  while IFS= read -r -d '' tar; do
+    tars+=("$tar")
+  done < <(find images/ -name "*.tar.gz" -print0 2>/dev/null | sort -z)
+
+  if [[ ${#tars[@]} -eq 0 ]]; then
+    die "No .tar.gz files found in images/"
+  fi
+
   local count=0
-  for tar in images/*.tar.gz; do
-    # Glob expands to literal string when no files match
-    [[ -f "$tar" ]] || die "No .tar.gz files found in images/"
-    local name
-    name=$(basename "$tar")
-    log "  Loading $name..."
-    docker load -i "$tar" 2>&1 | grep "^Loaded image:" || true
+  for tar in "${tars[@]}"; do
+    local image_name
+    image_name=$(basename "$tar" .tar.gz)
+    log "  Loading $image_name..."
+    docker load -i "$tar" 2>&1 | grep "Loaded image" || true
     (( count++ )) || true
   done
 
   log "✓ Loaded $count image(s)"
+  echo ""
 }
 
 # ---------------------------------------------------------------------------
@@ -140,9 +149,13 @@ _set_env_var() {
 setup_volumes() {
   log "Setting up volumes and directories ..."
 
-  # Named Docker volumes — ignore "already exists" errors
-  docker volume create redis-data    2>&1 | grep -v "already exists" || true
-  docker volume create rabbitmq-data 2>&1 | grep -v "already exists" || true
+  # Named Docker volumes — treat "already exists" as success, die on real errors
+  docker volume create redis-data 2>/dev/null || \
+    docker volume inspect redis-data > /dev/null 2>&1 || \
+    die "Failed to create or verify redis-data volume"
+  docker volume create rabbitmq-data 2>/dev/null || \
+    docker volume inspect rabbitmq-data > /dev/null 2>&1 || \
+    die "Failed to create or verify rabbitmq-data volume"
 
   # Bind-mount directories
   mkdir -p uploads-data results-data data entities-cache

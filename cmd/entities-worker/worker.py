@@ -699,6 +699,8 @@ class EntitiesWorker:
                     features = json.loads(features_json)
                     inferences_enabled = "inferences" in features
                 
+                logger.info(f"Job {job_id}: features_json present={features_json is not None}, inferences_enabled={inferences_enabled}, chunks_count={len(chunks)}")
+                
                 if inferences_enabled and chunks:
                     # Build entities_by_chunk (filter to only chunks with text)
                     entities_by_chunk = {}
@@ -766,7 +768,7 @@ class EntitiesWorker:
                             connection.close()
                     
             except Exception as e:
-                logger.warning(f"Failed to trigger inferences: {e}")
+                logger.error(f"Failed to trigger inferences: {e}", exc_info=True)
                 # Continue anyway - inference is optional
 
             duration = time.time() - start_time

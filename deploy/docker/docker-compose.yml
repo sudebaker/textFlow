@@ -252,7 +252,7 @@ services:
     - QUEUE_NAME=inferences
     - METRICS_PORT=8006
     - PREFETCH_COUNT=3
-    - LLM_URL=${LLM_URL:-http://vllm_server:8000}
+    - LLM_URL=${LLM_URL:-http://vllm-qwen-2b:8000}
     - LLM_MODEL=${LLM_MODEL:-qwen3-coder}
     depends_on:
       redis:
@@ -262,6 +262,7 @@ services:
     networks:
     - backend
     - datastore
+    - docker_default
     restart: unless-stopped
     deploy:
       resources:
@@ -383,6 +384,8 @@ services:
     networks:
     - backend
 networks:
+  docker_default:
+    external: true
   frontend:
     driver: bridge
   backend:

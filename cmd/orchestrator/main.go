@@ -451,6 +451,9 @@ func getJobHandler(c *gin.Context) {
 		return
 	}
 
+	// Get step progress (available at all stages, not just completed)
+	steps, _ := redis.GetJobSteps(ctx, jobID)
+
 	// Get aggregated results (if completed)
 	var results *models.JobResults
 	var resultsErr error
@@ -474,6 +477,7 @@ func getJobHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, models.GetJobResponse{
 		JobID:     jobID,
 		Status:    status,
+		Steps:     steps,
 		Results:   results,
 		Error:     errorMsg,
 		CreatedAt: createdAt,

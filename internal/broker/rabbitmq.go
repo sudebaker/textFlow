@@ -139,6 +139,7 @@ func (b *RabbitMQBroker) declareQueues() error {
 		b.config.EmbeddingsQueue,
 		b.config.EntitiesQueue,
 		b.config.MetadataQueue,
+		b.config.InferencesQueue,
 	}
 
 	for _, queue := range queues {
@@ -386,6 +387,7 @@ func (b *RabbitMQBroker) UpdateQueueMetrics() error {
 		b.config.EmbeddingsQueue,
 		b.config.EntitiesQueue,
 		b.config.MetadataQueue,
+		b.config.InferencesQueue,
 	}
 
 	for _, queue := range queues {

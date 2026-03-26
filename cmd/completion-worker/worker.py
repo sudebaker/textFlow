@@ -150,7 +150,7 @@ class CompletionWorker:
 
             logger.info(f"Job {job_id} completed steps: {completed_steps}")
 
-            # Determine required steps based on document type
+            # Determine required steps based on document type and features
             document_metadata_json = self.redis_client.get(
                 f"orchestrator:job:{job_id}:metadata:document"
             )
@@ -170,8 +170,18 @@ class CompletionWorker:
             required_steps = (
                 self.spreadsheet_required_steps
                 if is_spreadsheet
-                else self.default_required_steps
+                else self.default_required_steps.copy()
             )
+            
+            # Add inferences if features were requested
+            features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
+            if features_json:
+                try:
+                    features = json.loads(features_json)
+                    if "inferences" in features:
+                        required_steps.add("inferences")
+                except Exception as e:
+                    logger.warning(f"Failed to parse features: {e}")
 
             logger.info(
                 f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "
@@ -199,6 +209,8 @@ class CompletionWorker:
             pipe.get(f"orchestrator:job:{job_id}:chunks")
             pipe.get(f"orchestrator:job:{job_id}:embeddings")
             pipe.get(f"orchestrator:job:{job_id}:entities_raw")
+            pipe.get(f"orchestrator:job:{job_id}:source_classification")
+            pipe.get(f"orchestrator:job:{job_id}:micro_inferences")
             (
                 meta,
                 status_data,
@@ -208,6 +220,8 @@ class CompletionWorker:
                 chunks_json,
                 embeddings_json,
                 entities_raw_json,
+                source_classification_json,
+                micro_inferences_json,
             ) = pipe.execute()
 
             created_at_timestamp = int(meta.get("created_at", time.time()))
@@ -241,6 +255,17 @@ class CompletionWorker:
                 f"Entities: {len(entities_raw)} raw → {len(entities)} after dedup"
             )
 
+            # Parse source classification and micro inferences if present
+            source_classification = (
+                json.loads(source_classification_json)
+                if source_classification_json
+                else None
+            )
+            micro_inferences = (
+                json.loads(micro_inferences_json) if micro_inferences_json else None
+            )
+
+            # Build results dict with optional inference fields
             results = {
                 "job_id": job_id,
                 "status": "completed",
@@ -252,6 +277,25 @@ class CompletionWorker:
                 "embeddings": embeddings,
                 "entities": entities,
             }
+
+            # Add optional inference fields if present
+            if source_classification is not None:
+                results["source_classification"] = source_classification
+            if micro_inferences is not None:
+                results["micro_inferences"] = micro_inferences
+
+            # Log completion stats
+            log_message = f"Job {job_id} finalized: chunks={len(chunks)}, entities={len(entities)}"
+            if source_classification:
+                log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
+            if micro_inferences:
+                inferences_count = (
+                    len(micro_inferences.get("inferences", []))
+                    if isinstance(micro_inferences, dict)
+                    else 0
+                )
+                log_message += f", inferences={inferences_count}"
+            logger.info(log_message)
 
             self.redis_client.set(
                 f"orchestrator:job:{job_id}:results",
@@ -270,10 +314,6 @@ class CompletionWorker:
             self.send_webhook(job_id, "completed", None)
 
             self.event_bus.publish_job_completed(job_id)
-
-            logger.info(
-                f"Job {job_id} finalized: chunks={len(chunks)}, entities={len(entities)}"
-            )
 
             # Record metrics
             job_finalization_duration.observe(time.time() - finalization_start_time)

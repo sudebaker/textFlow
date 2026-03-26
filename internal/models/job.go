@@ -28,17 +28,31 @@ const (
 	StatusFailed     JobStatus = "failed"
 )
 
+type SourceClassificationResult struct {
+	DocumentType      string  `json:"document_type"` // e.g. "notariado", "catastro", "bancario"
+	Confidence        float32 `json:"confidence"`
+	ClassifierVersion string  `json:"classifier_version"`
+}
+
+type MicroInference struct {
+	Fact       string  `json:"fact"` // e.g. "The property value is 500,000 EUR"
+	Confidence float32 `json:"confidence"`
+	Source     string  `json:"source"` // e.g. "extraction" or "llm"
+}
+
 type JobResults struct {
-	JobID            string                 `json:"job_id"`
-	Status           string                 `json:"status"`
-	CreatedAt        string                 `json:"created_at"`
-	CompletedAt      string                 `json:"completed_at"`
-	Text             string                 `json:"text"`
-	Chunks           []Chunk                `json:"chunks,omitempty"`
-	Embeddings       map[string]interface{} `json:"embeddings,omitempty"`
-	Entities         []Entity               `json:"entities,omitempty"`
-	DocumentMetadata map[string]interface{} `json:"document_metadata,omitempty"`
-	TextMetadata     map[string]interface{} `json:"text_metadata,omitempty"`
+	JobID                string                      `json:"job_id"`
+	Status               string                      `json:"status"`
+	CreatedAt            string                      `json:"created_at"`
+	CompletedAt          string                      `json:"completed_at"`
+	Text                 string                      `json:"text"`
+	Chunks               []Chunk                     `json:"chunks,omitempty"`
+	Embeddings           map[string]interface{}      `json:"embeddings,omitempty"`
+	Entities             []Entity                    `json:"entities,omitempty"`
+	DocumentMetadata     map[string]interface{}      `json:"document_metadata,omitempty"`
+	TextMetadata         map[string]interface{}      `json:"text_metadata,omitempty"`
+	SourceClassification *SourceClassificationResult `json:"source_classification,omitempty"`
+	MicroInferences      []MicroInference            `json:"micro_inferences,omitempty"`
 }
 
 type Chunk struct {
@@ -84,9 +98,11 @@ type UploadRequest struct {
 }
 
 type CreateJobRequest struct {
-	DocumentBase64 string `json:"document_base64" binding:"required_without=DocumentURL"`
-	DocumentURL    string `json:"document_url" binding:"required_without=DocumentBase64"`
-	Filename       string `json:"filename,omitempty"`
+	DocumentBase64 string   `json:"document_base64" binding:"required_without=DocumentURL"`
+	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
+	Filename       string   `json:"filename,omitempty"`
+	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
+	LLMUrl         string   `json:"llm_url,omitempty"`  // e.g. "http://vllm:8000"
 }
 
 type CreateJobResponse struct {

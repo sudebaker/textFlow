@@ -24,6 +24,7 @@ const (
 	StatusProcessing JobStatus = "processing"
 	StatusEmbedding  JobStatus = "embedding"
 	StatusEntities   JobStatus = "entities"
+	StatusInferences JobStatus = "inferences"
 	StatusCompleted  JobStatus = "completed"
 	StatusFailed     JobStatus = "failed"
 )
@@ -35,9 +36,14 @@ type SourceClassificationResult struct {
 }
 
 type MicroInference struct {
-	Fact       string  `json:"fact"` // e.g. "The property value is 500,000 EUR"
-	Confidence float32 `json:"confidence"`
-	Source     string  `json:"source"` // e.g. "extraction" or "llm"
+	Text       string   `json:"text"`
+	Confidence float32  `json:"confidence"`
+	Entities   []string `json:"entities,omitempty"`
+}
+
+type ChunkInferences struct {
+	ChunkID    interface{}      `json:"chunk_id"`
+	Inferences []MicroInference `json:"inferences"`
 }
 
 type JobResults struct {
@@ -52,7 +58,7 @@ type JobResults struct {
 	DocumentMetadata     map[string]interface{}      `json:"document_metadata,omitempty"`
 	TextMetadata         map[string]interface{}      `json:"text_metadata,omitempty"`
 	SourceClassification *SourceClassificationResult `json:"source_classification,omitempty"`
-	MicroInferences      []MicroInference            `json:"micro_inferences,omitempty"`
+	MicroInferences      []ChunkInferences           `json:"micro_inferences,omitempty"`
 }
 
 type Chunk struct {
@@ -111,11 +117,12 @@ type CreateJobResponse struct {
 }
 
 type GetJobResponse struct {
-	JobID     string      `json:"job_id"`
-	Status    JobStatus   `json:"status"`
-	Results   *JobResults `json:"results,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	CreatedAt time.Time   `json:"created_at"`
+	JobID     string            `json:"job_id"`
+	Status    JobStatus         `json:"status"`
+	Results   *JobResults       `json:"results,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	Steps     map[string]string `json:"steps,omitempty"`
 }
 
 type ErrorResponse struct {

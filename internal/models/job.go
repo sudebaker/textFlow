@@ -102,7 +102,6 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
-	LLMUrl         string   `json:"llm_url,omitempty"`  // e.g. "http://vllm:8000"
 }
 
 type CreateJobResponse struct {

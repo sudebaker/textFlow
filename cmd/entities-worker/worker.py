@@ -694,26 +694,78 @@ class EntitiesWorker:
             # Check if micro-inferences are requested
             try:
                 features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
+                inferences_enabled = False
                 if features_json:
                     features = json.loads(features_json)
-                    if "inferences" in features:
-                        # Publish to inferences queue
+                    inferences_enabled = "inferences" in features
+                
+                if inferences_enabled and chunks:
+                    # Build entities_by_chunk (filter to only chunks with text)
+                    entities_by_chunk = {}
+                    for entity in all_entities:
+                        cid = entity.get("chunk_id")
+                        if cid not in entities_by_chunk:
+                            entities_by_chunk[cid] = []
+                        entities_by_chunk[cid].append(entity)
+                    
+                    # Filter to chunks that have text (not empty)
+                    valid_chunks = [c for c in chunks if c.get("text", "").strip()]
+                    
+                    # Only proceed if there are chunks to process
+                    if valid_chunks:
+                        # Get source_type from Redis (set by source-classifier earlier)
+                        source_type_json = self.redis_client.get(
+                            f"orchestrator:job:{job_id}:source_classification"
+                        )
+                        source_type = "generico"  # default
+                        if source_type_json:
+                            try:
+                                source_data = json.loads(source_type_json)
+                                source_type = source_data.get("document_type", "generico")
+                            except:
+                                pass
+                        
+                        # Set atomic counter for this job's inferences
+                        self.redis_client.setex(
+                            f"orchestrator:job:{job_id}:inferences:remaining",
+                            86400,  # TTL 24h
+                            len(valid_chunks)
+                        )
+                        
+                        # Publish one message per chunk with text
                         params = parse_rabbitmq_url(RABBITMQ_URL)
                         connection = pika.BlockingConnection(params)
                         try:
                             channel = connection.channel()
-                            inference_msg = {"job_id": job_id}
-                            channel.basic_publish(
-                                exchange="",
-                                routing_key=INFERENCES_QUEUE,
-                                body=json.dumps(inference_msg),
-                                properties=pika.BasicProperties(delivery_mode=2),
+                            for chunk in valid_chunks:
+                                chunk_id = chunk.get("chunk_id")
+                                chunk_text = chunk.get("text", "")
+                                chunk_entities = entities_by_chunk.get(chunk_id, [])
+                                
+                                inference_msg = {
+                                    "job_id": job_id,
+                                    "chunk_id": chunk_id,
+                                    "chunk_text": chunk_text,
+                                    "entities": chunk_entities,
+                                    "source_type": source_type,
+                                    "total_chunks": len(valid_chunks)
+                                }
+                                
+                                channel.basic_publish(
+                                    exchange="",
+                                    routing_key=INFERENCES_QUEUE,
+                                    body=json.dumps(inference_msg),
+                                    properties=pika.BasicProperties(delivery_mode=2),
+                                )
+                            
+                            logger.info(
+                                f"Published {len(valid_chunks)} inference tasks for job {job_id}"
                             )
-                            logger.info(f"Published inference task for job {job_id}")
                         finally:
                             connection.close()
+                    
             except Exception as e:
-                logger.warning(f"Failed to trigger inference: {e}")
+                logger.warning(f"Failed to trigger inferences: {e}")
                 # Continue anyway - inference is optional
 
             duration = time.time() - start_time

@@ -61,3 +61,22 @@ class EventBus:
     def publish_job_failed(self, job_id: str, error: str) -> None:
         """Publish a job failed event."""
         self.publish_event(job_id, "job_failed", status="failed", error=error)
+
+    def publish_job_inference_chunk_progress(
+        self,
+        job_id: str,
+        chunks_done: int,
+        chunks_total: int,
+    ) -> None:
+        """Publish incremental progress for each inference chunk completed."""
+        # Scale from 60% (post-entities) to 79% (just before final assembly at 80%)
+        base = 60
+        span = 19
+        progress = base + int(span * chunks_done / max(chunks_total, 1))
+        self.publish_event(
+            job_id,
+            "job_progress",
+            progress=progress,
+            status="inferences",
+            metadata={"chunks_done": chunks_done, "chunks_total": chunks_total},
+        )

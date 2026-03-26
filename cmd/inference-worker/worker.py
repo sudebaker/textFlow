@@ -251,7 +251,14 @@ Hechos:"""
                     )
                     jobs_total.labels(status="assembly_error").inc()
             else:
-                # Not the last chunk, just continue
+                # Not the last chunk — publish incremental progress so clients see activity
+                chunks_done = total_chunks - remaining
+                # remaining was already decremented; chunks_done = total - remaining
+                self.event_bus.publish_job_inference_chunk_progress(
+                    job_id,
+                    chunks_done=chunks_done,
+                    chunks_total=total_chunks,
+                )
                 jobs_total.labels(status="chunk_processed").inc()
 
             duration = time.time() - start_time

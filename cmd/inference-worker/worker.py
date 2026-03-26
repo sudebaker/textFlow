@@ -9,6 +9,7 @@ import sys
 import json
 import logging
 import time
+import re
 import redis
 import pika
 import requests
@@ -90,7 +91,6 @@ Facts:"""
             completion_text = result.get("choices", [{}])[0].get("text", "")
             
             # Parse JSON from LLM response
-            import re
             json_match = re.search(r"\[.*\]", completion_text, re.DOTALL)
             if not json_match:
                 logger.warning("No JSON found in LLM response")
@@ -193,6 +193,12 @@ def main():
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
                 declare_queue(channel, QUEUE_NAME)
+                
+                # Set prefetch count for backpressure control
+                prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
+                channel.basic_qos(prefetch_count=prefetch_count)
+                logger.info(f"Set prefetch_count to {prefetch_count}")
+                
                 channel.basic_consume(
                     queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False
                 )

@@ -70,12 +70,12 @@ services:
     - API_BASE_URL=http://orchestrator:8080
     - UPLOAD_PATH=/app/data/uploads
     - RESULTS_PATH=/app/data/results
-     - EXTRACT_QUEUE=extract_text
-     - EMBEDDINGS_QUEUE=embeddings
-     - ENTITIES_QUEUE=entities
-     - METADATA_QUEUE=metadata
-     - INFERENCES_QUEUE=inferences
-     - MAX_SPREADSHEET_ROWS=${MAX_SPREADSHEET_ROWS:-2000}
+    - EXTRACT_QUEUE=extract_text
+    - EMBEDDINGS_QUEUE=embeddings
+    - ENTITIES_QUEUE=entities
+    - METADATA_QUEUE=metadata
+    - INFERENCES_QUEUE=inferences
+    - MAX_SPREADSHEET_ROWS=${MAX_SPREADSHEET_ROWS:-2000}
     - MAX_SPREADSHEET_SIZE_MB=${MAX_SPREADSHEET_SIZE_MB:-5}
     - JOB_TIMEOUT=5m
     depends_on:
@@ -215,62 +215,63 @@ services:
     - ENTITIES_DEVICE=cuda
     - CUDA_VISIBLE_DEVICES=0
     - ENTITY_TYPES=PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL
-     - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
-     depends_on:
-       redis:
-         condition: service_healthy
-       rabbitmq:
-         condition: service_healthy
-       regex-entity-extractor:
-         condition: service_healthy
-     networks:
-     - backend
-     - datastore
-     restart: unless-stopped
-     deploy:
-       resources:
-         limits:
-           cpus: '1'
-           memory: 6G
-         reservations:
-           cpus: '0.5'
-           memory: 2G
-           devices:
-             - driver: nvidia
-               count: 1
-               capabilities: [gpu]
-   inference-worker:
-     build:
-       context: ../../
-       dockerfile: cmd/inference-worker/Dockerfile
-     container_name: ia-text-inference-worker
-     environment:
-     - REDIS_URL=redis://redis:6379
-     - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
-     - LOG_LEVEL=info
-     - QUEUE_NAME=inferences
-     - METRICS_PORT=8006
-     - PREFETCH_COUNT=3
-     - LLM_URL=${LLM_URL:-http://vllm_server:8000}
-     - LLM_MODEL=${LLM_MODEL:-qwen3-coder}
-     depends_on:
-       redis:
-         condition: service_healthy
-       rabbitmq:
-         condition: service_healthy
-     networks:
-     - backend
-     - datastore
-     restart: unless-stopped
-     deploy:
-       resources:
-         limits:
-           cpus: '1'
-           memory: 2G
-         reservations:
-           cpus: '0.5'
-           memory: 512M
-   regex-entity-extractor:
+    - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
+    - INFERENCES_QUEUE=inferences
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      regex-entity-extractor:
+        condition: service_healthy
+    networks:
+    - backend
+    - datastore
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 6G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  inference-worker:
+    build:
+      context: ../../
+      dockerfile: cmd/inference-worker/Dockerfile
+    container_name: ia-text-inference-worker
+    environment:
+    - REDIS_URL=redis://redis:6379
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - LOG_LEVEL=info
+    - QUEUE_NAME=inferences
+    - METRICS_PORT=8006
+    - PREFETCH_COUNT=3
+    - LLM_URL=${LLM_URL:-http://vllm_server:8000}
+    - LLM_MODEL=${LLM_MODEL:-qwen3-coder}
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+    - backend
+    - datastore
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+  regex-entity-extractor:
     build:
       context: ../../
       dockerfile: cmd/regex-entity-extractor/Dockerfile

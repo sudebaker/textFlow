@@ -16,6 +16,32 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+MODEL_REQUIRED_FILE_GROUPS = {
+    "urchade/gliner_small-v2.1": [
+        ("config.json",),
+        ("gliner_config.json",),
+        ("tokenizer_config.json",),
+        ("special_tokens_map.json",),
+        ("spm.model", "tokenizer.json", "vocab.txt"),
+        ("model.safetensors", "pytorch_model.bin"),
+    ],
+    "microsoft/deberta-v3-small": [
+        ("config.json",),
+        ("tokenizer_config.json",),
+        ("special_tokens_map.json",),
+        ("spm.model", "tokenizer.json", "vocab.txt"),
+        ("model.safetensors", "pytorch_model.bin"),
+    ],
+    "BAAI/bge-m3": [
+        ("config.json",),
+        ("tokenizer_config.json",),
+        ("modules.json",),
+        ("spm.model", "tokenizer.json", "vocab.txt"),
+        ("model.safetensors", "pytorch_model.bin"),
+    ],
+}
+
 # Check dependencies
 try:
     from huggingface_hub import snapshot_download
@@ -61,6 +87,50 @@ print()
 os.environ["HF_HOME"] = str(HF_CACHE_DIR)
 
 
+def _repo_to_model_cache_dir(repo_id: str, cache_dir: Path) -> Path:
+    """Map repo_id to its HuggingFace hub cache directory."""
+    repo_key = repo_id.replace("/", "--")
+    return cache_dir / "hub" / f"models--{repo_key}"
+
+
+def _is_snapshot_complete(snapshot_dir: Path, repo_id: str) -> tuple[bool, list[str]]:
+    """Check whether a snapshot contains all required files for a repo."""
+    missing_requirements = []
+    required_groups = MODEL_REQUIRED_FILE_GROUPS.get(
+        repo_id,
+        [("config.json",), ("model.safetensors", "pytorch_model.bin")],
+    )
+
+    for group in required_groups:
+        if not any((snapshot_dir / filename).exists() for filename in group):
+            missing_requirements.append(" | ".join(group))
+
+    return len(missing_requirements) == 0, missing_requirements
+
+
+def _find_complete_snapshot(repo_id: str, cache_dir: Path) -> Path | None:
+    """Return a complete local snapshot for the given model if available."""
+    model_cache_dir = _repo_to_model_cache_dir(repo_id, cache_dir)
+    snapshots_dir = model_cache_dir / "snapshots"
+
+    if not snapshots_dir.exists() or not snapshots_dir.is_dir():
+        return None
+
+    snapshots = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    if not snapshots:
+        return None
+
+    # Prefer newest snapshots first in case older ones are partial.
+    snapshots.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    for snapshot_dir in snapshots:
+        is_complete, _ = _is_snapshot_complete(snapshot_dir, repo_id)
+        if is_complete:
+            return snapshot_dir
+
+    return None
+
+
 def download_model_with_cache(repo_id: str, cache_dir: Path, model_type: str = "model"):
     """
     Download model with proper HuggingFace cache structure.
@@ -73,6 +143,14 @@ def download_model_with_cache(repo_id: str, cache_dir: Path, model_type: str = "
     Returns:
         Path to downloaded model
     """
+    complete_snapshot = _find_complete_snapshot(repo_id, cache_dir)
+    if complete_snapshot:
+        print(f"⏭️  Skipping {model_type}: {repo_id}")
+        print("   Reason: complete local snapshot already exists")
+        print(f"   Location: {complete_snapshot}")
+        print()
+        return complete_snapshot
+
     print(f"📥 Downloading {model_type}: {repo_id}")
     print(f"   Cache: {cache_dir}")
 
@@ -83,7 +161,6 @@ def download_model_with_cache(repo_id: str, cache_dir: Path, model_type: str = "
             repo_id=repo_id,
             cache_dir=str(cache_dir / "hub"),
             local_files_only=False,  # First time needs internet
-            resume_download=True,
             ignore_patterns=["*.msgpack", "*.h5", "*.ot",
                              "*.tflite"],  # Skip unnecessary files
         )
@@ -91,17 +168,18 @@ def download_model_with_cache(repo_id: str, cache_dir: Path, model_type: str = "
         print(f"✅ {repo_id} downloaded successfully")
         print(f"   Location: {local_path}")
 
-        # List key files
+        # Validate downloaded snapshot completeness.
+        is_complete, missing = _is_snapshot_complete(Path(local_path), repo_id)
         files = list(Path(local_path).glob("*"))
         print(f"   Files: {len(files)} files")
 
-        # Check for essential files
-        essential_files = ["config.json", "pytorch_model.bin"]
-        for f in essential_files:
-            if (Path(local_path) / f).exists():
-                print(f"      ✓ {f}")
-            else:
-                print(f"      ⚠ {f} (missing)")
+        if is_complete:
+            print("   ✓ Snapshot integrity check passed")
+        else:
+            print("   ⚠ Snapshot integrity check failed")
+            for requirement in missing:
+                print(f"      Missing: {requirement}")
+            return None
 
         print()
         return local_path
@@ -172,16 +250,26 @@ def download_docling_models(output_dir: Path) -> bool:
     print(f"   Output: {output_dir}")
 
     try:
+        if output_dir.exists():
+            existing_files = sum(
+                1 for f in output_dir.rglob("*") if f.is_file())
+            if existing_files > 0:
+                print("⏭️  Skipping Docling models")
+                print("   Reason: destination already contains files")
+                print(f"   Files: {existing_files}")
+                print()
+                return True
+
         output_dir.mkdir(exist_ok=True, parents=True)
-        
+
         # Use docker create + docker cp to avoid permission issues with volume mounts
         image = "quay.io/docling-project/docling-serve:latest"
-        
+
         # Create a temporary container
         container_id = subprocess.check_output(
             ["docker", "create", image], text=True
         ).strip()
-        
+
         try:
             # Copy models from container to host
             subprocess.run(
@@ -195,7 +283,7 @@ def download_docling_models(output_dir: Path) -> bool:
         finally:
             # Clean up container
             subprocess.run(["docker", "rm", container_id], check=False)
-        
+
         file_count = sum(1 for f in output_dir.rglob("*") if f.is_file())
         dir_count = sum(1 for d in output_dir.iterdir() if d.is_dir())
         print("✅ Docling models downloaded successfully")

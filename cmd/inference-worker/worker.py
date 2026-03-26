@@ -28,6 +28,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
+LLM_URL = os.getenv("LLM_URL", "")  # Base URL without /v1 path
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3-coder")  # vLLM model name
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
@@ -40,21 +42,20 @@ class InferenceWorker:
         self.event_bus = EventBus(self.redis_client)
 
     def extract_inferences(
-        self, text: str, llm_url: str, max_inferences: int = 5
+        self, text: str, max_inferences: int = 5
     ) -> List[Dict[str, Any]]:
         """
         Extract micro-inferences from text using an LLM.
         
         Args:
             text: Document text to extract inferences from
-            llm_url: URL of the LLM service (e.g., vLLM)
             max_inferences: Maximum number of inferences to extract
             
         Returns:
             List of {"fact": str, "confidence": float, "source": "llm"}
         """
-        if not llm_url:
-            logger.warning("No LLM URL configured, skipping inferences")
+        if not LLM_URL:
+            logger.warning("No LLM_URL configured, skipping inferences")
             return []
 
         try:
@@ -70,15 +71,16 @@ Document text:
 
 Facts:"""
 
-            # Call LLM
+            # Call LLM with vLLM OpenAI-compatible API
             payload = {
+                "model": LLM_MODEL,
                 "prompt": prompt,
                 "max_tokens": 500,
                 "temperature": 0.1,
             }
             
             response = requests.post(
-                f"{llm_url}/v1/completions",
+                f"{LLM_URL}/v1/completions",
                 json=payload,
                 timeout=30,
             )
@@ -137,16 +139,8 @@ Facts:"""
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
-            # Get LLM URL from Redis
-            llm_url = self.redis_client.get(f"orchestrator:job:{job_id}:llm_url")
-            if not llm_url:
-                logger.warning(f"No LLM URL configured for job: {job_id}")
-                jobs_total.labels(status="no_llm_url").inc()
-                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                return
-
-            # Extract inferences
-            inferences = self.extract_inferences(text, llm_url)
+            # Extract inferences (uses env var LLM_URL)
+            inferences = self.extract_inferences(text)
 
             # Store in Redis
             inferences_key = f"orchestrator:job:{job_id}:micro_inferences"

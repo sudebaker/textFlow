@@ -383,12 +383,6 @@ func createJobHandler(c *gin.Context) {
 		}
 	}
 
-	if req.LLMUrl != "" {
-		if err := redis.SetJobLLMURL(ctx, jobID, req.LLMUrl); err != nil {
-			logger.Warn().Err(err).Msgf("Failed to store job LLM URL: %v", err)
-		}
-	}
-
 	// Increment jobs in progress
 	metrics.JobsInProgress.Inc()
 	metrics.JobsTotal.WithLabelValues("created", "document").Inc()

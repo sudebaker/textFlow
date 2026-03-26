@@ -19,30 +19,38 @@ class TestInferenceWorker:
     def test_extract_inferences_success(self, worker):
         """Test successful inference extraction"""
         text = "The property has a value of 500,000 EUR and was built in 2010."
-        llm_url = "http://localhost:8000"
 
-        with patch("requests.post") as mock_post:
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "choices": [{"text": '[{"fact": "Property value is 500,000 EUR", "confidence": 0.95}]'}]
-            }
-            mock_post.return_value = mock_response
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.LLM_MODEL", "test-model"):
+                with patch("requests.post") as mock_post:
+                    mock_response = Mock()
+                    mock_response.json.return_value = {
+                        "choices": [{"text": '[{"fact": "Property value is 500,000 EUR", "confidence": 0.95}]'}]
+                    }
+                    mock_post.return_value = mock_response
 
-            inferences = worker.extract_inferences(text, llm_url)
+                    inferences = worker.extract_inferences(text)
 
-            assert len(inferences) == 1
-            assert inferences[0]["fact"] == "Property value is 500,000 EUR"
-            assert inferences[0]["confidence"] == 0.95
-            assert inferences[0]["source"] == "llm"
+                    assert len(inferences) == 1
+                    assert inferences[0]["fact"] == "Property value is 500,000 EUR"
+                    assert inferences[0]["confidence"] == 0.95
+                    assert inferences[0]["source"] == "llm"
+                    
+                    # Verify the model was included in payload
+                    call_args = mock_post.call_args
+                    assert call_args[1]["json"]["model"] == "test-model"
 
     def test_extract_inferences_no_llm_url(self, worker):
         """Test with no LLM URL configured"""
-        inferences = worker.extract_inferences("Some text", "")
-        assert inferences == []
+        with patch("worker.LLM_URL", ""):
+            inferences = worker.extract_inferences("Some text")
+            assert inferences == []
 
     def test_extract_inferences_llm_failure(self, worker):
         """Test LLM call failure"""
-        with patch("requests.post") as mock_post:
-            mock_post.side_effect = Exception("Connection failed")
-            inferences = worker.extract_inferences("Some text", "http://localhost:8000")
-            assert inferences == []
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.LLM_MODEL", "test-model"):
+                with patch("requests.post") as mock_post:
+                    mock_post.side_effect = Exception("Connection failed")
+                    inferences = worker.extract_inferences("Some text")
+                    assert inferences == []

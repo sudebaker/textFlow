@@ -66,6 +66,7 @@ app_settings = AppSettings()
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
+INFERENCES_QUEUE = os.getenv("INFERENCES_QUEUE", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 GLINER_MODEL_PATH = app_settings.gliner_model_path
 GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_small-v2.1")
@@ -699,17 +700,18 @@ class EntitiesWorker:
                         # Publish to inferences queue
                         params = parse_rabbitmq_url(RABBITMQ_URL)
                         connection = pika.BlockingConnection(params)
-                        channel = connection.channel()
-                        
-                        inference_msg = {"job_id": job_id}
-                        channel.basic_publish(
-                            exchange="",
-                            routing_key="inferences",
-                            body=json.dumps(inference_msg),
-                            properties=pika.BasicProperties(delivery_mode=2),
-                        )
-                        logger.info(f"Published inference task for job {job_id}")
-                        connection.close()
+                        try:
+                            channel = connection.channel()
+                            inference_msg = {"job_id": job_id}
+                            channel.basic_publish(
+                                exchange="",
+                                routing_key=INFERENCES_QUEUE,
+                                body=json.dumps(inference_msg),
+                                properties=pika.BasicProperties(delivery_mode=2),
+                            )
+                            logger.info(f"Published inference task for job {job_id}")
+                        finally:
+                            connection.close()
             except Exception as e:
                 logger.warning(f"Failed to trigger inference: {e}")
                 # Continue anyway - inference is optional

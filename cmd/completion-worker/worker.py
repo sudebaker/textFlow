@@ -256,14 +256,20 @@ class CompletionWorker:
             )
 
             # Parse source classification and micro inferences if present
-            source_classification = (
-                json.loads(source_classification_json)
-                if source_classification_json
-                else None
-            )
-            micro_inferences = (
-                json.loads(micro_inferences_json) if micro_inferences_json else None
-            )
+            source_classification = None
+            micro_inferences = None
+            
+            try:
+                if source_classification_json:
+                    source_classification = json.loads(source_classification_json)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse source_classification JSON: {e}")
+            
+            try:
+                if micro_inferences_json:
+                    micro_inferences = json.loads(micro_inferences_json)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse micro_inferences JSON: {e}")
 
             # Build results dict with optional inference fields
             results = {
@@ -289,11 +295,8 @@ class CompletionWorker:
             if source_classification:
                 log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
             if micro_inferences:
-                inferences_count = (
-                    len(micro_inferences.get("inferences", []))
-                    if isinstance(micro_inferences, dict)
-                    else 0
-                )
+                # micro_inferences is a list, so len() directly works
+                inferences_count = len(micro_inferences) if isinstance(micro_inferences, list) else 0
                 log_message += f", inferences={inferences_count}"
             logger.info(log_message)
 

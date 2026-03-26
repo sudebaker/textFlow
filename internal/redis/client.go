@@ -321,6 +321,56 @@ func (c *RedisClient) GetJobError(ctx context.Context, jobID string) (string, er
 	return errMsg, nil
 }
 
+func (c *RedisClient) SetJobFeatures(ctx context.Context, jobID string, features []string) error {
+	key := c.key("job", jobID, "features")
+	data, err := json.Marshal(features)
+	if err != nil {
+		return fmt.Errorf("failed to marshal features: %w", err)
+	}
+	err = c.client.Set(ctx, key, data, c.jobTTL).Err()
+	if err != nil {
+		return fmt.Errorf("failed to set job features: %w", err)
+	}
+	return nil
+}
+
+func (c *RedisClient) GetJobFeatures(ctx context.Context, jobID string) ([]string, error) {
+	key := c.key("job", jobID, "features")
+	data, err := c.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("failed to get job features: %w", err)
+	}
+	var features []string
+	if err := json.Unmarshal([]byte(data), &features); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal features: %w", err)
+	}
+	return features, nil
+}
+
+func (c *RedisClient) SetJobLLMURL(ctx context.Context, jobID string, llmURL string) error {
+	key := c.key("job", jobID, "llm_url")
+	err := c.client.Set(ctx, key, llmURL, c.jobTTL).Err()
+	if err != nil {
+		return fmt.Errorf("failed to set job llm_url: %w", err)
+	}
+	return nil
+}
+
+func (c *RedisClient) GetJobLLMURL(ctx context.Context, jobID string) (string, error) {
+	key := c.key("job", jobID, "llm_url")
+	url, err := c.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get job llm_url: %w", err)
+	}
+	return url, nil
+}
+
 func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 	keys := []string{
 		c.key("job", jobID, "status"),
@@ -328,10 +378,18 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 		c.key("job", jobID, "results"),
 		c.key("job", jobID, "embeddings"),
 		c.key("job", jobID, "entities"),
+		c.key("job", jobID, "entities_raw"),
 		c.key("job", jobID, "metadata"),
 		c.key("job", jobID, "steps"),
 		c.key("job", jobID, "meta"),
 		c.key("job", jobID, "error"),
+		c.key("job", jobID, "features"),
+		c.key("job", jobID, "llm_url"),
+		c.key("job", jobID, "source_classification"),
+		c.key("job", jobID, "micro_inferences"),
+		c.key("job", jobID, "chunks"),
+		c.key("job", jobID, "metadata:document"),
+		c.key("job", jobID, "metadata:text"),
 	}
 	err := c.client.Del(ctx, keys...).Err()
 	if err != nil {

@@ -376,6 +376,19 @@ func createJobHandler(c *gin.Context) {
 		logger.Error().Msgf("Failed to set job created time: %v", err)
 	}
 
+	// Store features and LLM URL in Redis
+	if len(req.Features) > 0 {
+		if err := redis.SetJobFeatures(ctx, jobID, req.Features); err != nil {
+			logger.Warn().Err(err).Msgf("Failed to store job features: %v", err)
+		}
+	}
+
+	if req.LLMUrl != "" {
+		if err := redis.SetJobLLMURL(ctx, jobID, req.LLMUrl); err != nil {
+			logger.Warn().Err(err).Msgf("Failed to store job LLM URL: %v", err)
+		}
+	}
+
 	// Increment jobs in progress
 	metrics.JobsInProgress.Inc()
 	metrics.JobsTotal.WithLabelValues("created", "document").Inc()

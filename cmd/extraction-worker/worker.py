@@ -238,6 +238,69 @@ def analyze_text(text: str) -> Dict[str, Any]:
     return analysis
 
 
+class SourceClassifier:
+    """Classify document source/type using regex patterns."""
+    
+    # Regex patterns for different document types
+    PATTERNS = {
+        "notariado": [
+            r"notario|notaría|protocolo|escritura|fedatario",
+            r"fe pública|acta notarial",
+        ],
+        "catastro": [
+            r"catastro|catastral|referencia catastral",
+            r"plano catastral|datos catastrales",
+        ],
+        "bancario": [
+            r"banco|bancaria|entidad financiera",
+            r"estado de cuenta|extracto bancario|movimiento",
+        ],
+        "fiscal": [
+            r"impuesto|declaración fiscal|renta",
+            r"hacienda|tributario|aeat",
+        ],
+        "legal": [
+            r"contrato|acuerdo|términos y condiciones",
+            r"cláusula|párrafo|legal|juzgado",
+        ],
+    }
+    
+    @staticmethod
+    def classify(text: str) -> Optional[Dict[str, Any]]:
+        """
+        Classify document source using regex patterns.
+        Returns {"document_type": str, "confidence": float, "classifier_version": str}
+        """
+        if not text:
+            return None
+        
+        import re
+        text_lower = text.lower()
+        scores = {}
+        
+        for doc_type, patterns in SourceClassifier.PATTERNS.items():
+            matches = 0
+            for pattern in patterns:
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    matches += 1
+            
+            if matches > 0:
+                # Confidence based on number of matching patterns
+                confidence = min(1.0, matches / len(patterns))
+                scores[doc_type] = confidence
+        
+        if not scores:
+            return None
+        
+        # Return highest confidence match
+        best_type = max(scores.items(), key=lambda x: x[1])
+        return {
+            "document_type": best_type[0],
+            "confidence": float(best_type[1]),
+            "classifier_version": "1.0",
+        }
+
+
 class ExtractionWorker:
     def __init__(self):
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -513,6 +576,22 @@ class ExtractionWorker:
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "extraction", "completed"
             )
+
+            # Classify document source
+            try:
+                classification = SourceClassifier.classify(text)
+                if classification:
+                    self.redis_client.set(
+                        f"orchestrator:job:{job_id}:source_classification",
+                        json.dumps(classification),
+                    )
+                    logger.info(
+                        f"Document classified as: {classification['document_type']} "
+                        f"(confidence={classification['confidence']:.2f})"
+                    )
+            except Exception as e:
+                logger.warning(f"Source classification failed: {e}")
+                # Continue anyway - classification is optional
 
             logger.info(
                 f"Stored for job {job_id}: text={len(text)} chars, chunks={len(chunks)}, doc_metadata keys={list(document_metadata.keys())}"

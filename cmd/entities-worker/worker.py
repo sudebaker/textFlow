@@ -722,15 +722,8 @@ class EntitiesWorker:
                             try:
                                 source_data = json.loads(source_type_json)
                                 source_type = source_data.get("document_type", "generico")
-                            except:
-                                pass
-                        
-                        # Set atomic counter for this job's inferences
-                        self.redis_client.setex(
-                            f"orchestrator:job:{job_id}:inferences:remaining",
-                            86400,  # TTL 24h
-                            len(valid_chunks)
-                        )
+                            except Exception as e:
+                                logger.warning(f"Failed to parse source_classification: {e}")
                         
                         # Publish one message per chunk with text
                         params = parse_rabbitmq_url(RABBITMQ_URL)
@@ -760,6 +753,14 @@ class EntitiesWorker:
                             
                             logger.info(
                                 f"Published {len(valid_chunks)} inference tasks for job {job_id}"
+                            )
+                            
+                            # Set atomic counter AFTER successful publish
+                            # (prevents job from hanging if connection fails)
+                            self.redis_client.setex(
+                                f"orchestrator:job:{job_id}:inferences:remaining",
+                                86400,  # TTL 24h
+                                len(valid_chunks)
                             )
                         finally:
                             connection.close()

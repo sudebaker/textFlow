@@ -161,7 +161,7 @@ services:
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=5
-    - EMBEDDINGS_DEVICE=cuda
+    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
     - CUDA_VISIBLE_DEVICES=0
     depends_on:
       redis:
@@ -355,7 +355,7 @@ services:
     volumes:
     - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}/docling:/models/docling
     environment:
-    - DOCLING_DEVICE=cuda:0
+    - DOCLING_DEVICE=${DOCLING_DEVICE:-cpu}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
     - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=info

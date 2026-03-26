@@ -70,6 +70,10 @@ class InferenceWorker:
             entity_texts = [e.get("text", "") for e in entities]
             entities_str = ", ".join(entity_texts) if entity_texts else "(no entities detected)"
             
+            # KNOWN LIMITATION: chunk_text is interpolated directly into the prompt.
+            # This is safe because all documents are from trusted internal sources
+            # (notariado, catastro, etc). If accepting untrusted external documents,
+            # implement prompt injection safeguards (e.g., text sanitization/truncation).
             prompt = f"""Dado el siguiente fragmento de texto y las entidades detectadas, extrae
 todos los hechos concretos y verificables. Cada hecho debe mencionar al
 menos una entidad detectada. Máximo {max_inferences} hechos.

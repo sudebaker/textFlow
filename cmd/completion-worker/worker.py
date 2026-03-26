@@ -172,14 +172,16 @@ class CompletionWorker:
                 if is_spreadsheet
                 else self.default_required_steps.copy()
             )
-            
+
             # Add inferences if features were requested
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
+            logger.info(f"Job {job_id}: features_json={features_json}")
             if features_json:
                 try:
                     features = json.loads(features_json)
                     if "inferences" in features:
                         required_steps.add("inferences")
+                        logger.info(f"Job {job_id}: added 'inferences' to required_steps")
                 except Exception as e:
                     logger.warning(f"Failed to parse features: {e}")
 

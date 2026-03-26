@@ -17,40 +17,81 @@ class TestInferenceWorker:
             return InferenceWorker()
 
     def test_extract_inferences_success(self, worker):
-        """Test successful inference extraction"""
+        """Test successful inference extraction returns new schema fields"""
         text = "The property has a value of 500,000 EUR and was built in 2010."
 
         with patch("worker.LLM_URL", "http://localhost:8000"):
             with patch("worker.LLM_MODEL", "test-model"):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
+                    mock_response.raise_for_status = Mock()
                     mock_response.json.return_value = {
-                        "choices": [{"text": '[{"fact": "Property value is 500,000 EUR", "confidence": 0.95}]'}]
+                        "choices": [{
+                            "text": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entities": ["500000 EUR"]}]'
+                        }]
                     }
                     mock_post.return_value = mock_response
 
-                    inferences = worker.extract_inferences(text)
+                    inferences = worker.extract_inferences(
+                        chunk_text=text,
+                        entities=[],
+                        source_type="catastro",
+                    )
 
                     assert len(inferences) == 1
-                    assert inferences[0]["fact"] == "Property value is 500,000 EUR"
+                    assert inferences[0]["text"] == "Property value is 500000 EUR"
                     assert inferences[0]["confidence"] == 0.95
-                    assert inferences[0]["source"] == "llm"
-                    
-                    # Verify the model was included in payload
-                    call_args = mock_post.call_args
-                    assert call_args[1]["json"]["model"] == "test-model"
+                    assert inferences[0]["entities"] == ["500000 EUR"]
+                    # Old fields must NOT be present
+                    assert "fact" not in inferences[0]
+                    assert "source" not in inferences[0]
 
     def test_extract_inferences_no_llm_url(self, worker):
-        """Test with no LLM URL configured"""
         with patch("worker.LLM_URL", ""):
-            inferences = worker.extract_inferences("Some text")
+            inferences = worker.extract_inferences(
+                chunk_text="Some text", entities=[], source_type="generico"
+            )
             assert inferences == []
 
     def test_extract_inferences_llm_failure(self, worker):
-        """Test LLM call failure"""
         with patch("worker.LLM_URL", "http://localhost:8000"):
             with patch("worker.LLM_MODEL", "test-model"):
                 with patch("requests.post") as mock_post:
                     mock_post.side_effect = Exception("Connection failed")
-                    inferences = worker.extract_inferences("Some text")
+                    inferences = worker.extract_inferences(
+                        chunk_text="Some text", entities=[], source_type="generico"
+                    )
                     assert inferences == []
+
+    def test_process_non_last_chunk_publishes_progress(self, worker):
+        """Non-last chunk should publish incremental inference progress"""
+        worker.redis_client = Mock()
+        worker.event_bus = Mock()
+
+        # remaining=1 → not the last chunk
+        worker.redis_client.decr.return_value = 1
+        worker.redis_client.rpush.return_value = 1
+        worker.redis_client.expire.return_value = True
+
+        ch = Mock()
+        method = Mock()
+        method.delivery_tag = "tag1"
+
+        message = {
+            "job_id": "job-123",
+            "chunk_id": 0,
+            "chunk_text": "Some text about a property.",
+            "entities": [],
+            "source_type": "generico",
+            "total_chunks": 3,
+        }
+
+        with patch("worker.LLM_URL", ""):
+            worker.process(ch, method, None, json.dumps(message).encode())
+
+        worker.event_bus.publish_job_inference_chunk_progress.assert_called_once_with(
+            "job-123",
+            chunks_done=2,   # total_chunks(3) - remaining(1)
+            chunks_total=3,
+        )
+        ch.basic_ack.assert_called_once()

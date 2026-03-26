@@ -268,8 +268,14 @@ class CompletionWorker:
             try:
                 if micro_inferences_json:
                     micro_inferences = json.loads(micro_inferences_json)
+                    # micro_inferences is now: [{chunk_id: "...", inferences: [...]}, ...]
+                    # Validate structure
+                    if not isinstance(micro_inferences, list):
+                        logger.warning(f"micro_inferences is not a list, got {type(micro_inferences)}")
+                        micro_inferences = None
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse micro_inferences JSON: {e}")
+                micro_inferences = None
 
             # Build results dict with optional inference fields
             results = {
@@ -295,9 +301,12 @@ class CompletionWorker:
             if source_classification:
                 log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
             if micro_inferences:
-                # micro_inferences is a list, so len() directly works
-                inferences_count = len(micro_inferences) if isinstance(micro_inferences, list) else 0
-                log_message += f", inferences={inferences_count}"
+                # micro_inferences is now a list of {chunk_id, inferences: [...]}
+                if isinstance(micro_inferences, list):
+                    total_inferences = sum(len(c.get("inferences", [])) for c in micro_inferences)
+                    log_message += f", micro_inferences={total_inferences} (from {len(micro_inferences)} chunks)"
+                else:
+                    log_message += f", micro_inferences=<invalid structure>"
             logger.info(log_message)
 
             self.redis_client.set(

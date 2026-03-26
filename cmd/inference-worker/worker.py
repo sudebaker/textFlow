@@ -172,6 +172,8 @@ Hechos:"""
             # Append to Redis list (intermediate storage)
             inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
             self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
+            # TTL safety net: if assembly never completes, clean up after 24h
+            self.redis_client.expire(inferences_raw_key, 86400)
 
             # Decrement atomic counter
             remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
@@ -186,6 +188,20 @@ Hechos:"""
             if remaining <= 0:
                 logger.info(f"All inferences complete for job {job_id}, assembling results...")
                 
+                # Assembly lock: prevents double-assembly on RabbitMQ message redelivery.
+                # SETNX is atomic — only the first caller acquires the lock.
+                assembly_lock_key = f"orchestrator:job:{job_id}:inferences:assembly_lock"
+                acquired = self.redis_client.setnx(assembly_lock_key, "1")
+                self.redis_client.expire(assembly_lock_key, 3600)
+                
+                if not acquired:
+                    logger.warning(
+                        f"Assembly lock already held for job {job_id}, skipping duplicate assembly"
+                    )
+                    jobs_total.labels(status="chunk_processed").inc()
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                
                 try:
                     # Get all intermediate results
                     raw_results = self.redis_client.lrange(inferences_raw_key, 0, -1)
@@ -199,6 +215,9 @@ Hechos:"""
                         except json.JSONDecodeError as e:
                             logger.warning(f"Failed to parse intermediate result: {e}")
                             continue
+                    
+                    # Sort by chunk_id for deterministic ordering
+                    assembled.sort(key=lambda x: x.get("chunk_id") or 0)
                     
                     # Store final result
                     final_key = f"orchestrator:job:{job_id}:micro_inferences"

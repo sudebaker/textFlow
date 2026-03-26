@@ -690,6 +690,30 @@ class EntitiesWorker:
 
             self.event_bus.publish_job_progress(job_id, 66, "entities")
 
+            # Check if micro-inferences are requested
+            try:
+                features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
+                if features_json:
+                    features = json.loads(features_json)
+                    if "inferences" in features:
+                        # Publish to inferences queue
+                        params = parse_rabbitmq_url(RABBITMQ_URL)
+                        connection = pika.BlockingConnection(params)
+                        channel = connection.channel()
+                        
+                        inference_msg = {"job_id": job_id}
+                        channel.basic_publish(
+                            exchange="",
+                            routing_key="inferences",
+                            body=json.dumps(inference_msg),
+                            properties=pika.BasicProperties(delivery_mode=2),
+                        )
+                        logger.info(f"Published inference task for job {job_id}")
+                        connection.close()
+            except Exception as e:
+                logger.warning(f"Failed to trigger inference: {e}")
+                # Continue anyway - inference is optional
+
             duration = time.time() - start_time
             job_duration.observe(duration)
             jobs_total.labels(status="success").inc()

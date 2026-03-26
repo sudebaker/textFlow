@@ -377,10 +377,15 @@ func createJobHandler(c *gin.Context) {
 	}
 
 	// Store features and LLM URL in Redis
+	logger.Info().Msgf("Job %s: Features received: %v", jobID, req.Features)
 	if len(req.Features) > 0 {
 		if err := redis.SetJobFeatures(ctx, jobID, req.Features); err != nil {
-			logger.Warn().Err(err).Msgf("Failed to store job features: %v", err)
+			logger.Error().Err(err).Msgf("Failed to store job features: %v", err)
+		} else {
+			logger.Info().Msgf("Job %s: Features stored successfully", jobID)
 		}
+	} else {
+		logger.Info().Msgf("Job %s: No features requested", jobID)
 	}
 
 	// Increment jobs in progress

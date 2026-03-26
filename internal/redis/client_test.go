@@ -331,3 +331,49 @@ func TestRedisClient_SetJobCreatedAndCompleted(t *testing.T) {
 	err = client.SetJobCompleted(ctx, jobID)
 	require.NoError(t, err)
 }
+
+func TestGetJobResults_MicroInferences(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	ctx := context.Background()
+	jobID := "test-job-mi"
+
+	// Simulate what Python completion-worker writes to Redis
+	pythonJSON := `{
+        "job_id": "test-job-mi",
+        "status": "completed",
+        "created_at": "2026-01-01T00:00:00",
+        "completed_at": "2026-01-01T00:01:00",
+        "chunks": [],
+        "entities": [],
+        "micro_inferences": [
+            {
+                "chunk_id": 0,
+                "inferences": [
+                    {"text": "Property value is 500000 EUR", "confidence": 0.95, "entities": ["500000 EUR"]}
+                ]
+            },
+            {
+                "chunk_id": 1,
+                "inferences": []
+            }
+        ]
+    }`
+
+	key := client.key("job", jobID, "results")
+	err := client.GetClient().Set(ctx, key, pythonJSON, time.Hour).Err()
+	require.NoError(t, err)
+
+	results, err := client.GetJobResults(ctx, jobID)
+	require.NoError(t, err)
+	require.NotNil(t, results)
+
+	assert.Equal(t, 2, len(results.MicroInferences))
+	assert.Equal(t, 1, len(results.MicroInferences[0].Inferences))
+	assert.Equal(t, "Property value is 500000 EUR", results.MicroInferences[0].Inferences[0].Text)
+	assert.InDelta(t, 0.95, results.MicroInferences[0].Inferences[0].Confidence, 0.001)
+	assert.Equal(t, []string{"500000 EUR"}, results.MicroInferences[0].Inferences[0].Entities)
+	assert.Equal(t, 0, len(results.MicroInferences[1].Inferences))
+}

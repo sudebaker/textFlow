@@ -24,9 +24,10 @@ const (
 )
 
 type CreateJobRequest struct {
-	DocumentBase64 string `json:"document_base64,omitempty"`
-	DocumentURL    string `json:"document_url,omitempty"`
-	Filename       string `json:"filename,omitempty"`
+	DocumentBase64 string   `json:"document_base64,omitempty"`
+	DocumentURL    string   `json:"document_url,omitempty"`
+	Filename       string   `json:"filename,omitempty"`
+	Features       []string `json:"features,omitempty"`
 }
 
 type CreateJobResponse struct {
@@ -36,11 +37,12 @@ type CreateJobResponse struct {
 }
 
 type GetJobResponse struct {
-	JobID     string      `json:"job_id"`
-	Status    string      `json:"status"`
-	Results   *JobResults `json:"results,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	CreatedAt time.Time   `json:"created_at"`
+	JobID     string            `json:"job_id"`
+	Status    string            `json:"status"`
+	Results   *JobResults       `json:"results,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	Steps     map[string]string `json:"steps,omitempty"`
 }
 
 type JobResults struct {
@@ -54,6 +56,7 @@ type JobResults struct {
 	Entities         []Entity               `json:"entities,omitempty"`
 	DocumentMetadata map[string]interface{} `json:"document_metadata,omitempty"`
 	TextMetadata     map[string]interface{} `json:"text_metadata,omitempty"`
+	MicroInferences  []ChunkInferences      `json:"micro_inferences,omitempty"`
 }
 
 type Chunk struct {
@@ -73,16 +76,28 @@ type Entity struct {
 	End        int     `json:"end"`
 }
 
+type MicroInference struct {
+	Text       string   `json:"text"`
+	Confidence float32  `json:"confidence"`
+	Entities   []string `json:"entities,omitempty"`
+}
+
+type ChunkInferences struct {
+	ChunkID    interface{}      `json:"chunk_id"`
+	Inferences []MicroInference `json:"inferences"`
+}
+
 var (
 	spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠒", "⠂", "⠂", "⠒", "⠲", "⠴", "⠤", "⠄", "⠄", "⠤", "⠴", "⠶", "⠦", "⠰", "⠠", "⠰", "⠦", "⠶", "⠴", "⠤", "⠄", "⠄", "⠤", "⠴", "⠶", "⠦", "⠰"}
 )
 
 func main() {
 	var (
-		inputFile  string
-		outputFile string
-		apiURL     string
-		showHelp   bool
+		inputFile         string
+		outputFile        string
+		apiURL            string
+		showHelp          bool
+		inferencesEnabled bool
 	)
 
 	args := os.Args[1:]
@@ -114,6 +129,8 @@ func main() {
 			}
 			apiURL = args[i+1]
 			i++
+		case "-f", "--inferences":
+			inferencesEnabled = true
 		default:
 			fmt.Printf("Unknown argument: %s\n", args[i])
 			printUsage()
@@ -148,7 +165,7 @@ func main() {
 		os.Exit(130)
 	}()
 
-	jobID, err := uploadDocument(ctx, apiURL, inputFile)
+	jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled)
 	if err != nil {
 		fmt.Printf("Error uploading document: %v\n", err)
 		os.Exit(1)
@@ -182,14 +199,16 @@ func printUsage() {
 	fmt.Println("  -i, --input <file>     Path to document file or URL (required)")
 	fmt.Println("  -o, --output <file>    Path to save results JSON (required)")
 	fmt.Println("  -u, --url <url>        API base URL (default: http://localhost:8080)")
+	fmt.Println("  -f, --inferences       Enable inference generation (requires vLLM)")
 	fmt.Println("  -h, --help             Show this help message")
 	fmt.Println("")
 	fmt.Println("Example:")
 	fmt.Println("  client -i /path/to/file.pdf -o /path/to/output.json -u http://localhost:8080")
 	fmt.Println("  client -i https://example.com/file.pdf -o output.json")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json --inferences")
 }
 
-func uploadDocument(ctx context.Context, apiURL string, inputFile string) (string, error) {
+func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool) (string, error) {
 	fmt.Println("Preparing document upload...")
 
 	var (
@@ -215,6 +234,9 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string) (strin
 	reqBody := CreateJobRequest{
 		DocumentBase64: documentBase64,
 		Filename:       filename,
+	}
+	if inferencesEnabled {
+		reqBody.Features = []string{"inferences"}
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -397,6 +419,14 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 	err = os.WriteFile(outputFile, outputData, 0644)
 	if err != nil {
 		return err
+	}
+
+	// Display inference summary if present
+	if result.Results != nil && len(result.Results.MicroInferences) > 0 {
+		fmt.Printf("\nInferences generated for %d chunks:\n", len(result.Results.MicroInferences))
+		for _, ci := range result.Results.MicroInferences {
+			fmt.Printf("  Chunk %v: %d inferences\n", ci.ChunkID, len(ci.Inferences))
+		}
 	}
 
 	created, err := getJobCreatedTime(ctx, apiURL, jobID)

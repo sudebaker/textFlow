@@ -25,9 +25,7 @@ __pycache__/
 **/*.pyc
 .go/pkg/mod/
 
-# Otros
-.bin/
-/bin/                   # Go/Python binaries built locally, not source
+# Otros             # Go/Python binaries built locally, not source
 deploy/.env             # Ignore .env files but track docker-compose.yml
 deploy/.env.local
 deploy/.env.*.local
@@ -35,3 +33,4 @@ data/
 
 # Git worktrees
 .worktrees/
+bin/*

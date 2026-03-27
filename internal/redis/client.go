@@ -15,6 +15,10 @@ import (
 	"ia-text-orchestrator/pkg/logging"
 )
 
+// RedisClient manages all Redis operations for job state persistence across the pipeline.
+// It is the single source of truth for job status, extracted text, embeddings, entities,
+// metadata, and processing steps. All data is stored with automatic TTL expiration.
+// Thread-safe for concurrent access from orchestrator, workers, and completion service.
 type RedisClient struct {
 	client    *redis.Client
 	logger    zerolog.Logger
@@ -22,6 +26,16 @@ type RedisClient struct {
 	namespace string
 }
 
+// New creates and initializes a new RedisClient from configuration.
+// It establishes a connection to Redis, validates connectivity with a ping,
+// and sets default timeouts for reliability:
+// - DialTimeout: 5 seconds (connection establishment)
+// - ReadTimeout: 3 seconds (read operations)
+// - WriteTimeout: 3 seconds (write operations)
+// - PoolTimeout: 4 seconds (connection pool wait)
+// All job data is automatically expired after cfg.JobTTL (typically 24 hours).
+// Namespace is read from REDIS_NAMESPACE env or defaults to "orchestrator".
+// Returns error if Redis URL is invalid or connection fails.
 func New(cfg *config.Config) (*RedisClient, error) {
 	logger := logging.GetLogger()
 
@@ -70,6 +84,7 @@ func New(cfg *config.Config) (*RedisClient, error) {
 	}, nil
 }
 
+// GetClient returns the underlying go-redis Client for direct access when needed.
 func (c *RedisClient) GetClient() *redis.Client {
 	return c.client
 }
@@ -81,6 +96,11 @@ func (c *RedisClient) key(parts ...string) string {
 	return strings.Join(allParts, ":")
 }
 
+// SetJobStatus stores the job status in Redis with automatic TTL expiration.
+// Redis key: {namespace}:job:{jobID}:status (hash with field "status")
+// TTL: jobTTL (typically 24 hours), refreshed on each write.
+// Used by orchestrator to track job progression through the pipeline.
+// Returns error if Redis operation fails.
 func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status models.JobStatus) error {
 	key := c.key("job", jobID, "status")
 	err := c.client.HSet(ctx, key, "status", string(status)).Err()
@@ -93,6 +113,11 @@ func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status mod
 	return nil
 }
 
+// GetJobStatus retrieves the current job status from Redis.
+// Redis key: {namespace}:job:{jobID}:status
+// Returns models.JobStatus on success.
+// Returns error with "job not found" message if job does not exist (redis.Nil).
+// Returns error if Redis operation fails.
 func (c *RedisClient) GetJobStatus(ctx context.Context, jobID string) (models.JobStatus, error) {
 	key := c.key("job", jobID, "status")
 	status, err := c.client.HGet(ctx, key, "status").Result()
@@ -105,6 +130,11 @@ func (c *RedisClient) GetJobStatus(ctx context.Context, jobID string) (models.Jo
 	return models.JobStatus(status), nil
 }
 
+// SetJobText stores the extracted text from document processing.
+// Redis key: {namespace}:job:{jobID}:text
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Stores raw text output from extraction workers (via Unstructured API or local Docling).
+// Returns error if marshaling or Redis operation fails.
 func (c *RedisClient) SetJobText(ctx context.Context, jobID string, text string) error {
 	key := c.key("job", jobID, "text")
 	err := c.client.Set(ctx, key, text, c.jobTTL).Err()
@@ -114,6 +144,11 @@ func (c *RedisClient) SetJobText(ctx context.Context, jobID string, text string)
 	return nil
 }
 
+// GetJobText retrieves the extracted text for a job.
+// Redis key: {namespace}:job:{jobID}:text
+// Returns the raw text string on success.
+// Returns error with "job text not found" message if key does not exist (redis.Nil).
+// Returns error if Redis operation fails.
 func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, error) {
 	key := c.key("job", jobID, "text")
 	text, err := c.client.Get(ctx, key).Result()
@@ -126,6 +161,11 @@ func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, err
 	return text, nil
 }
 
+// SetJobResults stores the complete pipeline results as JSON.
+// Redis key: {namespace}:job:{jobID}:results
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Contains models.JobResults: aggregated outputs from all processing stages.
+// Returns error if marshaling or Redis operation fails.
 func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *models.JobResults) error {
 	key := c.key("job", jobID, "results")
 	data, err := json.Marshal(results)
@@ -139,6 +179,11 @@ func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *
 	return nil
 }
 
+// GetJobResults retrieves the complete pipeline results.
+// Redis key: {namespace}:job:{jobID}:results
+// Returns unmarshaled models.JobResults on success.
+// Returns error with "job results not found" message if key does not exist (redis.Nil).
+// Returns error if Redis operation or JSON unmarshaling fails.
 func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.JobResults, error) {
 	key := c.key("job", jobID, "results")
 	data, err := c.client.Get(ctx, key).Bytes()
@@ -156,6 +201,11 @@ func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.
 	return &results, nil
 }
 
+// SetJobEmbeddings stores float32 embedding vectors as JSON.
+// Redis key: {namespace}:job:{jobID}:embeddings
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Stores dense vector representation from embeddings worker (BAAI/bge-m3).
+// Returns error if marshaling or Redis operation fails.
 func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embeddings []float32) error {
 	key := c.key("job", jobID, "embeddings")
 	data, err := json.Marshal(embeddings)
@@ -169,6 +219,11 @@ func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embedd
 	return nil
 }
 
+// GetJobEmbeddings retrieves embedding vectors for a job.
+// Redis key: {namespace}:job:{jobID}:embeddings
+// Returns []float32 on success.
+// Returns error with "job embeddings not found" message if key does not exist (redis.Nil).
+// Returns error if Redis operation or JSON unmarshaling fails.
 func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) ([]float32, error) {
 	key := c.key("job", jobID, "embeddings")
 	data, err := c.client.Get(ctx, key).Bytes()
@@ -185,6 +240,11 @@ func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) ([]flo
 	return embeddings, nil
 }
 
+// SetJobEntities stores recognized named entities from NER processing as JSON.
+// Redis key: {namespace}:job:{jobID}:entities
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Stores []models.Entity from entities worker (GLiNER).
+// Returns error if marshaling or Redis operation fails.
 func (c *RedisClient) SetJobEntities(ctx context.Context, jobID string, entities []models.Entity) error {
 	key := c.key("job", jobID, "entities")
 	data, err := json.Marshal(entities)
@@ -198,6 +258,11 @@ func (c *RedisClient) SetJobEntities(ctx context.Context, jobID string, entities
 	return nil
 }
 
+// GetJobEntities retrieves recognized entities for a job.
+// Redis key: {namespace}:job:{jobID}:entities
+// Returns []models.Entity on success.
+// Returns error with "job entities not found" message if key does not exist (redis.Nil).
+// Returns error if Redis operation or JSON unmarshaling fails.
 func (c *RedisClient) GetJobEntities(ctx context.Context, jobID string) ([]models.Entity, error) {
 	key := c.key("job", jobID, "entities")
 	data, err := c.client.Get(ctx, key).Bytes()
@@ -214,6 +279,11 @@ func (c *RedisClient) GetJobEntities(ctx context.Context, jobID string) ([]model
 	return entities, nil
 }
 
+// SetJobMetadata stores document and processing metadata as JSON.
+// Redis key: {namespace}:job:{jobID}:metadata
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Stores arbitrary map[string]interface{} including document properties and worker output.
+// Returns error if marshaling or Redis operation fails.
 func (c *RedisClient) SetJobMetadata(ctx context.Context, jobID string, metadata map[string]interface{}) error {
 	key := c.key("job", jobID, "metadata")
 	data, err := json.Marshal(metadata)
@@ -227,6 +297,11 @@ func (c *RedisClient) SetJobMetadata(ctx context.Context, jobID string, metadata
 	return nil
 }
 
+// GetJobMetadata retrieves document and processing metadata for a job.
+// Redis key: {namespace}:job:{jobID}:metadata
+// Returns map[string]interface{} on success.
+// Returns error with "job metadata not found" message if key does not exist (redis.Nil).
+// Returns error if Redis operation or JSON unmarshaling fails.
 func (c *RedisClient) GetJobMetadata(ctx context.Context, jobID string) (map[string]interface{}, error) {
 	key := c.key("job", jobID, "metadata")
 	data, err := c.client.Get(ctx, key).Bytes()
@@ -243,6 +318,12 @@ func (c *RedisClient) GetJobMetadata(ctx context.Context, jobID string) (map[str
 	return metadata, nil
 }
 
+// UpdateJobStep records the completion status of a processing step.
+// Redis key: {namespace}:job:{jobID}:steps (hash with field = step name, value = status)
+// TTL: jobTTL (typically 24 hours), refreshed on each write.
+// Step is a processing stage name (e.g., "extraction", "embeddings", "entities").
+// Status is the completion result (e.g., "completed", "failed").
+// Returns error if Redis operation fails.
 func (c *RedisClient) UpdateJobStep(ctx context.Context, jobID string, step string, status string) error {
 	key := c.key("job", jobID, "steps")
 	err := c.client.HSet(ctx, key, step, status).Err()
@@ -255,6 +336,11 @@ func (c *RedisClient) UpdateJobStep(ctx context.Context, jobID string, step stri
 	return nil
 }
 
+// GetJobSteps retrieves all processing step statuses for a job.
+// Redis key: {namespace}:job:{jobID}:steps
+// Returns map[string]string where keys are step names and values are step statuses.
+// Returns empty map if no steps exist (does not error on missing key).
+// Returns error if Redis operation fails.
 func (c *RedisClient) GetJobSteps(ctx context.Context, jobID string) (map[string]string, error) {
 	key := c.key("job", jobID, "steps")
 	steps, err := c.client.HGetAll(ctx, key).Result()
@@ -264,6 +350,12 @@ func (c *RedisClient) GetJobSteps(ctx context.Context, jobID string) (map[string
 	return steps, nil
 }
 
+// SetJobCreated records the job creation timestamp as Unix seconds.
+// Redis key: {namespace}:job:{jobID}:meta (hash with field "created_at")
+// TTL: jobTTL (typically 24 hours), refreshed on each write.
+// Timestamp is set to current time at creation.
+// Used by ExpireStuckJobs to detect jobs that exceed processing timeout.
+// Returns error if Redis operation fails.
 func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 	key := c.key("job", jobID, "meta")
 	err := c.client.HSet(ctx, key, "created_at", time.Now().Unix()).Err()
@@ -276,6 +368,11 @@ func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// GetJobCreated retrieves the job creation timestamp.
+// Redis key: {namespace}:job:{jobID}:meta
+// Returns time.Time converted from stored Unix seconds.
+// Returns error with "job created time not found" message if key does not exist (redis.Nil).
+// Returns error if Redis operation or timestamp parsing fails.
 func (c *RedisClient) GetJobCreated(ctx context.Context, jobID string) (time.Time, error) {
 	key := c.key("job", jobID, "meta")
 	createdAt, err := c.client.HGet(ctx, key, "created_at").Int64()
@@ -288,6 +385,11 @@ func (c *RedisClient) GetJobCreated(ctx context.Context, jobID string) (time.Tim
 	return time.Unix(createdAt, 0), nil
 }
 
+// SetJobCompleted records the job completion timestamp as Unix seconds.
+// Redis key: {namespace}:job:{jobID}:meta (hash with field "completed_at")
+// TTL: jobTTL (typically 24 hours), refreshed on each write.
+// Timestamp is set to current time when job finishes (successfully or with error).
+// Returns error if Redis operation fails.
 func (c *RedisClient) SetJobCompleted(ctx context.Context, jobID string) error {
 	key := c.key("job", jobID, "meta")
 	err := c.client.HSet(ctx, key, "completed_at", time.Now().Unix()).Err()
@@ -300,6 +402,11 @@ func (c *RedisClient) SetJobCompleted(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// SetJobError stores the error message when job processing fails.
+// Redis key: {namespace}:job:{jobID}:error
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Error message is a human-readable description of the failure.
+// Returns error if Redis operation fails.
 func (c *RedisClient) SetJobError(ctx context.Context, jobID string, errorMsg string) error {
 	key := c.key("job", jobID, "error")
 	err := c.client.Set(ctx, key, errorMsg, c.jobTTL).Err()
@@ -309,6 +416,11 @@ func (c *RedisClient) SetJobError(ctx context.Context, jobID string, errorMsg st
 	return nil
 }
 
+// GetJobError retrieves the error message for a failed job.
+// Redis key: {namespace}:job:{jobID}:error
+// Returns empty string (not error) if no error is stored (redis.Nil).
+// Returns the error message string on success.
+// Returns error if Redis operation fails (connection issues).
 func (c *RedisClient) GetJobError(ctx context.Context, jobID string) (string, error) {
 	key := c.key("job", jobID, "error")
 	errMsg, err := c.client.Get(ctx, key).Result()
@@ -321,6 +433,11 @@ func (c *RedisClient) GetJobError(ctx context.Context, jobID string) (string, er
 	return errMsg, nil
 }
 
+// SetJobFeatures stores feature flags or feature names as JSON array.
+// Redis key: {namespace}:job:{jobID}:features
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Stores []string of features detected or enabled for this job.
+// Returns error if marshaling or Redis operation fails.
 func (c *RedisClient) SetJobFeatures(ctx context.Context, jobID string, features []string) error {
 	key := c.key("job", jobID, "features")
 	data, err := json.Marshal(features)
@@ -334,6 +451,11 @@ func (c *RedisClient) SetJobFeatures(ctx context.Context, jobID string, features
 	return nil
 }
 
+// GetJobFeatures retrieves feature flags or feature names for a job.
+// Redis key: {namespace}:job:{jobID}:features
+// Returns []string on success.
+// Returns empty slice (not error) if no features are stored (redis.Nil).
+// Returns error if Redis operation or JSON unmarshaling fails.
 func (c *RedisClient) GetJobFeatures(ctx context.Context, jobID string) ([]string, error) {
 	key := c.key("job", jobID, "features")
 	data, err := c.client.Get(ctx, key).Result()
@@ -350,6 +472,12 @@ func (c *RedisClient) GetJobFeatures(ctx context.Context, jobID string) ([]strin
 	return features, nil
 }
 
+// DeleteJob removes all Redis keys associated with a job, including:
+// - status, text, results, embeddings, entities, metadata, steps, error
+// - created/completed timestamps, features, LLM configuration
+// - supplementary data: chunks, classifications, inferences, raw entities
+// This is called when cleaning up after job completion or on explicit deletion requests.
+// Returns error if any Redis operation fails (partial cleanup may occur).
 func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 	keys := []string{
 		c.key("job", jobID, "status"),
@@ -380,14 +508,35 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// HealthCheck verifies Redis connectivity with a ping.
+// Uses 2-second timeout.
+// Returns nil if Redis is healthy, error otherwise.
+// Called periodically to detect connection failures.
 func (c *RedisClient) HealthCheck() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return c.client.Ping(ctx).Err()
 }
 
-// ExpireStuckJobs finds jobs that have been processing for longer than the timeout
-// and marks them as failed.
+// ExpireStuckJobs finds jobs that have been in "pending", "processing", or "extracting" state
+// for longer than the specified timeout and marks them as failed.
+//
+// Algorithm:
+// 1. Scans all {namespace}:job:*:meta keys in batches
+// 2. For each job, reads created_at timestamp (supports both Unix seconds and RFC3339 formats)
+// 3. Compares elapsed time against timeout parameter
+// 4. If timeout exceeded AND job is in pending/processing/extracting state:
+//   - Logs a warning with job ID, elapsed time, timeout, and current status
+//   - Sets error message: "Job timeout after {timeout}"
+//   - Updates job status to "failed"
+//
+// 5. Skips jobs in completed/failed/cancelled state (they are already terminal)
+//
+// This is critical for preventing zombie jobs that hang forever due to worker crashes
+// or network failures. Typically called by a background maintenance goroutine.
+//
+// Returns error if Redis scan operation fails. Individual job update failures are logged
+// but do not stop scanning other jobs.
 func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration) error {
 	// Scan for all job:meta keys
 	var cursor uint64
@@ -477,6 +626,9 @@ func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration
 	return nil
 }
 
+// Close gracefully closes the Redis connection.
+// Called during orchestrator/worker shutdown.
+// Returns error if close operation fails.
 func (c *RedisClient) Close() error {
 	return c.client.Close()
 }

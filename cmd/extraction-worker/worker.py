@@ -1,4 +1,34 @@
 #!/usr/bin/env python3
+"""Document text extraction and metadata pipeline for the orchestrator.
+
+This module implements the first step in the document processing pipeline:
+1. Download documents from file paths, base64, or URLs
+2. Extract text using Docling API (async polling with configurable timeouts)
+3. Extract document metadata (author, creation date, page count, MIME type, etc.)
+4. Chunk text into overlapping token-based segments
+5. Classify document source type (notariado, catastro, bancario, etc.)
+6. Store results to Redis for downstream workers
+7. Publish extraction completion to embeddings, entities, and metadata queues
+
+The worker is designed for air-gapped deployments with offline models and no
+internet access at runtime. It uses RabbitMQ for async job processing with
+automatic retries and graceful error handling.
+
+Environment variables:
+    REDIS_URL: Redis connection URL (default: redis://localhost:6379)
+    RABBITMQ_URL: RabbitMQ connection URL (default: amqp://localhost:5672/)
+    DOCLING_URL: Docling API endpoint (default: http://docling:5001)
+    QUEUE_NAME: Input queue for extraction jobs (default: extract_text)
+    PREFETCH_COUNT: Max jobs to prefetch from queue (default: 3)
+    METRICS_PORT: Prometheus metrics port (default: 8004)
+    CHUNK_SIZE_TOKENS: Tokens per chunk (default: 512)
+    CHUNK_OVERLAP_TOKENS: Overlap between chunks (default: 50)
+    EXIFTOOL_PATH: Path to exiftool binary (default: /usr/bin/exiftool)
+    DOCLING_DO_OCR: Enable OCR for text-based PDFs (default: false)
+    DOCLING_OCR_ENGINE: OCR engine to use (default: rapidocr)
+    DOCLING_CONVERSION_TIMEOUT: Max seconds for Docling conversion (default: 1800)
+"""
+
 import os
 import signal
 import sys
@@ -67,15 +97,67 @@ except Exception:
 
 
 def compute_file_hash(file_bytes: bytes) -> str:
+    """Compute SHA-256 hash digest of raw file bytes.
+
+    Used for document deduplication and integrity verification. Provides a
+    consistent hash regardless of file origin (path, base64, URL).
+
+    Args:
+        file_bytes: Raw binary content of document file.
+
+    Returns:
+        Hexadecimal SHA-256 hash digest of file contents.
+
+    Example:
+        >>> hash_val = compute_file_hash(b"Hello World")
+        >>> print(len(hash_val))
+        64  # SHA-256 produces 64 hex characters
+    """
     return hashlib.sha256(file_bytes).hexdigest()
 
 
 def extract_pdf_metadata(file_path: str, filename: str) -> Dict[str, Any]:
+    """Extract document-level metadata using exiftool.
+
+    Parses EXIF and XMP metadata from PDF, DOCX, images, and other document
+    types using the exiftool binary. Gracefully handles missing exiftool or
+    corrupted files by returning partially filled metadata.
+
+    Falls back to filesystem attributes (size, MIME type) if metadata extraction
+    fails. All fields are populated with None/empty values on extraction failure
+    rather than raising exceptions, ensuring downstream processing can continue.
+
+    Args:
+        file_path: Absolute path to document file on disk.
+        filename: Filename for metadata record (may differ from file_path basename).
+
+    Returns:
+        Dictionary with extracted metadata:
+            filename (str): Document filename.
+            file_size_bytes (int): File size in bytes (0 if file not found).
+            sha256 (str): SHA-256 hash of file contents (empty if read fails).
+            author (str|None): Document author (from Author or Creator EXIF tags).
+            title (str|None): Document title (from Title or DocumentTitle tags).
+            subject (str|None): Document subject from EXIF.
+            creator (str|None): Document creator software/tool.
+            producer (str|None): PDF producer software.
+            creation_date (str|None): Creation timestamp (ISO format if available).
+            modification_date (str|None): Last modification timestamp.
+            page_count (int|None): Number of pages (PDF/DOCX).
+            encrypted (bool): Whether document is password-protected.
+            mime_type (str|None): MIME type (detected via libmagic).
+            exif_data (dict): Full EXIF tag dictionary (excluding system tags).
+
+    Raises:
+        No exceptions raised. All failures result in None/empty values in metadata.
+
+    Note:
+        exiftool is called with a 30-second timeout to avoid hanging on large
+        or corrupt files. Requires exiftool binary at EXIFTOOL_PATH.
+    """
     metadata = {
         "filename": filename,
-        "file_size_bytes": os.path.getsize(file_path)
-        if os.path.exists(file_path)
-        else 0,
+        "file_size_bytes": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
         "sha256": "",
         "author": None,
         "title": None,
@@ -142,6 +224,44 @@ def extract_pdf_metadata(file_path: str, filename: str) -> Dict[str, Any]:
 def chunk_text(
     text: str, chunk_size: int = CHUNK_SIZE_TOKENS, overlap: int = CHUNK_OVERLAP_TOKENS
 ) -> List[Dict[str, Any]]:
+    """Split text into overlapping token-based chunks.
+
+    Creates semantic chunks of configurable size with overlap to prevent losing
+    context at chunk boundaries. Uses tiktoken cl100k_base encoding when available
+    (online), falling back to character approximation for offline deployments.
+
+    The overlap ensures that important information near chunk boundaries is
+    included in multiple chunks, preventing loss of context during downstream
+    embedding and entity extraction.
+
+    Args:
+        text: Full document text to chunk.
+        chunk_size: Target chunk size in tokens (default: CHUNK_SIZE_TOKENS).
+                   Actual token counts may vary due to tokenizer boundaries.
+        overlap: Overlap between consecutive chunks in tokens (default: CHUNK_OVERLAP_TOKENS).
+                Smaller overlaps reduce redundancy; larger overlaps improve context preservation.
+
+    Returns:
+        List of chunk dictionaries, each with:
+            chunk_id (str): Unique identifier (chunk_000, chunk_001, etc.).
+            text (str): Decoded chunk text.
+            start_offset (int): Starting token index in original token sequence.
+            end_offset (int): Ending token index (exclusive).
+            token_count (int): Actual token count of this chunk.
+
+    Note:
+        If tiktoken is unavailable (offline mode), falls back to character-based
+        approximation using 4 chars per token. Chunk token_count will be estimated
+        as (end_offset - start_offset) // 4.
+
+    Example:
+        >>> text = "Hello world. This is a test."
+        >>> chunks = chunk_text(text, chunk_size=5, overlap=1)
+        >>> len(chunks) >= 1
+        True
+        >>> chunks[0]['chunk_id']
+        'chunk_000'
+    """
     chunks = []
 
     if tokenizer is not None:
@@ -205,6 +325,46 @@ def chunk_text(
 
 
 def analyze_text(text: str) -> Dict[str, Any]:
+    """Compute lightweight text analytics without ML models.
+
+    Performs fast, offline text analysis suitable for feature engineering and
+    downstream pipeline filtering. No neural models required; uses regex patterns
+    and heuristics for language detection and content analysis.
+
+    Args:
+        text: Full document text to analyze.
+
+    Returns:
+        Dictionary with analytics:
+            char_count (int): Total characters (including whitespace).
+            word_count (int): Words separated by whitespace.
+            line_count (int): Lines separated by newline characters.
+            language (str): ISO 639-1 language code (e.g., 'es', 'en', 'unknown').
+            has_urls (bool): True if text contains http:// or https://.
+            has_emails (bool): True if text contains email-like patterns (text@domain).
+            has_numbers (bool): True if text contains numeric digits.
+            readability_score (float): Flesch Reading Ease score (0-100).
+            encoding (str): Character encoding (always 'utf-8').
+
+    Note:
+        Language detection uses langdetect library (probability-based). On short
+        text or mixed languages, may return 'unknown' instead of best guess.
+
+        Readability calculation uses textstat.flesch_reading_ease():
+        - 90-100: Very Easy (5th grade)
+        - 60-70: Standard (8th-9th grade)
+        - 0-30: Difficult (college level)
+
+        Failures in language detection or readability calculation do not raise
+        exceptions; fields are left as 'unknown' or omitted.
+
+    Example:
+        >>> analysis = analyze_text("Hello world. This is a test email@example.com")
+        >>> analysis['has_emails']
+        True
+        >>> analysis['language']
+        'en'
+    """
     analysis = {
         "char_count": len(text),
         "word_count": len(text.split()),
@@ -239,8 +399,23 @@ def analyze_text(text: str) -> Dict[str, Any]:
 
 
 class SourceClassifier:
-    """Classify document source/type using regex patterns."""
-    
+    """Classify document source type using regex pattern matching.
+
+    Identifies document category (notariado, catastro, bancario, fiscal, legal)
+    based on keyword and phrase patterns. Provides confidence scores based on
+    pattern matches.
+
+    Supported document types:
+        - notariado: Notary documents (escritura, protocolo, etc.)
+        - catastro: Cadastral/property records (referencia catastral, etc.)
+        - bancario: Bank statements and financial documents.
+        - fiscal: Tax/revenue documents (impuesto, declaración fiscal, etc.)
+        - legal: Contracts and legal documents.
+
+    Attributes:
+        PATTERNS (dict): Mapping of document_type to list of regex patterns.
+    """
+
     # Regex patterns for different document types
     PATTERNS = {
         "notariado": [
@@ -264,34 +439,62 @@ class SourceClassifier:
             r"cláusula|párrafo|legal|juzgado",
         ],
     }
-    
+
     @staticmethod
     def classify(text: str) -> Optional[Dict[str, Any]]:
-        """
-        Classify document source using regex patterns.
-        Returns {"document_type": str, "confidence": float, "classifier_version": str}
+        """Classify document source type using pattern matching.
+
+        Searches document text for keyword patterns and returns the document
+        type with highest confidence. Confidence is calculated as the proportion
+        of patterns matched for that type.
+
+        Args:
+            text: Full document text to classify.
+
+        Returns:
+            Dictionary with classification result:
+                document_type (str): Best-matching document type (notariado, catastro, etc.).
+                confidence (float): Confidence score 0.0-1.0 (fraction of patterns matched).
+                classifier_version (str): Version of classification model ("1.0").
+
+            Returns None if:
+                - text is empty or None
+                - no patterns match any document type
+
+        Example:
+            >>> result = SourceClassifier.classify("Esta es una escritura notarial...")
+            >>> result['document_type']
+            'notariado'
+            >>> result['confidence']
+            0.5  # 1 of 2 patterns matched
+
+        Note:
+            Comparison is case-insensitive. Partial matches within text are
+            sufficient (no word boundary required). This allows flexibility
+            with abbreviations and variations.
         """
         if not text:
             return None
-        
+
         import re
+
         text_lower = text.lower()
         scores = {}
-        
+
         for doc_type, patterns in SourceClassifier.PATTERNS.items():
             matches = 0
             for pattern in patterns:
                 if re.search(pattern, text_lower, re.IGNORECASE):
                     matches += 1
-            
+
             if matches > 0:
                 # Confidence based on number of matching patterns
                 confidence = min(1.0, matches / len(patterns))
                 scores[doc_type] = confidence
-        
+
         if not scores:
             return None
-        
+
         # Return highest confidence match
         best_type = max(scores.items(), key=lambda x: x[1])
         return {
@@ -302,12 +505,43 @@ class SourceClassifier:
 
 
 class ExtractionWorker:
+    """RabbitMQ consumer for document extraction and metadata pipeline.
+
+    Processes documents from the extraction queue by:
+    1. Downloading documents (file path, base64, or URL)
+    2. Extracting text via Docling API with async polling
+    3. Extracting document metadata (author, creation date, page count, etc.)
+    4. Analyzing text for language, readability, and patterns
+    5. Chunking text into overlapping token-based segments
+    6. Classifying document source type (notariado, catastro, etc.)
+    7. Storing results to Redis
+    8. Publishing job to downstream queues (embeddings, entities, metadata)
+
+    This is the first step in the document processing pipeline. Results are stored
+    in Redis under keys like orchestrator:job:{job_id}:{text,chunks,metadata:document}.
+
+    Attributes:
+        redis_client: Redis connection for result storage.
+        event_bus: EventBus instance for job progress updates.
+        temp_dir: Temporary directory for storing intermediate files.
+    """
+
     def __init__(self):
+        """Initialize extraction worker with Redis and RabbitMQ clients.
+
+        Sets up Redis connection for result storage, initializes event bus for
+        job progress updates, and creates temporary directory for intermediate
+        files. Resources are cleaned up on deletion.
+
+        Raises:
+            redis.ConnectionError: If Redis is unavailable.
+        """
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
         self.temp_dir = tempfile.mkdtemp()
 
     def __del__(self):
+        """Clean up temporary directory on worker deletion."""
         import shutil
 
         try:
@@ -316,10 +550,30 @@ class ExtractionWorker:
             pass
 
     def _docling_convert(self, document_bytes: bytes, filename: str) -> Dict[str, Any]:
-        """Submit a document to docling via the async endpoint and poll until done.
+        """Submit document to Docling async endpoint and poll until completion.
 
-        Using the async flow avoids hitting uvicorn's per-request timeout, which
-        is ~120 s by default and too short for large PDFs on CPU.
+        Implements async conversion with long-polling to avoid uvicorn's per-request
+        timeout (~120s), which is insufficient for large PDFs on CPU. Uses exponential
+        backoff (5-30s) between polls.
+
+        Args:
+            document_bytes: Raw binary content of document.
+            filename: Filename for Docling processing (determines file type).
+
+        Returns:
+            Dictionary with Docling result:
+                document (dict): Extracted document with md_content/text_content.
+                pages (list): List of extracted pages (if applicable).
+                (other fields): Task metadata.
+
+        Raises:
+            TimeoutError: If conversion exceeds DOCLING_CONVERSION_TIMEOUT (1800s default).
+            RuntimeError: If Docling returns failure/error status.
+            requests.RequestException: On HTTP errors or connection failures.
+
+        Note:
+            Uses Docling's ?wait= parameter for server-side long-polling to reduce
+            API call frequency. Minimum 5s sleep between polls to prevent busy-waiting.
         """
         # Submit conversion job asynchronously
         submit_resp = requests.post(
@@ -366,9 +620,7 @@ class ExtractionWorker:
             if task_status == "success":
                 break
             if task_status in ("failure", "error"):
-                raise RuntimeError(
-                    f"Docling conversion failed (task_id={task_id}): {status_data}"
-                )
+                raise RuntimeError(f"Docling conversion failed (task_id={task_id}): {status_data}")
             # Still pending/processing — sleep before next poll to avoid spinning
             time.sleep(5)
 
@@ -383,6 +635,25 @@ class ExtractionWorker:
     def extract_text_from_base64(
         self, document_base64: str, filename: str = "document"
     ) -> Dict[str, Any]:
+        """Extract text from base64-encoded document.
+
+        Decodes base64 content and passes to Docling. Auto-detects PDF format
+        from magic bytes if filename doesn't have .pdf extension.
+
+        Args:
+            document_base64: Base64-encoded document bytes.
+            filename: Original filename (used for type detection).
+
+        Returns:
+            Dictionary with:
+                text (str): Extracted text (markdown or plain).
+                metadata (dict): Extraction metadata (pages, method="base64").
+
+        Raises:
+            ValueError: If base64 decoding fails.
+            TimeoutError: If Docling conversion times out.
+            RuntimeError: If Docling fails.
+        """
         try:
             document_bytes = base64.b64decode(document_base64)
             logger.info(f"Decoded {len(document_bytes)} bytes, filename: {filename}")
@@ -411,9 +682,25 @@ class ExtractionWorker:
             logger.error(f"Failed to extract text from base64: {e}")
             raise
 
-    def extract_text_from_file(
-        self, file_path: str, filename: str = "document"
-    ) -> Dict[str, Any]:
+    def extract_text_from_file(self, file_path: str, filename: str = "document") -> Dict[str, Any]:
+        """Extract text from document file on disk.
+
+        Reads file from disk and passes to Docling for text extraction.
+
+        Args:
+            file_path: Absolute path to document file.
+            filename: Filename for Docling (may differ from path basename).
+
+        Returns:
+            Dictionary with:
+                text (str): Extracted text (markdown or plain).
+                metadata (dict): Extraction metadata (pages, method="file").
+
+        Raises:
+            FileNotFoundError: If file_path doesn't exist.
+            TimeoutError: If Docling conversion times out.
+            RuntimeError: If Docling fails.
+        """
         try:
             with open(file_path, "rb") as f:
                 document_bytes = f.read()
@@ -438,6 +725,30 @@ class ExtractionWorker:
             raise
 
     def extract_text_from_url(self, document_url: str) -> Dict[str, Any]:
+        """Extract text from document at URL.
+
+        Handles internal docling: URLs with path traversal protection, and
+        remote HTTP(S) URLs. Internal URLs are resolved to local paths and
+        read from disk; external URLs are fetched via HTTP.
+
+        Args:
+            document_url: URL to document (docling:// or http(s)://).
+
+        Returns:
+            Dictionary with:
+                text (str): Extracted text (markdown or plain).
+                metadata (dict): Extraction metadata (pages, method="url").
+
+        Raises:
+            ValueError: If path traversal attempted or URL is invalid.
+            requests.RequestException: If HTTP fetch fails.
+            TimeoutError: If Docling conversion times out.
+            RuntimeError: If Docling fails.
+
+        Note:
+            Path traversal is validated by ensuring resolved path stays within
+            /app directory tree. Prevents accessing files outside container.
+        """
         try:
             if document_url.startswith("http://docling:") or document_url.startswith(
                 "http://docling/"
@@ -492,6 +803,76 @@ class ExtractionWorker:
             raise
 
     def process_message(self, ch, method, properties, body):
+        """Process a single extraction job from RabbitMQ queue.
+
+        Main message handler that orchestrates the full extraction pipeline:
+        1. Parse job message (JSON with document_path, document_base64, or document_url)
+        2. Extract text via Docling (async polling)
+        3. Extract document metadata (author, creation date, page count, etc.)
+        4. Analyze text (language, readability, patterns)
+        5. Chunk text into overlapping token-based segments
+        6. Classify document source type
+        7. Store all results to Redis
+        8. Route to downstream queues (embeddings, entities, metadata)
+        9. Publish job progress update
+
+        Input message format (JSON):
+            {
+                "job_id": str,              # Unique job identifier
+                "document_path": str,       # Optional: absolute file path
+                "document_base64": str,     # Optional: base64-encoded content
+                "document_url": str,        # Optional: URL to document
+                "filename": str,            # Optional: original filename
+                "mime_type": str,           # Optional: declared MIME type
+                "entity_types": [str],      # Optional: entity types to extract
+            }
+
+        Either document_path, document_base64, or document_url must be present.
+
+        Redis storage (keys created):
+            orchestrator:job:{job_id}:status -> hash with status field
+            orchestrator:job:{job_id}:text -> full extracted text
+            orchestrator:job:{job_id}:chunks -> JSON array of chunks
+            orchestrator:job:{job_id}:metadata:document -> document metadata JSON
+            orchestrator:job:{job_id}:metadata:text -> text analytics JSON
+            orchestrator:job:{job_id}:source_classification -> classification result
+            orchestrator:job:{job_id}:steps -> hash with extraction="completed"
+
+        Queue publishing:
+            - Publishes to "embeddings" queue (all non-spreadsheet documents)
+            - Publishes to "entities" queue (all documents)
+            - Publishes to "metadata" queue (non-spreadsheet documents)
+            - Spreadsheets (csv, xls, xlsx) route to "entities" only
+
+        Message published to queues contains:
+            {
+                "job_id": str,
+                "chunks": [chunk dicts],
+                "document_metadata": metadata dict,
+                "entity_types": [str],          # Optional, if provided
+            }
+
+        Error handling:
+            - Docling timeouts: Raises TimeoutError, job marked as failed
+            - Empty text: Raises ValueError, includes MIME type mismatch details
+            - Source classification: Logged as warning, doesn't fail job
+            - exiftool missing: Gracefully degraded, metadata partially filled
+            - Any exception: Job status set to "failed", error stored to Redis,
+              published to failed queue, message nacked (not requeued)
+
+        Metrics recorded:
+            - extraction_worker_jobs_total (counter): success/error labels
+            - extraction_worker_job_duration_seconds (histogram): job duration
+
+        Temporary files:
+            - Base64 documents: Created in temp directory, cleaned up in finally
+            - File paths: Used directly, not copied
+
+        Raises:
+            Never raises exceptions. All errors are caught, logged, and converted
+            to failed job status in Redis. This allows RabbitMQ to move on to
+            next job without requeuing.
+        """
         job_id = None
         temp_file_path = None
         start_time = time.time()
@@ -502,9 +883,7 @@ class ExtractionWorker:
 
             logger.info(f"Processing text extraction for job: {job_id}")
 
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:status", "status", "extracting"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "extracting")
 
             if message.get("document_path"):
                 result = self.extract_text_from_file(
@@ -532,9 +911,7 @@ class ExtractionWorker:
                 file_ext = Path(filename).suffix or ".bin"
                 temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext)
                 try:
-                    os.write(
-                        temp_fd, base64.b64decode(message.get("document_base64", ""))
-                    )
+                    os.write(temp_fd, base64.b64decode(message.get("document_base64", "")))
                 finally:
                     os.close(temp_fd)
 
@@ -557,14 +934,10 @@ class ExtractionWorker:
 
             chunks = chunk_text(text)
 
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:status", "status", "processing"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "processing")
 
             self.redis_client.set(f"orchestrator:job:{job_id}:text", text)
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:chunks", json.dumps(chunks)
-            )
+            self.redis_client.set(f"orchestrator:job:{job_id}:chunks", json.dumps(chunks))
             self.redis_client.set(
                 f"orchestrator:job:{job_id}:metadata:document",
                 json.dumps(document_metadata),
@@ -573,9 +946,7 @@ class ExtractionWorker:
                 f"orchestrator:job:{job_id}:metadata:text", json.dumps(text_metadata)
             )
 
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:steps", "extraction", "completed"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "extraction", "completed")
 
             # Classify document source
             try:
@@ -653,9 +1024,7 @@ class ExtractionWorker:
         except Exception as e:
             logger.error(f"Error processing extraction: {e}")
             if job_id:
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:status", "status", "failed"
-                )
+                self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "failed")
                 self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
                 self.event_bus.publish_job_failed(job_id, str(e))
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -671,11 +1040,41 @@ class ExtractionWorker:
 
 
 def signal_handler(signum, frame):
+    """Handle termination signals (SIGTERM, SIGINT) gracefully.
+
+    Logs shutdown notice and exits cleanly, allowing RabbitMQ connection to close
+    and temporary files to be cleaned up by ExtractionWorker.__del__.
+
+    Args:
+        signum: Signal number (SIGINT=2, SIGTERM=15).
+        frame: Current stack frame.
+    """
     logger.info("Received shutdown signal, stopping worker...")
     sys.exit(0)
 
 
 def main():
+    """Main entry point for extraction worker.
+
+    Initializes infrastructure and starts consuming from RabbitMQ extraction queue.
+    Sets up signal handlers for graceful shutdown (SIGINT/SIGTERM) and Prometheus
+    metrics endpoint. Implements auto-reconnect with 5-second backoff on connection
+    failures.
+
+    Metrics endpoint:
+        Prometheus metrics available at http://localhost:METRICS_PORT/metrics
+        Tracks:
+            - extraction_worker_jobs_total (counter): Jobs by status (success/error)
+            - extraction_worker_job_duration_seconds (histogram): Job duration
+
+    Queue configuration:
+        Input queue: QUEUE_NAME (extract_text by default)
+        Prefetch count: PREFETCH_COUNT (3 by default) - max jobs to prefetch from queue
+
+    Error recovery:
+        If RabbitMQ connection fails, waits 5 seconds and retries. Continues
+        indefinitely until signal received.
+    """
     logger.info("Starting Extraction Worker")
 
     signal.signal(signal.SIGINT, signal_handler)

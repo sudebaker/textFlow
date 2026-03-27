@@ -42,6 +42,31 @@ class InferenceWorker:
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
 
+    @staticmethod
+    def _extract_outermost_array(text: str) -> Optional[str]:
+        """
+        Extract the outermost JSON array from text by counting brackets.
+        Handles nested arrays within objects (e.g., entities field).
+        
+        Args:
+            text: Text potentially containing a JSON array
+            
+        Returns:
+            The complete outermost JSON array string, or None if not found
+        """
+        start = text.find("[")
+        if start == -1:
+            return None
+        depth = 0
+        for i, char in enumerate(text[start:], start):
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        return None
+
     def extract_inferences(
         self,
         chunk_text: str,
@@ -74,46 +99,71 @@ class InferenceWorker:
             # This is safe because all documents are from trusted internal sources
             # (notariado, catastro, etc). If accepting untrusted external documents,
             # implement prompt injection safeguards (e.g., text sanitization/truncation).
-            prompt = f"""Dado el siguiente fragmento de texto y las entidades detectadas, extrae
-todos los hechos concretos y verificables. Cada hecho debe mencionar al
-menos una entidad detectada. Máximo {max_inferences} hechos.
+            system_prompt = """You are a fact extraction specialist. Your task is to extract concrete, 
+verifiable facts from text. Each fact must reference at least one detected entity. 
+Respond ONLY with a valid JSON array containing objects with these exact fields:
+- "text": the factual statement
+- "confidence": a confidence score between 0.0 and 1.0
+- "entities": list of entity names mentioned in the fact
 
-Devuelve ÚNICAMENTE un array JSON con objetos que tengan:
-- "text": la afirmación factual directa
-- "confidence": valor entre 0.0 y 1.0
-- "entities": lista de nombres de entidades mencionadas en el hecho
+Do NOT include any explanation, thinking, or text outside the JSON array."""
 
-Entidades detectadas: {entities_str}
+            user_prompt = f"""Extract facts from this text:
 
-Fragmento de texto:
-{chunk_text}
+Text: {chunk_text}
 
-Hechos:"""
+Detected entities: {entities_str}
+
+Maximum facts to extract: {max_inferences}
+
+Respond with ONLY the JSON array (no other text):"""
 
             payload = {
                 "model": LLM_MODEL,
-                "prompt": prompt,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
                 "max_tokens": 500,
                 "temperature": 0.1,
+                "chat_template_kwargs": {"enable_thinking": False},
             }
             
             response = requests.post(
-                f"{LLM_URL}/v1/completions",
+                f"{LLM_URL}/v1/chat/completions",
                 json=payload,
                 timeout=30,
             )
             response.raise_for_status()
             
             result = response.json()
-            completion_text = result.get("choices", [{}])[0].get("text", "")
+            completion_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             
-            # Parse JSON from LLM response
-            json_match = re.search(r"\[.*\]", completion_text, re.DOTALL)
-            if not json_match:
-                logger.warning("No JSON found in LLM response")
+            logger.debug(f"Raw LLM response (first 500 chars): {completion_text[:500]}")
+            
+            # Remove markdown code blocks if present
+            completion_text = re.sub(r"```.*?\n", "", completion_text, flags=re.DOTALL)
+            completion_text = re.sub(r"```", "", completion_text)
+            # Remove thinking tags
+            completion_text = re.sub(r"</think>.*", "", completion_text, flags=re.DOTALL)
+            completion_text = re.sub(r"<think>.*?</think>", "", completion_text, flags=re.DOTALL)
+            
+            # Extract the outermost JSON array (handles nested arrays correctly)
+            json_str = self._extract_outermost_array(completion_text)
+            if not json_str:
+                response_preview = completion_text[:300].replace("\n", " ") if completion_text else "(empty)"
+                logger.warning(f"No JSON array found in LLM response. Response preview: {response_preview}")
                 return []
             
-            inferences = json.loads(json_match.group())
+            logger.debug(f"Extracted JSON array (first 400 chars): {json_str[:400]}")
+            
+            try:
+                inferences = json.loads(json_str)
+                logger.info(f"Successfully parsed {len(inferences)} inferences from LLM response")
+            except json.JSONDecodeError as e:
+                response_preview = completion_text[:500].replace("\n", " ")
+                logger.warning(f"Failed to parse LLM response JSON: {e.msg}. Response: {response_preview}")
+                return []
             
             # Validate and annotate
             validated = []
@@ -132,7 +182,7 @@ Hechos:"""
             logger.warning(f"LLM call failed: {e}")
             return []
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse LLM response: {e}")
+            logger.warning(f"Failed to parse LLM response JSON: {e}")
             return []
         except Exception as e:
             logger.error(f"Error extracting inferences: {e}")

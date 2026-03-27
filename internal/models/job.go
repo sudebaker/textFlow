@@ -4,6 +4,9 @@ import (
 	"time"
 )
 
+// Job represents a single document processing request and its lifecycle through the pipeline.
+// It tracks the document source (URL or base64), processing status, and final results.
+// The job flows through states: Pending → Extracting → Processing → Embedding → Entities → Inferences → Completed (or Failed).
 type Job struct {
 	ID             string      `json:"id"`
 	Status         JobStatus   `json:"status"`
@@ -16,36 +19,57 @@ type Job struct {
 	Retries        int         `json:"retries,omitempty"`
 }
 
+// JobStatus represents the current state of a job in the processing pipeline.
+// It is a string enum that tracks progression from initial submission through completion or failure.
 type JobStatus string
 
 const (
-	StatusPending    JobStatus = "pending"
+	// StatusPending indicates the job has been created but not yet started extraction.
+	StatusPending JobStatus = "pending"
+	// StatusExtracting indicates the job is currently extracting text from the document.
 	StatusExtracting JobStatus = "extracting"
+	// StatusProcessing indicates the job is being processed by the pipeline.
 	StatusProcessing JobStatus = "processing"
-	StatusEmbedding  JobStatus = "embedding"
-	StatusEntities   JobStatus = "entities"
+	// StatusEmbedding indicates the job is computing embeddings for extracted chunks.
+	StatusEmbedding JobStatus = "embedding"
+	// StatusEntities indicates the job is performing named entity recognition.
+	StatusEntities JobStatus = "entities"
+	// StatusInferences indicates the job is generating micro-inferences from extracted facts.
 	StatusInferences JobStatus = "inferences"
-	StatusCompleted  JobStatus = "completed"
-	StatusFailed     JobStatus = "failed"
+	// StatusCompleted indicates the job has finished successfully and results are ready.
+	StatusCompleted JobStatus = "completed"
+	// StatusFailed indicates the job encountered an error during processing.
+	StatusFailed JobStatus = "failed"
 )
 
+// SourceClassificationResult represents the output of document source classification.
+// It identifies the document type (e.g., notarized deed, property registry, banking document)
+// and provides a confidence score and classifier version for traceability.
 type SourceClassificationResult struct {
 	DocumentType      string  `json:"document_type"` // e.g. "notariado", "catastro", "bancario"
 	Confidence        float32 `json:"confidence"`
 	ClassifierVersion string  `json:"classifier_version"`
 }
 
+// MicroInference represents a single fact or assertion extracted by the LLM from a chunk.
+// It includes the extracted text, confidence score, and any linked entities.
 type MicroInference struct {
 	Text       string   `json:"text"`
 	Confidence float32  `json:"confidence"`
 	Entities   []string `json:"entities,omitempty"`
 }
 
+// ChunkInferences represents a bundle of inferences extracted from a single text chunk.
+// It associates a chunk with all micro-inferences (facts) that were generated from its content.
 type ChunkInferences struct {
 	ChunkID    interface{}      `json:"chunk_id"`
 	Inferences []MicroInference `json:"inferences"`
 }
 
+// JobResults represents the final aggregated results of a completed job.
+// It contains extracted text, chunks with metadata, embeddings, named entities, document metadata,
+// and optional inference results. All fields except JobID, Status, CreatedAt, and CompletedAt are optional,
+// depending on which processing stages were executed.
 type JobResults struct {
 	JobID                string                      `json:"job_id"`
 	Status               string                      `json:"status"`
@@ -61,6 +85,9 @@ type JobResults struct {
 	MicroInferences      []ChunkInferences           `json:"micro_inferences,omitempty"`
 }
 
+// Chunk represents a segment of extracted text with token metadata.
+// Chunks are created by the text extraction phase and serve as units for embedding and entity recognition.
+// StartOffset and EndOffset refer to character positions in the original extracted text.
 type Chunk struct {
 	ChunkID     string `json:"chunk_id"`
 	Text        string `json:"text"`
@@ -69,6 +96,8 @@ type Chunk struct {
 	TokenCount  int    `json:"token_count,omitempty"`
 }
 
+// DocumentMetadata represents PDF and document-level metadata extracted during processing.
+// It includes MIME type, file size, page count, document properties, and cryptographic hash for integrity verification.
 type DocumentMetadata struct {
 	MIMEType     string `json:"mime_type"`
 	SizeBytes    int64  `json:"size_bytes"`
@@ -80,6 +109,9 @@ type DocumentMetadata struct {
 	SHA256       string `json:"sha256,omitempty"`
 }
 
+// Entity represents a named entity recognized in the document text.
+// It includes the entity text, label (e.g., PERSON, ORGANIZATION), confidence score,
+// and character offsets (Start/End) indicating its position in the chunk.
 type Entity struct {
 	Text       string  `json:"text"`
 	Label      string  `json:"label"`
@@ -89,6 +121,10 @@ type Entity struct {
 	End        int     `json:"end"`
 }
 
+// JobMessage represents the RabbitMQ envelope for job execution.
+// It carries minimal job metadata and routing information to workers,
+// with the document provided either as base64-encoded content or as a path/URL reference.
+// The NotifyWebhook field is optional for asynchronous completion notifications.
 type JobMessage struct {
 	JobID          string `json:"job_id"`
 	DocumentPath   string `json:"document_path,omitempty"`
@@ -99,10 +135,15 @@ type JobMessage struct {
 	NotifyWebhook  string `json:"notify_webhook,omitempty"`
 }
 
+// UploadRequest represents the HTTP request body for document upload endpoints.
+// It specifies optional webhook notification for asynchronous processing callbacks.
 type UploadRequest struct {
 	NotifyWebhook string `json:"notify_webhook,omitempty"`
 }
 
+// CreateJobRequest represents the HTTP request body for the create job endpoint.
+// Either DocumentBase64 or DocumentURL must be provided (enforced by binding tags).
+// Filename is optional for user-provided context, and Features allows selective activation of pipeline stages.
 type CreateJobRequest struct {
 	DocumentBase64 string   `json:"document_base64" binding:"required_without=DocumentURL"`
 	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
@@ -110,12 +151,17 @@ type CreateJobRequest struct {
 	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
 }
 
+// CreateJobResponse represents the HTTP response body for the create job endpoint.
+// It returns the newly created job ID, initial status (pending), and a URL for polling job status.
 type CreateJobResponse struct {
 	JobID     string    `json:"job_id"`
 	Status    JobStatus `json:"status"`
 	StatusURL string    `json:"status_url"`
 }
 
+// GetJobResponse represents the HTTP response body for the get job status endpoint.
+// It includes the job ID, current status, and optional results (when job is complete or failed).
+// The Steps field provides per-stage timing information for monitoring and debugging.
 type GetJobResponse struct {
 	JobID     string            `json:"job_id"`
 	Status    JobStatus         `json:"status"`
@@ -125,6 +171,8 @@ type GetJobResponse struct {
 	Steps     map[string]string `json:"steps,omitempty"`
 }
 
+// ErrorResponse represents a standardized error envelope for HTTP error responses.
+// Error is the machine-readable error code or type, and Detail provides human-readable information.
 type ErrorResponse struct {
 	Error  string `json:"error"`
 	Detail string `json:"detail,omitempty"`

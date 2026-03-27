@@ -51,6 +51,12 @@ var (
 	maxSpreadsheetBytes int64
 )
 
+// main is the entry point for the IA Text Orchestrator service.
+// It initializes configuration, logging, metrics, and connects to external services (RabbitMQ, Redis).
+// It manages the lifecycle of the HTTP server and background workers (metrics collector, job timeout watchdog).
+// It blocks on signal handling and gracefully shuts down all components on SIGINT or SIGTERM.
+// The service accepts documents via REST API, validates inputs (SSRF prevention, size limits),
+// and publishes jobs to RabbitMQ for async processing by workers. Job status and results are stored in Redis.
 func main() {
 	var err error
 
@@ -225,6 +231,18 @@ func main() {
 	logger.Info().Msg("Application shutdown complete")
 }
 
+// setupRouter creates and configures the Gin HTTP router for the orchestrator.
+// It registers middleware for logging, metrics collection, rate limiting, and panic recovery.
+// Routes include:
+//   - GET /health: Health status check
+//   - GET /metrics: Prometheus metrics endpoint
+//   - POST /v1/documents/process: Submit document for processing (async)
+//   - POST /v1/documents/upload: Upload file via multipart form and submit for processing
+//   - GET /v1/documents/{id}: Poll for job status and results
+//   - GET /v1/documents/{id}/download: Download job results as JSON
+//   - DELETE /v1/documents/{id}: Delete job data from Redis (only for completed/failed jobs)
+//
+// Returns a fully configured *gin.Engine ready to handle requests.
 func setupRouter() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -253,6 +271,10 @@ func setupRouter() *gin.Engine {
 	return r
 }
 
+// ginLogger is a Gin middleware that logs HTTP requests with structured logging.
+// It logs: HTTP method, path, query parameters (keys only, not values for security),
+// response status code, latency, and client IP.
+// It scrubs sensitive query parameter values before logging to avoid exposing secrets.
 func ginLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -285,6 +307,12 @@ func ginLogger() gin.HandlerFunc {
 	}
 }
 
+// metricsMiddleware is a Gin middleware that instruments HTTP requests with Prometheus metrics.
+// It tracks:
+//   - HTTPRequestsTotal: Counter of HTTP requests by method, path, and status code
+//   - HTTPLatencySeconds: Histogram of request latency by method and path
+//
+// Metrics are collected for all routes and can be exported via the /metrics endpoint.
 func metricsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -307,6 +335,11 @@ func metricsMiddleware() gin.HandlerFunc {
 	}
 }
 
+// healthHandler handles GET /health requests and returns the health status of the orchestrator.
+// It performs checks on Redis, RabbitMQ, and other critical services.
+// Returns HTTP 200 OK for "up" or "degraded" status (service is operational).
+// Returns HTTP 503 Service Unavailable only if status is "down" (complete failure).
+// Response includes detailed component status, timestamps, and error messages if any checks failed.
 func healthHandler(c *gin.Context) {
 	// Create context with timeout for health checks
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
@@ -326,6 +359,44 @@ func healthHandler(c *gin.Context) {
 	c.JSON(httpStatus, healthStatus)
 }
 
+// createJobHandler handles POST /v1/documents/process requests and submits a document for processing.
+// It is the primary REST API endpoint for document ingestion.
+//
+// Input (CreateJobRequest):
+//   - document_base64: Base64-encoded document file (mutually exclusive with document_url)
+//   - document_url: URL to document file (mutually exclusive with document_base64, subject to SSRF validation)
+//   - filename: Optional filename for logging/tracking
+//   - features: Optional array of requested features (e.g., ["embeddings", "entities", "metadata"])
+//   - notify_webhook: Optional webhook URL for completion notification
+//
+// Validation:
+//   - Exactly one of document_base64 or document_url is required
+//   - Document size must not exceed 10MB (checked via base64 decoding or URL resolution)
+//   - SSRF prevention: URLs must be public (no localhost, private IPs, cloud metadata endpoints)
+//   - URL schemes limited to http/https
+//
+// Processing:
+//  1. Generates unique UUID v4 job ID
+//  2. Creates Redis job record with status=pending
+//  3. Publishes JobMessage to RabbitMQ extraction queue
+//  4. Returns 202 Accepted immediately (async processing)
+//  5. Client must poll GET /v1/documents/{id} to check status
+//
+// Output (CreateJobResponse):
+//   - job_id: UUID v4 string
+//   - status: "pending"
+//   - status_url: Polling URL for client to check job progress
+//
+// Errors:
+//   - 400 Bad Request: Missing field, invalid base64, URL validation failure
+//   - 422 Unprocessable Entity: SSRF detected, private IP, metadata endpoint
+//   - 500 Internal Server Error: Redis or RabbitMQ failure
+//
+// Side effects:
+//   - Creates Redis key: orchestrator:job:{id}:status = "pending"
+//   - Creates Redis key: orchestrator:job:{id}:created = timestamp
+//   - Publishes to RabbitMQ exchange for extraction worker consumption
+//   - Increments metrics: JobsInProgress, JobsTotal
 func createJobHandler(c *gin.Context) {
 	start := time.Now()
 
@@ -431,6 +502,35 @@ func createJobHandler(c *gin.Context) {
 	})
 }
 
+// getJobHandler handles GET /v1/documents/{id} requests and returns the current status and results of a job.
+// This is a polling endpoint (non-blocking) - clients must retry to check for completion.
+//
+// Input:
+//   - id: Job ID path parameter (UUID v4 format validation required)
+//
+// Output (GetJobResponse):
+//   - job_id: The requested job ID
+//   - status: Current job status (pending, processing, completed, failed)
+//   - results: Aggregated job results (populated only if status=completed)
+//     Includes chunks, embeddings, entities, metadata extracted from the document
+//   - error: Error message if status=failed
+//   - steps: Map of processing step names to their current completion status
+//   - created_at: RFC3339 timestamp when job was created
+//
+// Behavior:
+//   - Does NOT block or wait for job completion
+//   - Returns immediately with current state from Redis
+//   - Results field is nil if job is still processing
+//   - Error field is populated if job failed
+//   - Clients must implement exponential backoff retry logic
+//
+// Errors:
+//   - 400 Bad Request: Invalid job ID format
+//   - 404 Not Found: Job does not exist in Redis
+//   - 500 Internal Server Error: Redis connection failure
+//
+// Side effects:
+//   - None (read-only operation)
 func getJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
@@ -489,6 +589,33 @@ func getJobHandler(c *gin.Context) {
 	})
 }
 
+// deleteJobHandler handles DELETE /v1/documents/{id} requests and removes a job's data from Redis.
+// This endpoint is idempotent: repeated requests for the same job always return 204.
+//
+// Input:
+//   - id: Job ID path parameter (UUID v4 format validation required)
+//
+// Output:
+//   - 204 No Content: Job deleted successfully (or never existed - idempotent)
+//   - No response body
+//
+// Behavior:
+//   - Only deletes jobs with status "completed" or "failed"
+//   - In-progress jobs (pending/processing) cannot be deleted
+//   - Returns 409 Conflict if attempting to delete an in-progress job
+//   - Hard-deletes all Redis keys associated with the job:
+//     orchestrator:job:{id}:status, :text, :chunks, :embeddings, :entities, :metadata, etc.
+//   - Non-existent jobs return 404 Not Found
+//
+// Idempotency:
+//   - Repeated calls to delete the same completed/failed job all return 204
+//   - Safe to retry without side effects
+//
+// Errors:
+//   - 400 Bad Request: Invalid job ID format
+//   - 404 Not Found: Job does not exist
+//   - 409 Conflict: Job is still processing (pending/processing status)
+//   - 500 Internal Server Error: Redis deletion failure
 func deleteJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
@@ -530,12 +657,23 @@ func deleteJobHandler(c *gin.Context) {
 	})
 }
 
+// generateJobID generates a unique job identifier using UUID v4.
+// Returns a hex string in standard UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+// This ID is used as the primary key for job tracking in Redis and as path parameter in REST API.
 func generateJobID() string {
 	return uuid.New().String()
 }
 
-// validateJobID validates that a jobID parameter matches expected format (UUID v4)
-// Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (alphanumeric + hyphens, 36 chars)
+// validateJobID validates that a jobID parameter matches the expected UUID v4 format.
+// Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 characters total, hex + hyphens)
+// Checks:
+//   - Exactly 36 characters in length
+//   - Hyphens at positions 8, 13, 18, 23
+//   - Hex characters (0-9, a-f, A-F) at all other positions
+//
+// This validation is more lenient than full UUID regex but sufficient for security
+// (format validation only; does not verify UUID version).
+// Returns true if format is valid, false otherwise.
 func validateJobID(jobID string) bool {
 	if len(jobID) != 36 {
 		return false
@@ -556,7 +694,36 @@ func validateJobID(jobID string) bool {
 	return true
 }
 
-// validateDocumentInput validates the document input to prevent DoS and SSRF attacks
+// validateDocumentInput validates the document input in a CreateJobRequest to prevent DoS and SSRF attacks.
+// It enforces size limits, URL format restrictions, and blocks dangerous network destinations.
+//
+// Size Limits:
+//   - DocumentBase64: Decoded size must not exceed 10MB
+//   - DocumentURL: URL length must not exceed 2048 characters
+//
+// URL Validation (when DocumentURL is provided):
+//   - Scheme: Only http and https allowed
+//   - Hostname: Must be present and resolvable
+//   - Public IP only: No localhost, loopback, or private IP ranges (RFC 1918)
+//   - No metadata endpoints: Blocks cloud metadata services (AWS, GCP, Azure)
+//   - No link-local addresses: Blocks 169.254.x.x range
+//   - DNS rebinding protection: Validates resolved IPs match hostname requirements
+//
+// SSRF Prevention Strategy:
+//  1. Whitelist URL schemes (http, https)
+//  2. Parse URL and extract hostname
+//  3. Block localhost/loopback unless cfg.AllowLocalURLs=true
+//  4. Block cloud metadata endpoints: 169.254.169.254, metadata.google.internal
+//  5. Block private IPs: 10.x, 172.16-31.x, 192.168.x
+//  6. Block link-local: 169.254.x.x (except AWS metadata which is already blocked)
+//  7. DNS lookup: Verify resolved IPs don't resolve to private ranges (DNS rebinding attack)
+//
+// Base64 Validation:
+//   - Validates standard base64 encoding
+//   - Decodes to check actual file size
+//
+// Returns nil if valid, or an error describing validation failure.
+// Errors are suitable for returning to client as 400/422 Bad Request responses.
 func validateDocumentInput(req *models.CreateJobRequest, cfg *config.Config) error {
 	const (
 		MaxDocumentSize = 10 * 1024 * 1024 // 10MB
@@ -669,6 +836,49 @@ func validateDocumentInput(req *models.CreateJobRequest, cfg *config.Config) err
 	return nil
 }
 
+// uploadHandler handles POST /v1/documents/upload requests for file uploads via multipart/form-data.
+// This is an alternative to the REST API for document submission when base64 encoding is inconvenient.
+//
+// Input (multipart/form-data):
+//   - file: Required. Single file upload field. Must be <= 10MB for regular documents.
+//   - notify_webhook: Optional. Webhook URL to notify when job completes (defaults to config.WebhookURL)
+//
+// Supported File Types:
+//   - Documents: .pdf, .txt, .doc, .docx, .ppt, .pptx
+//   - Spreadsheets: .csv, .xls, .xlsx (subject to additional row/size limits)
+//   - Data: .json
+//   - Images: .jpg, .jpeg, .png
+//
+// Size Limits:
+//   - Regular files: 10MB max
+//   - Spreadsheets (.csv, .xls, .xlsx): MAX_SPREADSHEET_SIZE_MB (default 5MB)
+//   - CSV rows: MAX_SPREADSHEET_ROWS (default 2000)
+//
+// Processing:
+//  1. Validates multipart form and file presence
+//  2. Checks file extension against whitelist
+//  3. For spreadsheets: validates size and row count
+//  4. Performs path traversal security checks
+//  5. Saves file to cfg.UploadPath with jobID prefix
+//  6. Creates Redis job record (status=pending)
+//  7. Publishes JobMessage to RabbitMQ extraction queue
+//  8. Returns 202 Accepted immediately (async processing)
+//
+// Output (CreateJobResponse):
+//   - job_id: UUID v4 string
+//   - status: "pending"
+//   - status_url: Polling URL for client to check job progress
+//
+// Errors:
+//   - 400 Bad Request: Missing file, invalid extension, malformed CSV, path traversal attempt
+//   - 413 Payload Too Large: File exceeds size limits
+//   - 500 Internal Server Error: File I/O or Redis failure
+//
+// Side effects:
+//   - Saves file to disk: {cfg.UploadPath}/{jobID}_{filename}
+//   - Creates Redis key: orchestrator:job:{id}:status = "pending"
+//   - Publishes to RabbitMQ extraction queue
+//   - Increments metrics: JobsInProgress, JobsTotal
 func uploadHandler(c *gin.Context) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -894,6 +1104,47 @@ func uploadHandler(c *gin.Context) {
 	})
 }
 
+// downloadHandler handles GET /v1/documents/{id}/download requests and returns job results as a JSON file.
+// This endpoint allows clients to download completed job results with proper HTTP headers for file attachment.
+//
+// Input:
+//   - id: Job ID path parameter (UUID v4 format validation required)
+//
+// Processing:
+//  1. Validates job ID format
+//  2. Checks job status from Redis
+//  3. Validates job is completed or failed (not pending/processing)
+//  4. Reads results JSON file from disk: {cfg.ResultsPath}/{jobID}.json
+//  5. Unmarshals JSON into JobResults struct
+//  6. Sets HTTP headers for file download
+//  7. Returns results as JSON with Content-Disposition: attachment header
+//
+// Output:
+//   - HTTP 200 OK with JSON body
+//   - Content-Type: application/json
+//   - Content-Disposition: attachment; filename=results_{jobID}.json
+//   - Response body: JobResults struct
+//   - job_id: The requested job ID
+//   - status: Final status (completed or failed)
+//   - chunks: Text chunks extracted from document
+//   - embeddings: Vector embeddings for chunks (if embedding feature requested)
+//   - entities: Named entities extracted (if entity feature requested)
+//   - metadata: Document metadata (if metadata feature requested)
+//
+// Errors:
+//   - 400 Bad Request: Invalid job ID format
+//   - 400 Bad Request: Job is still processing (not yet completed/failed)
+//   - 404 Not Found: Job does not exist or results file missing
+//   - 500 Internal Server Error: Disk I/O failure or JSON parse error
+//
+// Side effects:
+//   - None (read-only operation)
+//
+// Client Usage:
+//  1. Submit document via POST /v1/documents/process or /v1/documents/upload
+//  2. Poll GET /v1/documents/{id} until status is "completed" or "failed"
+//  3. Call GET /v1/documents/{id}/download to retrieve final results
+//  4. Browser will download file as results_{jobID}.json
 func downloadHandler(c *gin.Context) {
 	jobID := c.Param("id")
 

@@ -1,7 +1,35 @@
 #!/usr/bin/env python3
-"""
-Completion Worker for IA Text Orchestrator
-Aggregates all results from the processing pipeline into a final JSON structure
+"""Completion Worker: Final aggregator in the IA Text Orchestrator pipeline.
+
+This module monitors job completion across all workers via Redis pub/sub and
+aggregates their results into a single finalized JSON structure. It acts as the
+final step in the document processing pipeline, waiting for all required workers
+(extraction, embeddings, entities, metadata) to complete before writing results
+to file and notifying via webhook.
+
+Key responsibilities:
+  - Subscribe to job:events channel via Redis pub/sub
+  - Monitor completion status of all pipeline workers for each job
+  - Deduplicate entities and aggregate results from all workers
+  - Finalize jobs by saving results to /results/{job_id}.json
+  - Send webhook notifications when jobs complete or fail
+  - Support different pipeline types (default full pipeline vs. spreadsheet)
+
+Environment variables:
+  - REDIS_URL: Redis connection URL (default: redis://localhost:6379)
+  - WEBHOOK_URL: Optional webhook endpoint for job completion notifications
+  - RESULTS_PATH: Directory to save final JSON results (default: /app/data/results)
+  - API_BASE_URL: Base URL for download links in webhook (default: http://localhost:8080)
+  - METRICS_PORT: Prometheus metrics port (default: 8005)
+
+Metrics:
+  - completion_worker_jobs_finalized_total: Counter of finalized jobs by status
+  - completion_worker_job_finalization_duration_seconds: Histogram of finalization time
+
+Pipeline variants:
+  - Full pipeline (default): extraction, embeddings, entities, metadata
+  - Spreadsheet pipeline: extraction, entities (skips embeddings/metadata)
+  - With inferences: Adds 'inferences' to required_steps if feature was requested
 """
 
 import os
@@ -40,7 +68,35 @@ job_finalization_duration = Histogram(
 
 
 class CompletionWorker:
+    """Aggregates job results and finalizes document processing.
+
+    This worker subscribes to job progress events via Redis pub/sub and monitors
+    the completion status of all required pipeline steps. Once all required steps
+    for a job are complete, it aggregates their results, saves to file, and sends
+    webhook notifications.
+
+    Attributes:
+        redis_client: Redis client for pub/sub and data retrieval.
+        event_bus: EventBus instance for publishing job completion/failure events.
+        default_required_steps: Set of steps required for full pipeline jobs
+            (extraction, embeddings, entities, metadata).
+        spreadsheet_required_steps: Set of steps required for spreadsheet jobs
+            (extraction, entities only).
+    """
+
     def __init__(self):
+        """Initialize the completion worker with Redis connection and event bus.
+
+        Sets up Redis client for pub/sub subscriptions and data retrieval, and
+        defines which pipeline steps are required for different document types.
+        Different pipeline variants have different required steps:
+          - Full pipeline (default): extraction, embeddings, entities, metadata
+          - Spreadsheet: extraction, entities (skips embeddings/metadata)
+          - With inferences: Adds 'inferences' to required_steps if feature requested
+
+        Raises:
+            redis.ConnectionError: If Redis connection cannot be established.
+        """
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
         # Default required steps for full pipeline
@@ -54,6 +110,30 @@ class CompletionWorker:
         self.spreadsheet_required_steps = {"extraction", "entities"}
 
     def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
+        """Save finalized job results to JSON file.
+
+        Writes the complete aggregated results to /results/{job_id}.json with
+        proper UTF-8 encoding and pretty-printing (indent=2) for readability.
+        Automatically creates the RESULTS_PATH directory if it doesn't exist.
+
+        This operation is idempotent and can be safely called multiple times
+        for the same job (it will overwrite the previous file).
+
+        Args:
+            job_id: Unique identifier of the job.
+            results: Dictionary containing aggregated JobResults with keys:
+                - job_id, status, created_at, completed_at
+                - document_metadata, text_metadata
+                - chunks, embeddings, entities
+                - (optional) source_classification, micro_inferences
+
+        Returns:
+            True if file was saved successfully, False if an exception occurred.
+            Exceptions are logged but not raised.
+
+        Raises:
+            Does not raise exceptions; logs errors and returns False instead.
+        """
         try:
             os.makedirs(RESULTS_PATH, exist_ok=True)
             file_path = os.path.join(RESULTS_PATH, f"{job_id}.json")
@@ -68,6 +148,41 @@ class CompletionWorker:
     def send_webhook(
         self, job_id: str, status: str, error: Optional[str] = None
     ) -> bool:
+        """Send webhook notification when job completes or fails.
+
+        Posts a notification to the configured WEBHOOK_URL with job completion
+        or failure details. The webhook is only sent if WEBHOOK_URL environment
+        variable is set; if not configured, this method returns False silently.
+
+        Webhook payload structure:
+            {
+                "job_id": str,
+                "status": "completed" | "failed",
+                "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+                "error": str (only if status="failed")
+            }
+
+        This operation is idempotent (can be called multiple times for same job).
+        Failures are logged but do not prevent job finalization.
+
+        Args:
+            job_id: Unique identifier of the job.
+            status: Job status ("completed" or "failed").
+            error: Optional error message to include in webhook payload
+                (only applicable if status="failed").
+
+        Returns:
+            True if webhook was sent successfully or WEBHOOK_URL not configured.
+            False if webhook_url is set but the HTTP request failed.
+
+        Raises:
+            Does not raise exceptions; logs errors and returns False instead.
+
+        Note:
+            - Webhook timeout is 10 seconds
+            - HTTP errors are logged at ERROR level
+            - Optional WEBHOOK_URL env var determines if webhooks are enabled
+        """
         webhook_url = WEBHOOK_URL
         if not webhook_url:
             return False
@@ -95,10 +210,31 @@ class CompletionWorker:
             return False
 
     def deduplicate_entities(self, entities: list) -> list:
-        """
-        Deduplicate entities using exact text match (not fuzzy).
-        Keep all variations like "María Pilar" vs "María Pilar Rodríguez"
-        Keep highest confidence for exact duplicates.
+        """Deduplicate entities using exact text match (no fuzzy matching).
+
+        Removes duplicate entities by exact (label, text) key match while
+        preserving all text variations. For exact duplicates, keeps the entity
+        with the highest confidence score.
+
+        Examples of preserved variations:
+            - "María Pilar" and "María Pilar Rodríguez" are kept as different
+            - "PER:John Smith" (confidence 0.95) replaces "PER:John Smith" (0.85)
+
+        Args:
+            entities: List of entity dictionaries with keys:
+                - label: Entity type (e.g., "PER", "ORG", "LOC")
+                - text: Exact entity text
+                - confidence: Confidence score (0-1)
+
+        Returns:
+            Deduplicated list of entities, preserving order of first occurrence.
+            Exact duplicates with lower confidence are removed and replaced
+            with higher-confidence versions.
+
+        Note:
+            This is called during finalize_job() to clean up entities collected
+            from multiple chunks. Uses grouping by (label, text) without fuzzy
+            matching to preserve intentional variations.
         """
         if not entities:
             return entities
@@ -133,6 +269,18 @@ class CompletionWorker:
         return result
 
     def get_job_creation_time(self, job_id: str) -> Optional[str]:
+        """Retrieve the ISO 8601 creation timestamp for a job.
+
+        Fetches the job's created_at timestamp from Redis metadata and converts
+        it to ISO 8601 format for inclusion in final results.
+
+        Args:
+            job_id: Unique identifier of the job.
+
+        Returns:
+            ISO 8601 formatted timestamp string (e.g., "2024-03-27T10:30:45"),
+            or None if metadata not found or created_at is not set.
+        """
         meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
         created_at = meta.get("created_at")
         if created_at:
@@ -140,6 +288,37 @@ class CompletionWorker:
         return None
 
     def check_job_completion(self, job_id: str):
+        """Poll Redis to check if all required pipeline steps are completed.
+
+        Determines which steps are required based on document type and features:
+          - Full pipeline (default): extraction, embeddings, entities, metadata
+          - Spreadsheet: extraction, entities (MIME type check)
+          - With inferences: Adds 'inferences' if feature was requested
+
+        If all required steps have completed status, triggers finalize_job()
+        to aggregate results and save to file.
+
+        Document type detection:
+            Spreadsheets detected by MIME type:
+            - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+            - application/vnd.ms-excel
+            - text/csv
+            - application/zip (Excel files may show as ZIP)
+
+        Feature detection:
+            If job:features JSON contains "inferences" key, adds it to
+            required_steps set.
+
+        Args:
+            job_id: Unique identifier of the job.
+
+        Returns:
+            None. This method is fire-and-forget; if completion is detected,
+            it calls finalize_job() as a side effect.
+
+        Raises:
+            Does not raise exceptions; errors are logged and processing continues.
+        """
         try:
             steps = self.redis_client.hgetall(f"orchestrator:job:{job_id}:steps")
 
@@ -181,7 +360,9 @@ class CompletionWorker:
                     features = json.loads(features_json)
                     if "inferences" in features:
                         required_steps.add("inferences")
-                        logger.info(f"Job {job_id}: added 'inferences' to required_steps")
+                        logger.info(
+                            f"Job {job_id}: added 'inferences' to required_steps"
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to parse features: {e}")
 
@@ -197,6 +378,68 @@ class CompletionWorker:
             logger.error(f"Error checking job completion: {e}")
 
     def finalize_job(self, job_id: str):
+        """Aggregate all worker results and finalize a completed job.
+
+        This is the final aggregation step that brings together results from
+        all workers (extraction, embeddings, entities, metadata, inferences).
+
+        Process:
+            1. Fetch all job data from Redis in a single pipeline operation
+            2. Check if job is not already finalized (idempotent check)
+            3. Parse and aggregate results from each worker:
+               - Deduplicate entities (keep highest confidence)
+               - Normalize embeddings with model metadata
+               - Parse optional source_classification and micro_inferences
+            4. Save aggregated results to file (/results/{job_id}.json)
+            5. Send webhook notification (if configured)
+            6. Mark job status as "completed" in Redis
+            7. Publish job_completed event
+
+        Error handling:
+            On any exception during finalization:
+            - Job status marked as "failed"
+            - Error message stored in Redis
+            - Webhook notification sent with error details
+            - Metrics recorded for failure case
+
+        Redis keys read:
+            - orchestrator:job:{job_id}:meta (job metadata)
+            - orchestrator:job:{job_id}:status (current status)
+            - orchestrator:job:{job_id}:text (raw text)
+            - orchestrator:job:{job_id}:metadata:document (MIME type, etc.)
+            - orchestrator:job:{job_id}:metadata:text (text metadata)
+            - orchestrator:job:{job_id}:chunks (extracted chunks)
+            - orchestrator:job:{job_id}:embeddings (vector embeddings)
+            - orchestrator:job:{job_id}:entities_raw (raw entities before dedup)
+            - orchestrator:job:{job_id}:source_classification (document classification)
+            - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)
+
+        Redis keys written:
+            - orchestrator:job:{job_id}:results (final aggregated results)
+            - orchestrator:job:{job_id}:meta (add completed_at timestamp)
+            - orchestrator:job:{job_id}:status (mark status="completed")
+            - orchestrator:job:{job_id}:error (on failure only)
+
+        Args:
+            job_id: Unique identifier of the job.
+
+        Returns:
+            None.
+
+        Raises:
+            Does not raise exceptions. All errors are caught, logged, and
+            converted to job failure status.
+
+        Side effects:
+            - Writes /results/{job_id}.json file
+            - Sends webhook notification (if WEBHOOK_URL configured)
+            - Publishes job_completed or job_failed event
+            - Updates Prometheus metrics
+
+        Note:
+            Idempotent: If job is already marked as "completed" status,
+            function returns early without re-processing.
+        """
         finalization_start_time = time.time()
         try:
             logger.info(f"Finalizing job: {job_id}")
@@ -260,20 +503,22 @@ class CompletionWorker:
             # Parse source classification and micro inferences if present
             source_classification = None
             micro_inferences = None
-            
+
             try:
                 if source_classification_json:
                     source_classification = json.loads(source_classification_json)
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse source_classification JSON: {e}")
-            
+
             try:
                 if micro_inferences_json:
                     micro_inferences = json.loads(micro_inferences_json)
                     # micro_inferences is now: [{chunk_id: "...", inferences: [...]}, ...]
                     # Validate structure
                     if not isinstance(micro_inferences, list):
-                        logger.warning(f"micro_inferences is not a list, got {type(micro_inferences)}")
+                        logger.warning(
+                            f"micro_inferences is not a list, got {type(micro_inferences)}"
+                        )
                         micro_inferences = None
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse micro_inferences JSON: {e}")
@@ -305,7 +550,9 @@ class CompletionWorker:
             if micro_inferences:
                 # micro_inferences is now a list of {chunk_id, inferences: [...]}
                 if isinstance(micro_inferences, list):
-                    total_inferences = sum(len(c.get("inferences", [])) for c in micro_inferences)
+                    total_inferences = sum(
+                        len(c.get("inferences", [])) for c in micro_inferences
+                    )
                     log_message += f", micro_inferences={total_inferences} (from {len(micro_inferences)} chunks)"
                 else:
                     log_message += f", micro_inferences=<invalid structure>"
@@ -349,6 +596,45 @@ class CompletionWorker:
             jobs_finalized_total.labels(status="error").inc()
 
     def handle_event(self, message):
+        """Process incoming job progress event from Redis pub/sub.
+
+        This is the event handler called by Redis pub/sub listener for each
+        message on the job:events channel. It parses the event, extracts the
+        job_id and event_type, and triggers job completion checks if the
+        event is of type "job_progress".
+
+        Event structure:
+            {
+                "type": "message" (Redis pub/sub message type),
+                "data": JSON string containing:
+                    {
+                        "event_type": "job_progress" | other,
+                        "job_id": str,
+                        ...other fields...
+                    }
+            }
+
+        Behavior:
+            - Ignores non-"message" type events (e.g., "subscribe" confirmations)
+            - For "job_progress" events, calls check_job_completion(job_id)
+            - Logs event receipt for debugging
+
+        Args:
+            message: Dictionary from Redis pub/sub listener with keys:
+                - type: "message" | "subscribe" | "unsubscribe"
+                - channel: "job:events"
+                - data: JSON string containing event details
+
+        Returns:
+            None.
+
+        Raises:
+            Does not raise exceptions. Parsing errors are logged and ignored.
+
+        Note:
+            Exceptions during parsing or check_job_completion are caught
+            and logged at ERROR level without stopping the pub/sub listener.
+        """
         try:
             if message["type"] != "message":
                 return
@@ -366,7 +652,38 @@ class CompletionWorker:
             logger.error(f"Error handling event: {e}")
 
     def start(self):
-        """Start the worker and listen for job events with reconnection logic."""
+        """Start the completion worker and listen for job progress events.
+
+        Main entry point for the worker. Subscribes to the job:events Redis
+        pub/sub channel and begins processing job progress notifications.
+
+        This method runs indefinitely and implements exponential backoff
+        reconnection logic to handle Redis connection failures gracefully:
+            - Initial backoff: 1 second
+            - Exponential increase with each reconnection
+            - Maximum backoff cap: 60 seconds
+
+        Connection failures are logged but do not halt the worker; instead,
+        the worker waits and reconnects automatically.
+
+        Process:
+            1. Connect to Redis and subscribe to job:events channel
+            2. For each message received, call handle_event()
+            3. On connection error, close pubsub connection and wait
+            4. Reconnect with exponential backoff
+
+        Returns:
+            Never returns under normal operation; runs indefinitely.
+
+        Raises:
+            Does not raise exceptions. All errors are logged and handled
+            with automatic reconnection.
+
+        Side effects:
+            - Logs "Completion worker started, listening for job events..."
+            - Logs connection errors and reconnection delays
+            - Calls handle_event() for each incoming message
+        """
         backoff_time = 1
         max_backoff_time = 60
 
@@ -394,6 +711,21 @@ class CompletionWorker:
 
 
 def main():
+    """Entry point for the completion worker service.
+
+    Initializes Prometheus metrics server and starts the CompletionWorker
+    to listen for job progress events.
+
+    Prometheus metrics are exposed on METRICS_PORT (default 8005) at:
+        http://localhost:8005/metrics
+
+    Returns:
+        Never returns; runs indefinitely until process is terminated.
+
+    Raises:
+        Does not raise exceptions. All errors are handled within
+        CompletionWorker.start() with automatic reconnection logic.
+    """
     # Start Prometheus metrics server
     logger.info(f"Starting metrics server on port {METRICS_PORT}")
     start_http_server(METRICS_PORT)

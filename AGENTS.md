@@ -1,5 +1,7 @@
 # AGENTS.md - IA Text Orchestrator
 
+**Idioma**: Responde siempre en español.
+
 Event-driven microservices: Go orchestrator + Python workers (RabbitMQ, Redis, Unstructured API).
 
 ---

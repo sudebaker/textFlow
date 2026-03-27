@@ -175,7 +175,7 @@ class CompletionWorker:
 
             # Add inferences if features were requested
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
-            logger.info(f"Job {job_id}: features_json={features_json}")
+            logger.debug(f"Job {job_id}: features_json={features_json}")
             if features_json:
                 try:
                     features = json.loads(features_json)

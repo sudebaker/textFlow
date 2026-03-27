@@ -45,6 +45,13 @@ class InferenceWorker:
         # Discover model at startup (once, cached)
         if LLM_URL:
             self.llm_model_id, self.llm_max_model_len = self._discover_model(LLM_URL)
+            # Fallback to statically configured LLM_MODEL if discovery fails
+            if not self.llm_model_id and LLM_MODEL:
+                logger.info(
+                    f"Model discovery failed, falling back to LLM_MODEL env var: {LLM_MODEL}"
+                )
+                self.llm_model_id = LLM_MODEL
+                self.llm_max_model_len = None
         else:
             self.llm_model_id = None
             self.llm_max_model_len = None
@@ -198,9 +205,9 @@ Respond with ONLY the JSON array (no other text):"""
             # Remove markdown code blocks if present
             completion_text = re.sub(r"```.*?\n", "", completion_text, flags=re.DOTALL)
             completion_text = re.sub(r"```", "", completion_text)
-            # Remove thinking tags
-            completion_text = re.sub(r"</think>.*", "", completion_text, flags=re.DOTALL)
+            # Remove thinking tags: complete blocks first, then any dangling closing tag
             completion_text = re.sub(r"<think>.*?</think>", "", completion_text, flags=re.DOTALL)
+            completion_text = re.sub(r"</think>.*", "", completion_text, flags=re.DOTALL)
             
             # Extract the outermost JSON array (handles nested arrays correctly)
             json_str = self._extract_outermost_array(completion_text)

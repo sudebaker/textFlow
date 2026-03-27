@@ -30,7 +30,7 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
 LLM_URL = os.getenv("LLM_URL", "")  # Base URL without /v1 path
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen3-coder")  # vLLM model name
+LLM_MODEL = os.getenv("LLM_MODEL", "")  # Will be auto-discovered, left empty by default
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
@@ -41,6 +41,56 @@ class InferenceWorker:
     def __init__(self):
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
+        
+        # Discover model at startup (once, cached)
+        if LLM_URL:
+            self.llm_model_id, self.llm_max_model_len = self._discover_model(LLM_URL)
+        else:
+            self.llm_model_id = None
+            self.llm_max_model_len = None
+
+    @staticmethod
+    def _discover_model(llm_url: str) -> tuple[Optional[str], Optional[int]]:
+        """
+        Discover available models from vLLM API.
+        
+        Args:
+            llm_url: Base URL of vLLM server (e.g., http://localhost:8000)
+            
+        Returns:
+            Tuple of (model_id, max_model_len) or (None, None) if discovery fails
+        """
+        if not llm_url:
+            logger.warning("No LLM_URL configured, model discovery skipped")
+            return (None, None)
+        
+        try:
+            response = requests.get(
+                f"{llm_url}/v1/models",
+                timeout=5,
+            )
+            response.raise_for_status()
+            models = response.json()
+            
+            if not models.get("data"):
+                logger.warning(f"No models found in vLLM response: {models}")
+                return (None, None)
+            
+            model_info = models["data"][0]
+            model_id = model_info.get("id")
+            max_model_len = model_info.get("max_model_len", 4096)
+            
+            logger.info(
+                f"Discovered model '{model_id}' with max_model_len={max_model_len}"
+            )
+            return (model_id, max_model_len)
+            
+        except requests.RequestException as e:
+            logger.warning(f"Failed to discover models from {llm_url}: {e}")
+            return (None, None)
+        except (KeyError, ValueError) as e:
+            logger.warning(f"Failed to parse vLLM models response: {e}")
+            return (None, None)
 
     @staticmethod
     def _extract_outermost_array(text: str) -> Optional[str]:
@@ -86,8 +136,8 @@ class InferenceWorker:
         Returns:
             List of {"text": str, "confidence": float, "entities": [str]}
         """
-        if not LLM_URL:
-            logger.warning("No LLM_URL configured, skipping inferences")
+        if not LLM_URL or not self.llm_model_id:
+            logger.warning("No LLM configured or model discovery failed, skipping inferences")
             return []
 
         try:
@@ -118,13 +168,17 @@ Maximum facts to extract: {max_inferences}
 
 Respond with ONLY the JSON array (no other text):"""
 
+            # Calculate max_tokens dynamically from discovered max_model_len
+            # Estimate: overhead = system_prompt (150) + user_prompt (300) + margin (450)
+            max_tokens = max(200, (self.llm_max_model_len or 4096) - 900)
+            
             payload = {
-                "model": LLM_MODEL,
+                "model": self.llm_model_id,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 500,
+                "max_tokens": max_tokens,
                 "temperature": 0.1,
                 "chat_template_kwargs": {"enable_thinking": False},
             }

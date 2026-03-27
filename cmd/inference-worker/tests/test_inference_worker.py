@@ -122,14 +122,18 @@ class TestInferenceWorker:
             assert inferences == []
 
     def test_extract_inferences_llm_failure(self, worker):
+        """Test that HTTP failures are handled gracefully"""
+        # Set up discovered model so the method actually tries to call LLM
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        
         with patch("worker.LLM_URL", "http://localhost:8000"):
-            with patch("worker.LLM_MODEL", "test-model"):
-                with patch("requests.post") as mock_post:
-                    mock_post.side_effect = Exception("Connection failed")
-                    inferences = worker.extract_inferences(
-                        chunk_text="Some text", entities=[], source_type="generico"
-                    )
-                    assert inferences == []
+            with patch("requests.post") as mock_post:
+                mock_post.side_effect = Exception("Connection failed")
+                inferences = worker.extract_inferences(
+                    chunk_text="Some text", entities=[], source_type="generico"
+                )
+                assert inferences == []
 
     def test_process_non_last_chunk_publishes_progress(self, worker):
         """Non-last chunk should publish incremental inference progress"""

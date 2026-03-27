@@ -18,7 +18,7 @@ type Config struct {
 	ResourceManagerURL string        `env:"RESOURCE_MANAGER_URL" default:"http://localhost:9090"`
 	HTTPPort           int           `env:"HTTP_PORT" default:"8080"`
 	LogLevel           string        `env:"LOG_LEVEL" default:"info"`
-	JobTimeout         time.Duration `env:"JOB_TIMEOUT" default:"5m"`
+	JobTimeout         time.Duration `env:"JOB_TIMEOUT" default:"60m"`
 	JobTTL             time.Duration `env:"JOB_TTL" default:"24h"`
 	MaxRetries         int           `env:"MAX_RETRIES" default:"3"`
 	RetryDelay         time.Duration `env:"RETRY_DELAY" default:"1s"`

@@ -77,7 +77,7 @@ services:
     - INFERENCES_QUEUE=inferences
     - MAX_SPREADSHEET_ROWS=${MAX_SPREADSHEET_ROWS:-2000}
     - MAX_SPREADSHEET_SIZE_MB=${MAX_SPREADSHEET_SIZE_MB:-5}
-    - JOB_TIMEOUT=5m
+    - JOB_TIMEOUT=${JOB_TIMEOUT:-60m}
     depends_on:
       rabbitmq:
         condition: service_healthy

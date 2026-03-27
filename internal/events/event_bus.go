@@ -11,11 +11,26 @@ import (
 	"ia-text-orchestrator/pkg/logging"
 )
 
+// EventBus is a Redis pub/sub wrapper for broadcasting job lifecycle events.
+// It publishes ephemeral job status updates (created, progress, completed, failed)
+// to Redis channels so that external clients can monitor job progress in real-time.
+//
+// Important: Redis pub/sub is NOT persistent. Subscribers must be listening before
+// events are published to receive them. For persistent job state, the orchestrator
+// stores job status in Redis hash keys (e.g., "orchestrator:job:{id}:status").
+// Subscription is optional for job completion detection; polling Redis storage is
+// the authoritative method.
+//
+// Channel naming:
+//   - "job:events" - broadcast channel for all job events
+//   - "job:{jobID}:events" - private channel for job-specific events
 type EventBus struct {
 	client *redis.Client
 	logger zerolog.Logger
 }
 
+// NewEventBus creates a new EventBus with the given Redis client and a logger.
+// The returned EventBus is ready to publish job lifecycle events.
 func NewEventBus(client *redis.Client) *EventBus {
 	return &EventBus{
 		client: client,
@@ -23,6 +38,12 @@ func NewEventBus(client *redis.Client) *EventBus {
 	}
 }
 
+// Publish marshals the JobEvent to JSON and publishes it to the specified Redis channel.
+// This is the internal publish method used by all PublishJob* methods.
+//
+// Returns an error if JSON marshaling fails or the Redis publish operation fails.
+// Note: Successful publish does not guarantee delivery; subscribers must be listening
+// when the event is published to receive it (Redis pub/sub semantics).
 func (eb *EventBus) Publish(ctx context.Context, channel string, event *JobEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -43,12 +64,23 @@ func (eb *EventBus) Publish(ctx context.Context, channel string, event *JobEvent
 	return nil
 }
 
+// Subscribe creates a Redis pub/sub subscription to the specified channel.
+// The caller is responsible for reading messages from the returned PubSub object
+// and closing it when done.
+//
+// Only events published after the subscription is created will be received
+// (Redis pub/sub is not persistent or buffered).
 func (eb *EventBus) Subscribe(ctx context.Context, channel string) *redis.PubSub {
 	pubsub := eb.client.Subscribe(ctx, channel)
 	eb.logger.Info().Str("channel", channel).Msg("Subscribed to channel")
 	return pubsub
 }
 
+// PublishJobCreated broadcasts a job creation event to the "job:events" channel.
+// Called by the orchestrator when a new job is created and stored in Redis.
+// Signals to subscribers that a job with the given jobID is now pending.
+//
+// Returns an error if publishing fails.
 func (eb *EventBus) PublishJobCreated(ctx context.Context, jobID string) error {
 	return eb.Publish(ctx, "job:events", &JobEvent{
 		EventType: EventJobCreated,
@@ -59,6 +91,16 @@ func (eb *EventBus) PublishJobCreated(ctx context.Context, jobID string) error {
 	})
 }
 
+// PublishJobProgress broadcasts a job progress event to the "job:events" channel.
+// Called by workers (embeddings, entities, extraction, metadata, completion) during
+// processing to report incremental progress and status updates.
+//
+// Parameters:
+//   - jobID: The job identifier
+//   - progress: Numeric progress value (0-100)
+//   - status: Human-readable status string (e.g., "processing", "chunking", "embedding")
+//
+// Returns an error if publishing fails.
 func (eb *EventBus) PublishJobProgress(ctx context.Context, jobID string, progress int, status string) error {
 	return eb.Publish(ctx, "job:events", &JobEvent{
 		EventType: EventJobProgress,
@@ -69,6 +111,19 @@ func (eb *EventBus) PublishJobProgress(ctx context.Context, jobID string, progre
 	})
 }
 
+// PublishJobCompleted broadcasts a job completion event to the "job:events" channel.
+// Called by the orchestrator when all processing is finished and results are stored.
+// Signals to subscribers that the job has finished successfully.
+//
+// Note: This is a notification event only. The authoritative job status is in
+// Redis storage (key "orchestrator:job:{jobID}:status"). Clients should not rely
+// solely on this event; subscription is optional if polling Redis is preferred.
+//
+// Parameters:
+//   - jobID: The job identifier
+//   - metadata: Optional completion metadata (e.g., result summaries, result locations)
+//
+// Returns an error if publishing fails.
 func (eb *EventBus) PublishJobCompleted(ctx context.Context, jobID string, metadata map[string]interface{}) error {
 	return eb.Publish(ctx, "job:events", &JobEvent{
 		EventType: EventJobCompleted,
@@ -80,6 +135,19 @@ func (eb *EventBus) PublishJobCompleted(ctx context.Context, jobID string, metad
 	})
 }
 
+// PublishJobFailed broadcasts a job failure event to the "job:events" channel.
+// Called by the orchestrator or workers when processing fails (e.g., unstructured API
+// error, worker crash, invalid input).
+// Signals to subscribers that the job has terminated with an error.
+//
+// Note: Like PublishJobCompleted, this is a notification event. The authoritative
+// job status and error details are stored in Redis. Subscription is optional.
+//
+// Parameters:
+//   - jobID: The job identifier
+//   - errMsg: Error message describing the failure reason
+//
+// Returns an error if publishing fails.
 func (eb *EventBus) PublishJobFailed(ctx context.Context, jobID string, errMsg string) error {
 	return eb.Publish(ctx, "job:events", &JobEvent{
 		EventType: EventJobFailed,
@@ -90,6 +158,18 @@ func (eb *EventBus) PublishJobFailed(ctx context.Context, jobID string, errMsg s
 	})
 }
 
+// PublishJobEvent publishes a generic JobEvent to a job-specific channel.
+// This publishes to "job:{jobID}:events" instead of the broadcast "job:events" channel,
+// allowing clients to subscribe to events for a single job rather than all jobs.
+//
+// Useful for cases where a caller wants to send a custom event or forward an event
+// to the job-specific channel without using the PublishJob* convenience methods.
+//
+// Parameters:
+//   - jobID: The job identifier
+//   - event: The JobEvent to publish (must be fully populated by caller)
+//
+// Returns an error if publishing fails.
 func (eb *EventBus) PublishJobEvent(ctx context.Context, jobID string, event *JobEvent) error {
 	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
 }

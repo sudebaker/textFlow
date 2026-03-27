@@ -1,0 +1,328 @@
+{
+  "extraction-worker": {
+    "file": "cmd/extraction-worker/worker.py",
+    "module_doc": "Document text extraction and metadata pipeline for the orchestrator.\n\nThis module implements the first step in the document processing pipeline:\n1. Download documents from file paths, base64, or URLs\n2. Extract text using Docling API (async polling with configurable timeouts)\n3. Extract document metadata (author, creation date, page count, MIME type, etc.)\n4. Chunk text into overlapping token-based segments\n5. Classify document source type (notariado, catastro, bancario, etc.)\n6. Store results to Redis for downstream workers\n7. Publish extraction completion to embeddings, entities, and metadata queues\n\nThe worker is designed for air-gapped deployments with offline models and no\ninternet access at runtime. It uses RabbitMQ for async job processing with\nautomatic retries and graceful error handling.\n\nEnvironment variables:\n    REDIS_URL: Redis connection URL (default: redis://localhost:6379)\n    RABBITMQ_URL: RabbitMQ connection URL (default: amqp://localhost:5672/)\n    DOCLING_URL: Docling API endpoint (default: http://docling:5001)\n    QUEUE_NAME: Input queue for extraction jobs (default: extract_text)\n    PREFETCH_COUNT: Max jobs to prefetch from queue (default: 3)\n    METRICS_PORT: Prometheus metrics port (default: 8004)\n    CHUNK_SIZE_TOKENS: Tokens per chunk (default: 512)\n    CHUNK_OVERLAP_TOKENS: Overlap between chunks (default: 50)\n    EXIFTOOL_PATH: Path to exiftool binary (default: /usr/bin/exiftool)\n    DOCLING_DO_OCR: Enable OCR for text-based PDFs (default: false)\n    DOCLING_OCR_ENGINE: OCR engine to use (default: rapidocr)\n    DOCLING_CONVERSION_TIMEOUT: Max seconds for Docling conversion (default: 1800)",
+    "classes": {
+      "SourceClassifier": {
+        "docstring": "Classify document source type using regex pattern matching.\n\nIdentifies document category (notariado, catastro, bancario, fiscal, legal)\nbased on keyword and phrase patterns. Provides confidence scores based on\npattern matches.\n\nSupported document types:\n    - notariado: Notary documents (escritura, protocolo, etc.)\n    - catastro: Cadastral/property records (referencia catastral, etc.)\n    - bancario: Bank statements and financial documents.\n    - fiscal: Tax/revenue documents (impuesto, declaraci\u00f3n fiscal, etc.)\n    - legal: Contracts and legal documents.\n\nAttributes:\n    PATTERNS (dict): Mapping of document_type to list of regex patterns.",
+        "methods": {
+          "classify": {
+            "docstring": "Classify document source type using pattern matching.\n\nSearches document text for keyword patterns and returns the document\ntype with highest confidence. Confidence is calculated as the proportion\nof patterns matched for that type.\n\nArgs:\n    text: Full document text to classify.\n\nReturns:\n    Dictionary with classification result:\n        document_type (str): Best-matching document type (notariado, catastro, etc.).\n        confidence (float): Confidence score 0.0-1.0 (fraction of patterns matched).\n        classifier_version (str): Version of classification model (\"1.0\").\n\n    Returns None if:\n        - text is empty or None\n        - no patterns match any document type\n\nExample:\n    >>> result = SourceClassifier.classify(\"Esta es una escritura notarial...\")\n    >>> result['document_type']\n    'notariado'\n    >>> result['confidence']\n    0.5  # 1 of 2 patterns matched\n\nNote:\n    Comparison is case-insensitive. Partial matches within text are\n    sufficient (no word boundary required). This allows flexibility\n    with abbreviations and variations.",
+            "lineno": 444
+          }
+        },
+        "lineno": 401
+      },
+      "ExtractionWorker": {
+        "docstring": "RabbitMQ consumer for document extraction and metadata pipeline.\n\nProcesses documents from the extraction queue by:\n1. Downloading documents (file path, base64, or URL)\n2. Extracting text via Docling API with async polling\n3. Extracting document metadata (author, creation date, page count, etc.)\n4. Analyzing text for language, readability, and patterns\n5. Chunking text into overlapping token-based segments\n6. Classifying document source type (notariado, catastro, etc.)\n7. Storing results to Redis\n8. Publishing job to downstream queues (embeddings, entities, metadata)\n\nThis is the first step in the document processing pipeline. Results are stored\nin Redis under keys like orchestrator:job:{job_id}:{text,chunks,metadata:document}.\n\nAttributes:\n    redis_client: Redis connection for result storage.\n    event_bus: EventBus instance for job progress updates.\n    temp_dir: Temporary directory for storing intermediate files.",
+        "methods": {
+          "__init__": {
+            "docstring": "Initialize extraction worker with Redis and RabbitMQ clients.\n\nSets up Redis connection for result storage, initializes event bus for\njob progress updates, and creates temporary directory for intermediate\nfiles. Resources are cleaned up on deletion.\n\nRaises:\n    redis.ConnectionError: If Redis is unavailable.",
+            "lineno": 529
+          },
+          "__del__": {
+            "docstring": "Clean up temporary directory on worker deletion.",
+            "lineno": 543
+          },
+          "_docling_convert": {
+            "docstring": "Submit document to Docling async endpoint and poll until completion.\n\nImplements async conversion with long-polling to avoid uvicorn's per-request\ntimeout (~120s), which is insufficient for large PDFs on CPU. Uses exponential\nbackoff (5-30s) between polls.\n\nArgs:\n    document_bytes: Raw binary content of document.\n    filename: Filename for Docling processing (determines file type).\n\nReturns:\n    Dictionary with Docling result:\n        document (dict): Extracted document with md_content/text_content.\n        pages (list): List of extracted pages (if applicable).\n        (other fields): Task metadata.\n\nRaises:\n    TimeoutError: If conversion exceeds DOCLING_CONVERSION_TIMEOUT (1800s default).\n    RuntimeError: If Docling returns failure/error status.\n    requests.RequestException: On HTTP errors or connection failures.\n\nNote:\n    Uses Docling's ?wait= parameter for server-side long-polling to reduce\n    API call frequency. Minimum 5s sleep between polls to prevent busy-waiting.",
+            "lineno": 552
+          },
+          "extract_text_from_base64": {
+            "docstring": "Extract text from base64-encoded document.\n\nDecodes base64 content and passes to Docling. Auto-detects PDF format\nfrom magic bytes if filename doesn't have .pdf extension.\n\nArgs:\n    document_base64: Base64-encoded document bytes.\n    filename: Original filename (used for type detection).\n\nReturns:\n    Dictionary with:\n        text (str): Extracted text (markdown or plain).\n        metadata (dict): Extraction metadata (pages, method=\"base64\").\n\nRaises:\n    ValueError: If base64 decoding fails.\n    TimeoutError: If Docling conversion times out.\n    RuntimeError: If Docling fails.",
+            "lineno": 635
+          },
+          "extract_text_from_file": {
+            "docstring": "Extract text from document file on disk.\n\nReads file from disk and passes to Docling for text extraction.\n\nArgs:\n    file_path: Absolute path to document file.\n    filename: Filename for Docling (may differ from path basename).\n\nReturns:\n    Dictionary with:\n        text (str): Extracted text (markdown or plain).\n        metadata (dict): Extraction metadata (pages, method=\"file\").\n\nRaises:\n    FileNotFoundError: If file_path doesn't exist.\n    TimeoutError: If Docling conversion times out.\n    RuntimeError: If Docling fails.",
+            "lineno": 685
+          },
+          "extract_text_from_url": {
+            "docstring": "Extract text from document at URL.\n\nHandles internal docling: URLs with path traversal protection, and\nremote HTTP(S) URLs. Internal URLs are resolved to local paths and\nread from disk; external URLs are fetched via HTTP.\n\nArgs:\n    document_url: URL to document (docling:// or http(s)://).\n\nReturns:\n    Dictionary with:\n        text (str): Extracted text (markdown or plain).\n        metadata (dict): Extraction metadata (pages, method=\"url\").\n\nRaises:\n    ValueError: If path traversal attempted or URL is invalid.\n    requests.RequestException: If HTTP fetch fails.\n    TimeoutError: If Docling conversion times out.\n    RuntimeError: If Docling fails.\n\nNote:\n    Path traversal is validated by ensuring resolved path stays within\n    /app directory tree. Prevents accessing files outside container.",
+            "lineno": 727
+          },
+          "process_message": {
+            "docstring": "Process a single extraction job from RabbitMQ queue.\n\nMain message handler that orchestrates the full extraction pipeline:\n1. Parse job message (JSON with document_path, document_base64, or document_url)\n2. Extract text via Docling (async polling)\n3. Extract document metadata (author, creation date, page count, etc.)\n4. Analyze text (language, readability, patterns)\n5. Chunk text into overlapping token-based segments\n6. Classify document source type\n7. Store all results to Redis\n8. Route to downstream queues (embeddings, entities, metadata)\n9. Publish job progress update\n\nInput message format (JSON):\n    {\n        \"job_id\": str,              # Unique job identifier\n        \"document_path\": str,       # Optional: absolute file path\n        \"document_base64\": str,     # Optional: base64-encoded content\n        \"document_url\": str,        # Optional: URL to document\n        \"filename\": str,            # Optional: original filename\n        \"mime_type\": str,           # Optional: declared MIME type\n        \"entity_types\": [str],      # Optional: entity types to extract\n    }\n\nEither document_path, document_base64, or document_url must be present.\n\nRedis storage (keys created):\n    orchestrator:job:{job_id}:status -> hash with status field\n    orchestrator:job:{job_id}:text -> full extracted text\n    orchestrator:job:{job_id}:chunks -> JSON array of chunks\n    orchestrator:job:{job_id}:metadata:document -> document metadata JSON\n    orchestrator:job:{job_id}:metadata:text -> text analytics JSON\n    orchestrator:job:{job_id}:source_classification -> classification result\n    orchestrator:job:{job_id}:steps -> hash with extraction=\"completed\"\n\nQueue publishing:\n    - Publishes to \"embeddings\" queue (all non-spreadsheet documents)\n    - Publishes to \"entities\" queue (all documents)\n    - Publishes to \"metadata\" queue (non-spreadsheet documents)\n    - Spreadsheets (csv, xls, xlsx) route to \"entities\" only\n\nMessage published to queues contains:\n    {\n        \"job_id\": str,\n        \"chunks\": [chunk dicts],\n        \"document_metadata\": metadata dict,\n        \"entity_types\": [str],          # Optional, if provided\n    }\n\nError handling:\n    - Docling timeouts: Raises TimeoutError, job marked as failed\n    - Empty text: Raises ValueError, includes MIME type mismatch details\n    - Source classification: Logged as warning, doesn't fail job\n    - exiftool missing: Gracefully degraded, metadata partially filled\n    - Any exception: Job status set to \"failed\", error stored to Redis,\n      published to failed queue, message nacked (not requeued)\n\nMetrics recorded:\n    - extraction_worker_jobs_total (counter): success/error labels\n    - extraction_worker_job_duration_seconds (histogram): job duration\n\nTemporary files:\n    - Base64 documents: Created in temp directory, cleaned up in finally\n    - File paths: Used directly, not copied\n\nRaises:\n    Never raises exceptions. All errors are caught, logged, and converted\n    to failed job status in Redis. This allows RabbitMQ to move on to\n    next job without requeuing.",
+            "lineno": 805
+          }
+        },
+        "lineno": 507
+      }
+    },
+    "functions": {
+      "compute_file_hash": {
+        "docstring": "Compute SHA-256 hash digest of raw file bytes.\n\nUsed for document deduplication and integrity verification. Provides a\nconsistent hash regardless of file origin (path, base64, URL).\n\nArgs:\n    file_bytes: Raw binary content of document file.\n\nReturns:\n    Hexadecimal SHA-256 hash digest of file contents.\n\nExample:\n    >>> hash_val = compute_file_hash(b\"Hello World\")\n    >>> print(len(hash_val))\n    64  # SHA-256 produces 64 hex characters",
+        "lineno": 99
+      },
+      "extract_pdf_metadata": {
+        "docstring": "Extract document-level metadata using exiftool.\n\nParses EXIF and XMP metadata from PDF, DOCX, images, and other document\ntypes using the exiftool binary. Gracefully handles missing exiftool or\ncorrupted files by returning partially filled metadata.\n\nFalls back to filesystem attributes (size, MIME type) if metadata extraction\nfails. All fields are populated with None/empty values on extraction failure\nrather than raising exceptions, ensuring downstream processing can continue.\n\nArgs:\n    file_path: Absolute path to document file on disk.\n    filename: Filename for metadata record (may differ from file_path basename).\n\nReturns:\n    Dictionary with extracted metadata:\n        filename (str): Document filename.\n        file_size_bytes (int): File size in bytes (0 if file not found).\n        sha256 (str): SHA-256 hash of file contents (empty if read fails).\n        author (str|None): Document author (from Author or Creator EXIF tags).\n        title (str|None): Document title (from Title or DocumentTitle tags).\n        subject (str|None): Document subject from EXIF.\n        creator (str|None): Document creator software/tool.\n        producer (str|None): PDF producer software.\n        creation_date (str|None): Creation timestamp (ISO format if available).\n        modification_date (str|None): Last modification timestamp.\n        page_count (int|None): Number of pages (PDF/DOCX).\n        encrypted (bool): Whether document is password-protected.\n        mime_type (str|None): MIME type (detected via libmagic).\n        exif_data (dict): Full EXIF tag dictionary (excluding system tags).\n\nRaises:\n    No exceptions raised. All failures result in None/empty values in metadata.\n\nNote:\n    exiftool is called with a 30-second timeout to avoid hanging on large\n    or corrupt files. Requires exiftool binary at EXIFTOOL_PATH.",
+        "lineno": 119
+      },
+      "chunk_text": {
+        "docstring": "Split text into overlapping token-based chunks.\n\nCreates semantic chunks of configurable size with overlap to prevent losing\ncontext at chunk boundaries. Uses tiktoken cl100k_base encoding when available\n(online), falling back to character approximation for offline deployments.\n\nThe overlap ensures that important information near chunk boundaries is\nincluded in multiple chunks, preventing loss of context during downstream\nembedding and entity extraction.\n\nArgs:\n    text: Full document text to chunk.\n    chunk_size: Target chunk size in tokens (default: CHUNK_SIZE_TOKENS).\n               Actual token counts may vary due to tokenizer boundaries.\n    overlap: Overlap between consecutive chunks in tokens (default: CHUNK_OVERLAP_TOKENS).\n            Smaller overlaps reduce redundancy; larger overlaps improve context preservation.\n\nReturns:\n    List of chunk dictionaries, each with:\n        chunk_id (str): Unique identifier (chunk_000, chunk_001, etc.).\n        text (str): Decoded chunk text.\n        start_offset (int): Starting token index in original token sequence.\n        end_offset (int): Ending token index (exclusive).\n        token_count (int): Actual token count of this chunk.\n\nNote:\n    If tiktoken is unavailable (offline mode), falls back to character-based\n    approximation using 4 chars per token. Chunk token_count will be estimated\n    as (end_offset - start_offset) // 4.\n\nExample:\n    >>> text = \"Hello world. This is a test.\"\n    >>> chunks = chunk_text(text, chunk_size=5, overlap=1)\n    >>> len(chunks) >= 1\n    True\n    >>> chunks[0]['chunk_id']\n    'chunk_000'",
+        "lineno": 224
+      },
+      "analyze_text": {
+        "docstring": "Compute lightweight text analytics without ML models.\n\nPerforms fast, offline text analysis suitable for feature engineering and\ndownstream pipeline filtering. No neural models required; uses regex patterns\nand heuristics for language detection and content analysis.\n\nArgs:\n    text: Full document text to analyze.\n\nReturns:\n    Dictionary with analytics:\n        char_count (int): Total characters (including whitespace).\n        word_count (int): Words separated by whitespace.\n        line_count (int): Lines separated by newline characters.\n        language (str): ISO 639-1 language code (e.g., 'es', 'en', 'unknown').\n        has_urls (bool): True if text contains http:// or https://.\n        has_emails (bool): True if text contains email-like patterns (text@domain).\n        has_numbers (bool): True if text contains numeric digits.\n        readability_score (float): Flesch Reading Ease score (0-100).\n        encoding (str): Character encoding (always 'utf-8').\n\nNote:\n    Language detection uses langdetect library (probability-based). On short\n    text or mixed languages, may return 'unknown' instead of best guess.\n\n    Readability calculation uses textstat.flesch_reading_ease():\n    - 90-100: Very Easy (5th grade)\n    - 60-70: Standard (8th-9th grade)\n    - 0-30: Difficult (college level)\n\n    Failures in language detection or readability calculation do not raise\n    exceptions; fields are left as 'unknown' or omitted.\n\nExample:\n    >>> analysis = analyze_text(\"Hello world. This is a test email@example.com\")\n    >>> analysis['has_emails']\n    True\n    >>> analysis['language']\n    'en'",
+        "lineno": 327
+      },
+      "signal_handler": {
+        "docstring": "Handle termination signals (SIGTERM, SIGINT) gracefully.\n\nLogs shutdown notice and exits cleanly, allowing RabbitMQ connection to close\nand temporary files to be cleaned up by ExtractionWorker.__del__.\n\nArgs:\n    signum: Signal number (SIGINT=2, SIGTERM=15).\n    frame: Current stack frame.",
+        "lineno": 1042
+      },
+      "main": {
+        "docstring": "Main entry point for extraction worker.\n\nInitializes infrastructure and starts consuming from RabbitMQ extraction queue.\nSets up signal handlers for graceful shutdown (SIGINT/SIGTERM) and Prometheus\nmetrics endpoint. Implements auto-reconnect with 5-second backoff on connection\nfailures.\n\nMetrics endpoint:\n    Prometheus metrics available at http://localhost:METRICS_PORT/metrics\n    Tracks:\n        - extraction_worker_jobs_total (counter): Jobs by status (success/error)\n        - extraction_worker_job_duration_seconds (histogram): Job duration\n\nQueue configuration:\n    Input queue: QUEUE_NAME (extract_text by default)\n    Prefetch count: PREFETCH_COUNT (3 by default) - max jobs to prefetch from queue\n\nError recovery:\n    If RabbitMQ connection fails, waits 5 seconds and retries. Continues\n    indefinitely until signal received.",
+        "lineno": 1056
+      }
+    }
+  },
+  "completion-worker": {
+    "file": "cmd/completion-worker/worker.py",
+    "module_doc": "Completion Worker: Final aggregator in the IA Text Orchestrator pipeline.\n\nThis module monitors job completion across all workers via Redis pub/sub and\naggregates their results into a single finalized JSON structure. It acts as the\nfinal step in the document processing pipeline, waiting for all required workers\n(extraction, embeddings, entities, metadata) to complete before writing results\nto file and notifying via webhook.\n\nKey responsibilities:\n  - Subscribe to job:events channel via Redis pub/sub\n  - Monitor completion status of all pipeline workers for each job\n  - Deduplicate entities and aggregate results from all workers\n  - Finalize jobs by saving results to /results/{job_id}.json\n  - Send webhook notifications when jobs complete or fail\n  - Support different pipeline types (default full pipeline vs. spreadsheet)\n\nEnvironment variables:\n  - REDIS_URL: Redis connection URL (default: redis://localhost:6379)\n  - WEBHOOK_URL: Optional webhook endpoint for job completion notifications\n  - RESULTS_PATH: Directory to save final JSON results (default: /app/data/results)\n  - API_BASE_URL: Base URL for download links in webhook (default: http://localhost:8080)\n  - METRICS_PORT: Prometheus metrics port (default: 8005)\n\nMetrics:\n  - completion_worker_jobs_finalized_total: Counter of finalized jobs by status\n  - completion_worker_job_finalization_duration_seconds: Histogram of finalization time\n\nPipeline variants:\n  - Full pipeline (default): extraction, embeddings, entities, metadata\n  - Spreadsheet pipeline: extraction, entities (skips embeddings/metadata)\n  - With inferences: Adds 'inferences' to required_steps if feature was requested",
+    "classes": {
+      "CompletionWorker": {
+        "docstring": "Aggregates job results and finalizes document processing.\n\nThis worker subscribes to job progress events via Redis pub/sub and monitors\nthe completion status of all required pipeline steps. Once all required steps\nfor a job are complete, it aggregates their results, saves to file, and sends\nwebhook notifications.\n\nAttributes:\n    redis_client: Redis client for pub/sub and data retrieval.\n    event_bus: EventBus instance for publishing job completion/failure events.\n    default_required_steps: Set of steps required for full pipeline jobs\n        (extraction, embeddings, entities, metadata).\n    spreadsheet_required_steps: Set of steps required for spreadsheet jobs\n        (extraction, entities only).",
+        "methods": {
+          "__init__": {
+            "docstring": "Initialize the completion worker with Redis connection and event bus.\n\nSets up Redis client for pub/sub subscriptions and data retrieval, and\ndefines which pipeline steps are required for different document types.\nDifferent pipeline variants have different required steps:\n  - Full pipeline (default): extraction, embeddings, entities, metadata\n  - Spreadsheet: extraction, entities (skips embeddings/metadata)\n  - With inferences: Adds 'inferences' to required_steps if feature requested\n\nRaises:\n    redis.ConnectionError: If Redis connection cannot be established.",
+            "lineno": 87
+          },
+          "save_results_to_file": {
+            "docstring": "Save finalized job results to JSON file.\n\nWrites the complete aggregated results to /results/{job_id}.json with\nproper UTF-8 encoding and pretty-printing (indent=2) for readability.\nAutomatically creates the RESULTS_PATH directory if it doesn't exist.\n\nThis operation is idempotent and can be safely called multiple times\nfor the same job (it will overwrite the previous file).\n\nArgs:\n    job_id: Unique identifier of the job.\n    results: Dictionary containing aggregated JobResults with keys:\n        - job_id, status, created_at, completed_at\n        - document_metadata, text_metadata\n        - chunks, embeddings, entities\n        - (optional) source_classification, micro_inferences\n\nReturns:\n    True if file was saved successfully, False if an exception occurred.\n    Exceptions are logged but not raised.\n\nRaises:\n    Does not raise exceptions; logs errors and returns False instead.",
+            "lineno": 112
+          },
+          "send_webhook": {
+            "docstring": "Send webhook notification when job completes or fails.\n\nPosts a notification to the configured WEBHOOK_URL with job completion\nor failure details. The webhook is only sent if WEBHOOK_URL environment\nvariable is set; if not configured, this method returns False silently.\n\nWebhook payload structure:\n    {\n        \"job_id\": str,\n        \"status\": \"completed\" | \"failed\",\n        \"download_url\": f\"{API_BASE_URL}/v1/documents/{job_id}/download\",\n        \"error\": str (only if status=\"failed\")\n    }\n\nThis operation is idempotent (can be called multiple times for same job).\nFailures are logged but do not prevent job finalization.\n\nArgs:\n    job_id: Unique identifier of the job.\n    status: Job status (\"completed\" or \"failed\").\n    error: Optional error message to include in webhook payload\n        (only applicable if status=\"failed\").\n\nReturns:\n    True if webhook was sent successfully or WEBHOOK_URL not configured.\n    False if webhook_url is set but the HTTP request failed.\n\nRaises:\n    Does not raise exceptions; logs errors and returns False instead.\n\nNote:\n    - Webhook timeout is 10 seconds\n    - HTTP errors are logged at ERROR level\n    - Optional WEBHOOK_URL env var determines if webhooks are enabled",
+            "lineno": 148
+          },
+          "deduplicate_entities": {
+            "docstring": "Deduplicate entities using exact text match (no fuzzy matching).\n\nRemoves duplicate entities by exact (label, text) key match while\npreserving all text variations. For exact duplicates, keeps the entity\nwith the highest confidence score.\n\nExamples of preserved variations:\n    - \"Mar\u00eda Pilar\" and \"Mar\u00eda Pilar Rodr\u00edguez\" are kept as different\n    - \"PER:John Smith\" (confidence 0.95) replaces \"PER:John Smith\" (0.85)\n\nArgs:\n    entities: List of entity dictionaries with keys:\n        - label: Entity type (e.g., \"PER\", \"ORG\", \"LOC\")\n        - text: Exact entity text\n        - confidence: Confidence score (0-1)\n\nReturns:\n    Deduplicated list of entities, preserving order of first occurrence.\n    Exact duplicates with lower confidence are removed and replaced\n    with higher-confidence versions.\n\nNote:\n    This is called during finalize_job() to clean up entities collected\n    from multiple chunks. Uses grouping by (label, text) without fuzzy\n    matching to preserve intentional variations.",
+            "lineno": 212
+          },
+          "get_job_creation_time": {
+            "docstring": "Retrieve the ISO 8601 creation timestamp for a job.\n\nFetches the job's created_at timestamp from Redis metadata and converts\nit to ISO 8601 format for inclusion in final results.\n\nArgs:\n    job_id: Unique identifier of the job.\n\nReturns:\n    ISO 8601 formatted timestamp string (e.g., \"2024-03-27T10:30:45\"),\n    or None if metadata not found or created_at is not set.",
+            "lineno": 271
+          },
+          "check_job_completion": {
+            "docstring": "Poll Redis to check if all required pipeline steps are completed.\n\nDetermines which steps are required based on document type and features:\n  - Full pipeline (default): extraction, embeddings, entities, metadata\n  - Spreadsheet: extraction, entities (MIME type check)\n  - With inferences: Adds 'inferences' if feature was requested\n\nIf all required steps have completed status, triggers finalize_job()\nto aggregate results and save to file.\n\nDocument type detection:\n    Spreadsheets detected by MIME type:\n    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\n    - application/vnd.ms-excel\n    - text/csv\n    - application/zip (Excel files may show as ZIP)\n\nFeature detection:\n    If job:features JSON contains \"inferences\" key, adds it to\n    required_steps set.\n\nArgs:\n    job_id: Unique identifier of the job.\n\nReturns:\n    None. This method is fire-and-forget; if completion is detected,\n    it calls finalize_job() as a side effect.\n\nRaises:\n    Does not raise exceptions; errors are logged and processing continues.",
+            "lineno": 290
+          },
+          "finalize_job": {
+            "docstring": "Aggregate all worker results and finalize a completed job.\n\nThis is the final aggregation step that brings together results from\nall workers (extraction, embeddings, entities, metadata, inferences).\n\nProcess:\n    1. Fetch all job data from Redis in a single pipeline operation\n    2. Check if job is not already finalized (idempotent check)\n    3. Parse and aggregate results from each worker:\n       - Deduplicate entities (keep highest confidence)\n       - Normalize embeddings with model metadata\n       - Parse optional source_classification and micro_inferences\n    4. Save aggregated results to file (/results/{job_id}.json)\n    5. Send webhook notification (if configured)\n    6. Mark job status as \"completed\" in Redis\n    7. Publish job_completed event\n\nError handling:\n    On any exception during finalization:\n    - Job status marked as \"failed\"\n    - Error message stored in Redis\n    - Webhook notification sent with error details\n    - Metrics recorded for failure case\n\nRedis keys read:\n    - orchestrator:job:{job_id}:meta (job metadata)\n    - orchestrator:job:{job_id}:status (current status)\n    - orchestrator:job:{job_id}:text (raw text)\n    - orchestrator:job:{job_id}:metadata:document (MIME type, etc.)\n    - orchestrator:job:{job_id}:metadata:text (text metadata)\n    - orchestrator:job:{job_id}:chunks (extracted chunks)\n    - orchestrator:job:{job_id}:embeddings (vector embeddings)\n    - orchestrator:job:{job_id}:entities_raw (raw entities before dedup)\n    - orchestrator:job:{job_id}:source_classification (document classification)\n    - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)\n\nRedis keys written:\n    - orchestrator:job:{job_id}:results (final aggregated results)\n    - orchestrator:job:{job_id}:meta (add completed_at timestamp)\n    - orchestrator:job:{job_id}:status (mark status=\"completed\")\n    - orchestrator:job:{job_id}:error (on failure only)\n\nArgs:\n    job_id: Unique identifier of the job.\n\nReturns:\n    None.\n\nRaises:\n    Does not raise exceptions. All errors are caught, logged, and\n    converted to job failure status.\n\nSide effects:\n    - Writes /results/{job_id}.json file\n    - Sends webhook notification (if WEBHOOK_URL configured)\n    - Publishes job_completed or job_failed event\n    - Updates Prometheus metrics\n\nNote:\n    Idempotent: If job is already marked as \"completed\" status,\n    function returns early without re-processing.",
+            "lineno": 380
+          },
+          "handle_event": {
+            "docstring": "Process incoming job progress event from Redis pub/sub.\n\nThis is the event handler called by Redis pub/sub listener for each\nmessage on the job:events channel. It parses the event, extracts the\njob_id and event_type, and triggers job completion checks if the\nevent is of type \"job_progress\".\n\nEvent structure:\n    {\n        \"type\": \"message\" (Redis pub/sub message type),\n        \"data\": JSON string containing:\n            {\n                \"event_type\": \"job_progress\" | other,\n                \"job_id\": str,\n                ...other fields...\n            }\n    }\n\nBehavior:\n    - Ignores non-\"message\" type events (e.g., \"subscribe\" confirmations)\n    - For \"job_progress\" events, calls check_job_completion(job_id)\n    - Logs event receipt for debugging\n\nArgs:\n    message: Dictionary from Redis pub/sub listener with keys:\n        - type: \"message\" | \"subscribe\" | \"unsubscribe\"\n        - channel: \"job:events\"\n        - data: JSON string containing event details\n\nReturns:\n    None.\n\nRaises:\n    Does not raise exceptions. Parsing errors are logged and ignored.\n\nNote:\n    Exceptions during parsing or check_job_completion are caught\n    and logged at ERROR level without stopping the pub/sub listener.",
+            "lineno": 598
+          },
+          "start": {
+            "docstring": "Start the completion worker and listen for job progress events.\n\nMain entry point for the worker. Subscribes to the job:events Redis\npub/sub channel and begins processing job progress notifications.\n\nThis method runs indefinitely and implements exponential backoff\nreconnection logic to handle Redis connection failures gracefully:\n    - Initial backoff: 1 second\n    - Exponential increase with each reconnection\n    - Maximum backoff cap: 60 seconds\n\nConnection failures are logged but do not halt the worker; instead,\nthe worker waits and reconnects automatically.\n\nProcess:\n    1. Connect to Redis and subscribe to job:events channel\n    2. For each message received, call handle_event()\n    3. On connection error, close pubsub connection and wait\n    4. Reconnect with exponential backoff\n\nReturns:\n    Never returns under normal operation; runs indefinitely.\n\nRaises:\n    Does not raise exceptions. All errors are logged and handled\n    with automatic reconnection.\n\nSide effects:\n    - Logs \"Completion worker started, listening for job events...\"\n    - Logs connection errors and reconnection delays\n    - Calls handle_event() for each incoming message",
+            "lineno": 654
+          }
+        },
+        "lineno": 70
+      }
+    },
+    "functions": {
+      "main": {
+        "docstring": "Entry point for the completion worker service.\n\nInitializes Prometheus metrics server and starts the CompletionWorker\nto listen for job progress events.\n\nPrometheus metrics are exposed on METRICS_PORT (default 8005) at:\n    http://localhost:8005/metrics\n\nReturns:\n    Never returns; runs indefinitely until process is terminated.\n\nRaises:\n    Does not raise exceptions. All errors are handled within\n    CompletionWorker.start() with automatic reconnection logic.",
+        "lineno": 713
+      }
+    }
+  },
+  "metadata-worker": {
+    "file": "cmd/metadata-worker/worker.py",
+    "module_doc": "Metadata extraction worker for IA Text Orchestrator.\n\nThis worker extracts lightweight text-level metadata without requiring ML models,\nmaking it fast and deterministic. It consumes extracted text from the extraction\nworker via RabbitMQ, computes document statistics (character count, word count,\nlanguage heuristic, readability score, etc.), and stores results in Redis.\n\nKey characteristics:\n    - No ML model dependencies (unlike embeddings, entities workers)\n    - Language detection is heuristic-based (common word patterns), not accurate\n    - Deterministic and fast execution\n    - Metadata includes: text length, word count, line count, content hash (SHA-256),\n      language detection, readability score (Flesch Reading Ease), URL/email/number\n      detection, and MIME type guessing.\n\nArchitecture:\n    Input: Extracted text from extraction worker (stored in Redis)\n    Queue: RabbitMQ metadata queue (default: \"metadata\")\n    Output: Metadata dict stored in Redis at orchestrator:job:{job_id}:metadata\n    Events: Publishes job progress events via EventBus (status=metadata, 100%)\n\nEnvironment variables:\n    REDIS_URL (default: redis://localhost:6379): Redis connection URL\n    RABBITMQ_URL (default: amqp://localhost:5672/): RabbitMQ connection URL\n    QUEUE_NAME (default: \"metadata\"): RabbitMQ queue to consume from\n    METRICS_PORT (default: 8003): Prometheus metrics server port",
+    "classes": {
+      "MetadataWorker": {
+        "docstring": "RabbitMQ consumer for metadata extraction queue.\n\nResponsible for:\n    - Consuming metadata extraction jobs from RabbitMQ\n    - Retrieving extracted text from Redis (stored by extraction worker)\n    - Computing comprehensive document metadata\n    - Storing results back to Redis\n    - Publishing progress events to notify orchestrator\n\nAttributes:\n    redis_client: Redis client for data storage and retrieval\n    event_bus: EventBus instance for publishing progress events",
+        "methods": {
+          "__init__": {
+            "docstring": "Initialize Redis connection and event bus.\n\nEstablishes connection to Redis using REDIS_URL environment variable\nand initializes EventBus for publishing progress events.\n\nRaises:\n    redis.ConnectionError: If Redis connection fails",
+            "lineno": 80
+          },
+          "extract_metadata": {
+            "docstring": "Extract comprehensive metadata from document text.\n\nComputes lightweight, deterministic metadata including text statistics,\ncontent hash, language detection (heuristic), readability score, and\nstructural features. No ML models required.\n\nArgs:\n    text: Full extracted document text to analyze.\n    document_url: Optional source URL for MIME type detection and metadata.\n\nReturns:\n    Dict with the following keys:\n        extracted_at (str): ISO 8601 timestamp of extraction\n        text_length (int): Total character count in document\n        word_count (int): Number of whitespace-separated words\n        line_count (int): Number of lines (newlines + 1)\n        char_count (int): Duplicate of text_length for clarity\n        content_hash (str): SHA-256 hex digest of text for deduplication\n        source_url (str, optional): Included if document_url provided\n        mime_type (str, optional): Guessed MIME type from URL extension\n        language (str): ISO 639-1 language code (\"es\", \"en\", \"unknown\")\n        has_urls (bool): True if text contains \"http://\" or \"https://\"\n        has_emails (bool): True if text contains \"@\" and \".\" pattern\n        has_numbers (bool): True if text contains any digits\n        avg_sentence_length (float): Average words per sentence\n            (calculated from period, exclamation, question count)\n\nNotes:\n    - All fields are present even if computation partially fails\n    - Language detection is heuristic-based (common word patterns),\n      not ML-based; suitable for quick filtering only\n    - Readability score computation is attempted but not always meaningful\n    - Content hash enables deduplication across documents",
+            "lineno": 92
+          },
+          "detect_language": {
+            "docstring": "Detect document language using heuristic word frequency analysis.\n\nUses simple pattern matching to count common words in Spanish and English.\nThis is NOT an ML-based approach; it's a fast heuristic suitable for quick\nlanguage filtering. Accuracy is limited to these two languages.\n\nAlgorithm:\n    1. Converts text to lowercase\n    2. Counts occurrences of common Spanish words (e.g., \"el\", \"la\", \"que\")\n    3. Counts occurrences of common English words (e.g., \"the\", \"be\", \"to\")\n    4. Returns language with higher count\n\nArgs:\n    text: Document text to analyze (minimum ~100 words recommended)\n\nReturns:\n    str: ISO 639-1 language code:\n        - \"es\": Spanish (Spanish common words count > English count)\n        - \"en\": English (English common words count > Spanish count)\n        - \"unknown\": Equal counts or insufficient text\n\nNotes:\n    - Requires words to be surrounded by spaces (word boundaries)\n    - Works best with documents >100 words\n    - Not suitable for detecting other languages\n    - Accuracy degrades on very short documents or code/structured text",
+            "lineno": 162
+          },
+          "process": {
+            "docstring": "Handle incoming metadata extraction job from RabbitMQ.\n\nProcesses a single job message by:\n    1. Parsing the RabbitMQ message (JSON)\n    2. Retrieving extracted text from Redis (key: orchestrator:job:{id}:text)\n    3. Computing metadata via extract_metadata()\n    4. Storing results in Redis (key: orchestrator:job:{id}:metadata)\n    5. Updating job step status to \"completed\"\n    6. Publishing progress event (100% completion, step=\"metadata\")\n\nThis is the callback registered with RabbitMQ via channel.basic_consume().\n\nArgs:\n    ch: RabbitMQ channel instance\n    method: Message delivery information (includes delivery_tag, routing_key)\n    properties: Message properties (content_type, headers, etc.)\n    body: Raw message body (JSON string)\n\nMessage format (JSON):\n    {\n        \"job_id\": \"uuid-string\",\n        \"document_url\": \"https://example.com/doc.pdf\" (optional)\n    }\n\nRedis operations:\n    - GET orchestrator:job:{job_id}:text\n    - SET orchestrator:job:{job_id}:metadata (JSON string)\n    - HSET orchestrator:job:{job_id}:steps metadata=completed\n\nError handling:\n    - If text not found: NACKs message (no requeue) and logs warning\n    - If extraction fails: NACKs message (requeue=True) for retry\n    - All exceptions logged; no exceptions raised to RabbitMQ\n\nMetrics:\n    - Increments metadata_worker_jobs_total with status label\n    - Observes job_duration_seconds histogram",
+            "lineno": 217
+          }
+        },
+        "lineno": 65
+      }
+    },
+    "functions": {
+      "signal_handler": {
+        "docstring": "Handle graceful shutdown on SIGINT or SIGTERM.\n\nRegistered as the handler for SIGINT (Ctrl+C) and SIGTERM (Docker stop)\nsignals. Logs shutdown message and exits cleanly without dropping pending\nRabbitMQ messages.\n\nArgs:\n    signum: Signal number (signal.SIGINT or signal.SIGTERM)\n    frame: Current stack frame at time of signal",
+        "lineno": 306
+      },
+      "main": {
+        "docstring": "Main entry point for metadata worker.\n\nOrchestrates worker startup and lifecycle:\n    1. Registers signal handlers (SIGINT, SIGTERM) for graceful shutdown\n    2. Starts Prometheus metrics HTTP server\n    3. Initializes MetadataWorker instance (Redis + EventBus)\n    4. Enters infinite loop:\n        - Connects to RabbitMQ\n        - Declares metadata queue\n        - Consumes messages (prefetch_count=10 for load distribution)\n        - On connection error: logs and retries after 5 seconds\n\nRabbitMQ connection:\n    - Automatically reconnects on failure (idempotent)\n    - Uses connection context manager for safe resource cleanup\n    - Prefetch count of 10 prevents overwhelming single worker instance\n\nMetrics:\n    - Starts Prometheus exporter on METRICS_PORT (default 8003)\n    - Tracks jobs_total (Counter with status label)\n    - Tracks job_duration (Histogram in seconds)\n\nEnvironment:\n    - Reads REDIS_URL, RABBITMQ_URL, QUEUE_NAME, METRICS_PORT from env\n    - See module docstring for defaults",
+        "lineno": 321
+      }
+    }
+  },
+  "inference-worker": {
+    "file": "cmd/inference-worker/worker.py",
+    "module_doc": "Inference Worker for IA Text Orchestrator.\n\nExtracts micro-inferences (facts) from document chunks using an external LLM (vLLM).\nThis is an OPTIONAL feature \u2014 only activated when a job requests features=[\"inferences\"].\n\nArchitecture:\n    - Consumes messages from RabbitMQ inferences queue\n    - For each chunk, calls vLLM /v1/chat/completions API to extract facts\n    - Each fact includes confidence score and referenced entities\n    - Stores raw results in Redis intermediate keys\n    - Assembles final results when all chunks complete\n    - Publishes progress events to Event Bus\n\nModel Discovery:\n    - Attempts to discover available LLM models at startup via vLLM /v1/models API\n    - If discovery fails but LLM_MODEL env var is set, falls back to that value\n    - If both methods fail, inferences are permanently disabled (returns [] for all chunks)\n    - Model ID and max_model_len are cached in __init__, never re-discovered\n\nInput (RabbitMQ Message):\n    - job_id: Job identifier\n    - chunk_id: Chunk identifier\n    - chunk_text: Document text to analyze\n    - entities: Named entities detected in this chunk (list of {text, ...})\n    - source_type: Document source type (notariado, catastro, bancario, etc.)\n    - total_chunks: Total number of chunks being processed\n\nOutput (Redis):\n    - micro_inferences: Final assembled list of all extracted facts from all chunks\n    - Each inference: {\"text\": str, \"confidence\": 0.0-1.0, \"entities\": [str]}\n\nEnvironment Variables:\n    - REDIS_URL: Redis connection URL (default: redis://redis:6379)\n    - RABBITMQ_URL: RabbitMQ connection URL (default: amqp://rabbitmq:5672/)\n    - QUEUE_NAME: Queue name (default: inferences)\n    - LLM_URL: Base URL of vLLM server (e.g., http://localhost:8000) \u2014 if empty, inferences disabled\n    - LLM_MODEL: Fallback model ID (optional, used if auto-discovery fails)\n    - METRICS_PORT: Prometheus metrics port (default: 8006)\n    - PREFETCH_COUNT: RabbitMQ prefetch count (default: 3)\n\nKey Features:\n    - Thinking-tag handling: Removes <think>...</think> blocks from LLM responses\n    - JSON array extraction: Uses bracket counting to handle nested arrays correctly\n    - Max tokens calculation: Dynamically computed from model max_model_len with 900-token overhead\n    - Assembly lock: SETNX-based lock prevents double-assembly on message redelivery\n    - Graceful degradation: If LLM unavailable, returns empty inference list\n    - Prompt safety: Chunk text is trusted internal source (notariado, catastro, etc.)",
+    "classes": {
+      "InferenceWorker": {
+        "docstring": "RabbitMQ consumer that extracts micro-inferences from document chunks using an LLM.\n\nThis worker subscribes to the inferences queue and processes chunks from extraction.\nFor each chunk, it calls an external vLLM API to extract factual statements guided\nby detected entities.\n\nLifecycle:\n    1. __init__: Connect to Redis, discover LLM model (one-time at startup), set up Event Bus\n    2. process: Consume messages from RabbitMQ, extract inferences per chunk, assemble results\n    3. Graceful shutdown: SIGINT/SIGTERM triggers sys.exit()\n\nState:\n    - redis_client: Redis connection for storing intermediate and final results\n    - event_bus: Event Bus for publishing progress updates\n    - llm_model_id: Discovered or fallback LLM model ID (may be None if discovery fails)\n    - llm_max_model_len: Max token length for discovered model (may be None)\n\nKey Behavior:\n    - If llm_model_id is None, all inferences return [] (graceful degradation)\n    - Raw results stored per chunk in Redis lists (micro_inferences_raw)\n    - Final assembly triggered when remaining counter reaches 0 (last chunk processed)\n    - Assembly lock (SETNX) prevents double-processing on message redelivery\n    - Intermediate keys auto-expire after 24 hours (safety net)",
+        "methods": {
+          "__init__": {
+            "docstring": "Initialize the inference worker with Redis connection and model discovery.\n\nBehavior:\n    1. Connects to Redis using REDIS_URL\n    2. Creates Event Bus for publishing progress\n    3. If LLM_URL is configured:\n       a. Attempts to discover available models from vLLM /v1/models API\n       b. If discovery succeeds, caches model_id and max_model_len\n       c. If discovery fails but LLM_MODEL env var set, falls back to that value\n       d. If both fail, sets llm_model_id to None (inferences permanently disabled)\n    4. If LLM_URL is not configured, disables inferences entirely\n\nState Invariants:\n    - self.llm_model_id is set once and never changes (no re-discovery)\n    - self.llm_max_model_len may be None (use default 4096 as fallback)\n    - If llm_model_id is None, extract_inferences() always returns []\n\nSide Effects:\n    - Logs INFO message if model discovered\n    - Logs INFO message if fallback to LLM_MODEL triggered\n    - Logs WARNING message if model discovery fails (only if LLM_URL set)",
+            "lineno": 116
+          },
+          "_discover_model": {
+            "docstring": "Discover available models from vLLM API endpoint.\n\nMakes a GET request to {llm_url}/v1/models to discover running inference models.\nThis discovery happens ONE-TIME at worker startup and the result is cached\nin self.llm_model_id \u2014 it is never re-discovered.\n\nvLLM API Contract:\n    - Endpoint: GET {llm_url}/v1/models\n    - Response format: {\"data\": [{\"id\": \"...\", \"max_model_len\": ...}, ...]}\n    - Returns the first available model from the data array\n\nArgs:\n    llm_url (str): Base URL of vLLM server (e.g., http://localhost:8000).\n                  Do NOT include /v1 path \u2014 this method appends it.\n\nReturns:\n    tuple[Optional[str], Optional[int]]: A tuple of:\n        - model_id (str): First model's ID if discovery succeeds, None otherwise\n        - max_model_len (int): Model's max_model_len if available, None otherwise\n    Returns (None, None) if discovery fails or llm_url is empty.\n\nError Handling:\n    - Catches requests.RequestException (network errors, timeouts)\n    - Catches KeyError, ValueError (malformed JSON response)\n    - Logs WARNING for each failure case\n    - Never raises exceptions; always returns (None, None) on failure\n\nTimeout: 5 seconds per request",
+            "lineno": 158
+          },
+          "_extract_outermost_array": {
+            "docstring": "Extract the outermost JSON array from text by counting bracket depth.\n\nThis method is used because LLM responses may include explanatory text before\nor after the JSON array (markdown code blocks, thinking tags, etc.). This\nfunction strips all non-JSON content and returns just the array.\n\nAlgorithm:\n    1. Find the first '[' character\n    2. Count bracket depth: increment on '[', decrement on ']'\n    3. When depth returns to 0, we've found the complete outermost array\n    4. Handles nested arrays within objects correctly (e.g., \"entities\" field)\n\nExample:\n    Input: \"Here are the facts: [{\"text\": \"...\", \"entities\": [\"name1\", \"name2\"]}] Done\"\n    Output: '[{\"text\": \"...\", \"entities\": [\"name1\", \"name2\"]}]'\n    (Correctly skips nested brackets in the \"entities\" array)\n\nArgs:\n    text (str): Text potentially containing a JSON array among other content.\n\nReturns:\n    Optional[str]: The complete outermost JSON array as a string (including brackets),\n                  or None if no '[' character found or array is malformed.\n\nError Handling:\n    - Returns None if no '[' found in text\n    - Returns None if brackets are unclosed (depth never returns to 0)\n    - Never raises exceptions",
+            "lineno": 222
+          },
+          "extract_inferences": {
+            "docstring": "Extract micro-inferences (facts) from chunk text using an external LLM.\n\nThis method builds a prompt from chunk text and detected entities, sends it to\nthe vLLM /v1/chat/completions API, and parses the JSON response to extract\nstructured facts.\n\nInput Processing:\n    - Uses full chunk text (no truncation) for fact extraction\n    - Entity names are included in prompt as context for the LLM\n    - Source type (notariado, catastro, etc.) is provided for document context\n\nLLM Prompt Structure:\n    - System prompt: Instructs LLM to extract concrete, verifiable facts\n    - User prompt: Provides chunk text, entity list, and max inference count\n    - Temperature: 0.1 (low randomness, deterministic)\n    - Thinking disabled: enable_thinking=False to avoid <think> tags\n\nResponse Processing:\n    1. Cleans markdown code blocks: removes ```...``` wrappers\n    2. Removes thinking tags: <think>...</think> blocks (some models output these)\n    3. Extracts outermost JSON array using bracket counting\n    4. Parses JSON and validates each item has \"text\" field\n    5. Normalizes fields: text (string), confidence (float), entities (list)\n\nvLLM API Contract:\n    - Endpoint: POST {LLM_URL}/v1/chat/completions\n    - Request: {\"model\": model_id, \"messages\": [...], \"max_tokens\": N, ...}\n    - Response: {\"choices\": [{\"message\": {\"content\": \"...\"}}]}\n    - Timeout: 30 seconds per request\n\nArgs:\n    chunk_text (str): The document chunk text to analyze. Trusted internal source\n                     (notariado, catastro documents). Full text sent to LLM\n                     (no truncation).\n    entities (List[Dict[str, Any]]): Named entities detected in this chunk.\n                                     Each entity dict includes at least a \"text\" field.\n                                     Entity names provided in prompt to guide inference.\n    source_type (str): Document source type (e.g., \"notariado\", \"catastro\", \"bancario\").\n                      Used for context but not currently interpolated in prompt.\n    max_inferences (int): Maximum number of inferences to extract (default: 8).\n                         Passed to LLM in prompt to guide response length.\n\nReturns:\n    List[Dict[str, Any]]: List of extracted inferences, each with structure:\n        {\n            \"text\": str,           # The factual statement\n            \"confidence\": float,   # Confidence score 0.0-1.0\n            \"entities\": List[str]  # Names of entities mentioned in the fact\n        }\n    Returns empty list [] if:\n        - No LLM configured (LLM_URL empty or not set)\n        - Model discovery failed and no LLM_MODEL fallback (llm_model_id is None)\n        - LLM request fails (network error, timeout, HTTP error)\n        - Response parsing fails (invalid JSON, missing fields)\n\nError Handling:\n    - Never raises exceptions\n    - Logs WARNING for each failure case (network, parsing, etc.)\n    - Logs ERROR for unexpected exceptions\n    - Logs DEBUG for raw LLM response and extracted JSON (first 400-500 chars)\n    - Logs INFO on successful parse with inference count\n\nSecurity Note:\n    - chunk_text is interpolated directly into the LLM prompt\n    - This is SAFE because all documents are from trusted internal sources\n      (notariado/cadastral/banking documents)\n    - If this worker is extended to accept untrusted external documents,\n      implement prompt injection safeguards (e.g., text sanitization, truncation)\n\nToken Management:\n    - max_tokens calculated dynamically: max(200, model_max_len - 900)\n    - 900-token overhead estimate: system_prompt (150) + user_prompt (300) + margin (450)\n    - Prevents exceeding model's maximum context length\n    - Falls back to 4096 if max_model_len unknown",
+            "lineno": 266
+          },
+          "process": {
+            "docstring": "Process an inference job from RabbitMQ inferences queue.\n\nThis is the RabbitMQ message callback. Orchestrates the full inference workflow:\nextracts facts from a single chunk, stores intermediate results, and assembles\nfinal output when all chunks complete.\n\nWorkflow:\n    1. Parse message: job_id, chunk_id, chunk_text, entities, source_type, total_chunks\n    2. Call extract_inferences() to get facts from this chunk\n    3. Store result in Redis intermediate list (micro_inferences_raw)\n    4. Decrement atomic counter (inferences:remaining)\n    5. If counter reaches 0 (last chunk):\n       a. Acquire assembly lock (SETNX) to prevent double-processing\n       b. Retrieve all intermediate results from Redis\n       c. Sort by chunk_id for deterministic ordering\n       d. Store assembled result in Redis (micro_inferences key)\n       e. Clean up intermediate keys and counter\n       f. Mark step as \"completed\" in job steps hash\n       g. Publish progress event (80% complete)\n    6. If not last chunk:\n       a. Calculate progress (chunks_done / total_chunks)\n       b. Publish incremental progress event for UI feedback\n\nMessage Format (Expected Input):\n    {\n        \"job_id\": str,          # Job identifier\n        \"chunk_id\": int,        # Chunk sequence number\n        \"chunk_text\": str,      # Document text to analyze\n        \"entities\": [{...}],    # Named entities list\n        \"source_type\": str,     # Document source (notariado, etc.)\n        \"total_chunks\": int     # Total chunks for this job\n    }\n\nRedis Keys Used:\n    - orchestrator:job:{job_id}:micro_inferences_raw\n      Intermediate list of per-chunk results (auto-expires 24h)\n    - orchestrator:job:{job_id}:inferences:remaining\n      Counter tracking chunks not yet processed (decremented per message)\n    - orchestrator:job:{job_id}:inferences:assembly_lock\n      SETNX lock to prevent double-assembly on message redelivery\n    - orchestrator:job:{job_id}:micro_inferences\n      Final assembled result (all chunks' inferences in order)\n    - orchestrator:job:{job_id}:steps\n      Job steps hash; this worker sets steps[inferences] = \"completed\"\n\nRabbitMQ Handling:\n    - Auto-ack disabled (manual ack/nack)\n    - On success: basic_ack() acknowledges message\n    - On error: basic_nack(requeue=True) returns message to queue for retry\n    - Covers network errors, processing errors, Redis errors\n\nAssembly Lock Behavior:\n    - If RabbitMQ redelivers last chunk message, only first caller assembles\n    - Lock is atomic (SETNX) and expires in 3600 seconds\n    - Prevents data corruption from concurrent assembly attempts\n    - If lock already held, logs warning and skips assembly\n\nError Handling:\n    - Empty chunk_text: nack and skip\n    - JSON parse error: nack and requeue\n    - Any other error: nack and requeue\n    - Extract_inferences failure: captured gracefully, empty inference list handled\n    - Assembly failure: sets step status to \"failed\", nacks message\n\nProgress Reporting:\n    - On last chunk completion: publishes job_progress event (80%)\n    - On intermediate chunks: publishes chunk_progress event with done/total counts\n    - Helps UI show real-time progress to user\n\nMetrics:\n    - Increments jobs_total counter with status label\n    - Records job_duration histogram (per chunk)\n\nArgs:\n    ch: RabbitMQ channel object\n    method: RabbitMQ method frame (contains delivery_tag)\n    properties: RabbitMQ message properties\n    body (bytes): JSON-encoded message body\n\nSide Effects:\n    - Reads/writes Redis keys\n    - Publishes events to Event Bus\n    - Logs INFO/WARNING/ERROR messages\n    - Records Prometheus metrics",
+            "lineno": 477
+          }
+        },
+        "lineno": 89
+      }
+    },
+    "functions": {
+      "signal_handler": {
+        "docstring": "Handle graceful shutdown on SIGINT or SIGTERM.\n\nTriggered by:\n    - SIGTERM: Container/orchestrator shutdown signal\n    - SIGINT: Ctrl+C from user\n\nBehavior:\n    - Logs INFO message indicating shutdown\n    - Calls sys.exit(0) to terminate process\n    - RabbitMQ channel cleanup handled by context manager (connect_rabbitmq)\n\nArgs:\n    signum (int): Signal number (signal.SIGINT or signal.SIGTERM)\n    frame: Signal frame object (unused)",
+        "lineno": 705
+      },
+      "main": {
+        "docstring": "Entry point for the Inference Worker.\n\nOrchestrates:\n    1. Signal registration: SIGINT/SIGTERM \u2192 graceful shutdown\n    2. Prometheus metrics server startup on METRICS_PORT\n    3. InferenceWorker initialization (Redis, model discovery)\n    4. RabbitMQ consumer loop (infinite with reconnection)\n\nWorkflow:\n    1. Log startup message\n    2. Register SIGINT/SIGTERM handlers for graceful shutdown\n    3. Start Prometheus HTTP server on METRICS_PORT (default: 8006)\n    4. Create InferenceWorker instance (triggers model discovery)\n    5. Infinite loop:\n       a. Connect to RabbitMQ\n       b. Declare inferences queue\n       c. Set prefetch_count for backpressure (default: 3)\n       d. Register worker.process as message callback\n       e. Start consuming messages\n       f. On connection error: log error, sleep 5s, retry\n\nRabbitMQ Configuration:\n    - Queue name: QUEUE_NAME (default: \"inferences\")\n    - Prefetch count: PREFETCH_COUNT env var (default: 3)\n      - Limits how many messages consumer holds unacked\n      - Prevents overwhelming worker if backed up\n    - Auto-ack: False (manual ack/nack in process callback)\n    - Connection reconnect: Automatic with 5s retry interval\n\nModel Discovery:\n    - Triggered in InferenceWorker.__init__() (one-time)\n    - vLLM /v1/models endpoint queried if LLM_URL configured\n    - Result logged (model_id and max_model_len discovered)\n    - Fallback to LLM_MODEL env var if discovery fails\n    - If both fail, inferences disabled (all extract_inferences calls return [])\n\nPrometheus Metrics:\n    - Endpoint: http://localhost:{METRICS_PORT}/metrics\n    - Metrics exposed:\n      - inference_worker_jobs_total: Counter by status (success, error, assembly_error, etc.)\n      - inference_worker_job_duration_seconds: Histogram of processing time per chunk\n\nShutdown Sequence:\n    1. SIGINT/SIGTERM \u2192 signal_handler() \u2192 sys.exit(0)\n    2. RabbitMQ channel cleanup (handled by context manager)\n    3. Unack messages returned to queue for reprocessing\n\nError Recovery:\n    - RabbitMQ connection errors: log, sleep 5s, retry in main loop\n    - Ensures worker is resilient to temporary network issues\n    - No exponential backoff (always 5s retry interval)\n\nDependencies (Environment Variables):\n    - REDIS_URL: Redis connection (default: redis://redis:6379)\n    - RABBITMQ_URL: RabbitMQ connection (default: amqp://rabbitmq:5672/)\n    - QUEUE_NAME: Queue name (default: inferences)\n    - LLM_URL: vLLM base URL (e.g., http://localhost:8000, may be empty)\n    - LLM_MODEL: Fallback model ID (optional, used if discovery fails)\n    - METRICS_PORT: Prometheus port (default: 8006)\n    - PREFETCH_COUNT: RabbitMQ prefetch (default: 3)",
+        "lineno": 725
+      }
+    }
+  },
+  "embeddings-worker": {
+    "file": "cmd/embeddings-worker/worker.py",
+    "module_doc": "Embeddings Worker for IA Text Orchestrator\nConsumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3\n\n\u2b50 GPU Features:\n- Automatic GPU detection via torch.cuda\n- Adaptive batching (GPU=32, CPU=2)\n- FP16 optimization for GPU (in EmbeddingService)",
+    "classes": {
+      "EmbeddingsWorker": {
+        "docstring": null,
+        "methods": {
+          "__init__": {
+            "docstring": null,
+            "lineno": 71
+          },
+          "load_model": {
+            "docstring": null,
+            "lineno": 77
+          },
+          "process": {
+            "docstring": null,
+            "lineno": 100
+          }
+        },
+        "lineno": 70
+      }
+    },
+    "functions": {
+      "detect_gpu": {
+        "docstring": "Check if GPU is available.",
+        "lineno": 63
+      },
+      "signal_handler": {
+        "docstring": null,
+        "lineno": 187
+      },
+      "main": {
+        "docstring": null,
+        "lineno": 192
+      }
+    }
+  },
+  "entities-worker": {
+    "file": "cmd/entities-worker/worker.py",
+    "module_doc": "Entities Worker for IA Text Orchestrator\nConsumes messages from RabbitMQ and extracts entities using GLiNER",
+    "classes": {
+      "EntitiesWorker": {
+        "docstring": null,
+        "methods": {
+          "__init__": {
+            "docstring": null,
+            "lineno": 92
+          },
+          "_normalize_entity_types": {
+            "docstring": "Normalize entity_types from various formats to a clean list.\n\nHandles:\n- List: [\"PER\", \"ORG\"] -> [\"PER\", \"ORG\"]\n- JSON string: '[\"PER\", \"ORG\"]' -> [\"PER\", \"ORG\"]\n- Comma-separated: \"PER,ORG\" -> [\"PER\", \"ORG\"]\n\nReturns a clean list without brackets or quotes.",
+            "lineno": 100
+          },
+          "load_model": {
+            "docstring": null,
+            "lineno": 130
+          },
+          "_extract_dates": {
+            "docstring": null,
+            "lineno": 246
+          },
+          "_extract_money": {
+            "docstring": null,
+            "lineno": 271
+          },
+          "_extract_orgs": {
+            "docstring": null,
+            "lineno": 294
+          },
+          "_extract_locs": {
+            "docstring": null,
+            "lineno": 316
+          },
+          "_extract_persons": {
+            "docstring": null,
+            "lineno": 338
+          },
+          "predict_entities": {
+            "docstring": "Predict entities using rule-based patterns and heuristics.\n\nArgs:\n    text: Input text to extract entities from\n    entity_types: List of entity types to extract\n    threshold: Minimum confidence score\n\nReturns:\n    List of entity predictions with text, label, score, start, end",
+            "lineno": 369
+          },
+          "normalize_entity_text": {
+            "docstring": "Normalize entity text for deduplication.",
+            "lineno": 394
+          },
+          "deduplicate_entities": {
+            "docstring": "Deduplicate entities using fuzzy matching and normalization.\n\nArgs:\n    entities: List of extracted entities with positions\n\nReturns:\n    List of deduplicated entities",
+            "lineno": 398
+          },
+          "_extract_regex_entities": {
+            "docstring": "Call the regex entity extractor service to extract structured entities.\n\nReturns a list of entities from regex patterns (EMAIL, PHONE, IBAN, DNI, NIF, etc.)\non error, returns empty list (graceful degradation).",
+            "lineno": 475
+          },
+          "calculate_global_position": {
+            "docstring": "Calculate global position in document from chunk offset and local positions.\n\nArgs:\n    chunk_offset: Start position of chunk in document\n    local_start: Start position within chunk\n    local_end: End position within chunk\n\nReturns:\n    Tuple of (global_start, global_end)",
+            "lineno": 524
+          },
+          "process": {
+            "docstring": null,
+            "lineno": 542
+          }
+        },
+        "lineno": 91
+      }
+    },
+    "functions": {
+      "signal_handler": {
+        "docstring": null,
+        "lineno": 791
+      },
+      "main": {
+        "docstring": null,
+        "lineno": 796
+      }
+    }
+  }
+}

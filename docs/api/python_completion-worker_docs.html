@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>completion-worker - API Documentation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+        }
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+        h2 {
+            color: #764ba2;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        h3 {
+            color: #667eea;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+        h4 {
+            color: #555;
+            margin-top: 15px;
+            margin-bottom: 5px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-weight: 600;
+        }
+        .docstring {
+            background: #f8f9fa;
+            padding: 15px;
+            border-left: 4px solid #667eea;
+            border-radius: 4px;
+            margin: 15px 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.95em;
+            line-height: 1.5;
+            color: #333;
+        }
+        .class-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #fafbfc;
+            border-left: 4px solid #764ba2;
+            border-radius: 4px;
+        }
+        .class-name {
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-weight: 700;
+            color: #764ba2;
+        }
+        .method {
+            margin: 15px 0 15px 20px;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            border-left: 3px solid #667eea;
+        }
+        .method h4 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .function {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f0f7ff;
+            border-left: 4px solid #0066cc;
+            border-radius: 4px;
+        }
+        .function h3 {
+            margin-top: 0;
+            color: #0066cc;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #999;
+            text-align: center;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="index.html" class="back-link">← Back to Documentation</a>
+        
+        <h1>🐍 Completion Worker</h1>
+        
+        <h2>Module Documentation</h2>
+        <p class="docstring">Completion Worker: Final aggregator in the IA Text Orchestrator pipeline.
+
+This module monitors job completion across all workers via Redis pub/sub and
+aggregates their results into a single finalized JSON structure. It acts as the
+final step in the document processing pipeline, waiting for all required workers
+(extraction, embeddings, entities, metadata) to complete before writing results
+to file and notifying via webhook.
+
+Key responsibilities:
+  - Subscribe to job:events channel via Redis pub/sub
+  - Monitor completion status of all pipeline workers for each job
+  - Deduplicate entities and aggregate results from all workers
+  - Finalize jobs by saving results to /results/{job_id}.json
+  - Send webhook notifications when jobs complete or fail
+  - Support different pipeline types (default full pipeline vs. spreadsheet)
+
+Environment variables:
+  - REDIS_URL: Redis connection URL (default: redis://localhost:6379)
+  - WEBHOOK_URL: Optional webhook endpoint for job completion notifications
+  - RESULTS_PATH: Directory to save final JSON results (default: /app/data/results)
+  - API_BASE_URL: Base URL for download links in webhook (default: http://localhost:8080)
+  - METRICS_PORT: Prometheus metrics port (default: 8005)
+
+Metrics:
+  - completion_worker_jobs_finalized_total: Counter of finalized jobs by status
+  - completion_worker_job_finalization_duration_seconds: Histogram of finalization time
+
+Pipeline variants:
+  - Full pipeline (default): extraction, embeddings, entities, metadata
+  - Spreadsheet pipeline: extraction, entities (skips embeddings/metadata)
+  - With inferences: Adds 'inferences' to required_steps if feature was requested</p>
+        
+        <h2>Classes</h2>
+        <div class="class-section">
+            <h3 class="class-name">CompletionWorker</h3>
+            <p class="docstring">Aggregates job results and finalizes document processing.
+
+This worker subscribes to job progress events via Redis pub/sub and monitors
+the completion status of all required pipeline steps. Once all required steps
+for a job are complete, it aggregates their results, saves to file, and sends
+webhook notifications.
+
+Attributes:
+    redis_client: Redis client for pub/sub and data retrieval.
+    event_bus: EventBus instance for publishing job completion/failure events.
+    default_required_steps: Set of steps required for full pipeline jobs
+        (extraction, embeddings, entities, metadata).
+    spreadsheet_required_steps: Set of steps required for spreadsheet jobs
+        (extraction, entities only).</p>
+            <div class="methods">
+                <div class="method">
+                    <h4>__init__</h4>
+                    <p>Initialize the completion worker with Redis connection and event bus.
+
+Sets up Redis client for pub/sub subscriptions and data retrieval, and
+defines which pipeline steps are required for different document types.
+Different pipeline variants have different required steps:
+  - Full pipeline (default): extraction, embeddings, entities, metadata
+  - Spreadsheet: extraction, entities (skips embeddings/metadata)
+  - With inferences: Adds 'inferences' to required_steps if feature requested
+
+Raises:
+    redis.ConnectionError: If Redis connection cannot be established.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>save_results_to_file</h4>
+                    <p>Save finalized job results to JSON file.
+
+Writes the complete aggregated results to /results/{job_id}.json with
+proper UTF-8 encoding and pretty-printing (indent=2) for readability.
+Automatically creates the RESULTS_PATH directory if it doesn't exist.
+
+This operation is idempotent and can be safely called multiple times
+for the same job (it will overwrite the previous file).
+
+Args:
+    job_id: Unique identifier of the job.
+    results: Dictionary containing aggregated JobResults with keys:
+        - job_id, status, created_at, completed_at
+        - document_metadata, text_metadata
+        - chunks, embeddings, entities
+        - (optional) source_classification, micro_inferences
+
+Returns:
+    True if file was saved successfully, False if an exception occurred.
+    Exceptions are logged but not raised.
+
+Raises:
+    Does not raise exceptions; logs errors and returns False instead.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>send_webhook</h4>
+                    <p>Send webhook notification when job completes or fails.
+
+Posts a notification to the configured WEBHOOK_URL with job completion
+or failure details. The webhook is only sent if WEBHOOK_URL environment
+variable is set; if not configured, this method returns False silently.
+
+Webhook payload structure:
+    {
+        "job_id": str,
+        "status": "completed" | "failed",
+        "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+        "error": str (only if status="failed")
+    }
+
+This operation is idempotent (can be called multiple times for same job).
+Failures are logged but do not prevent job finalization.
+
+Args:
+    job_id: Unique identifier of the job.
+    status: Job status ("completed" or "failed").
+    error: Optional error message to include in webhook payload
+        (only applicable if status="failed").
+
+Returns:
+    True if webhook was sent successfully or WEBHOOK_URL not configured.
+    False if webhook_url is set but the HTTP request failed.
+
+Raises:
+    Does not raise exceptions; logs errors and returns False instead.
+
+Note:
+    - Webhook timeout is 10 seconds
+    - HTTP errors are logged at ERROR level
+    - Optional WEBHOOK_URL env var determines if webhooks are enabled</p>
+                </div>
+            
+                <div class="method">
+                    <h4>deduplicate_entities</h4>
+                    <p>Deduplicate entities using exact text match (no fuzzy matching).
+
+Removes duplicate entities by exact (label, text) key match while
+preserving all text variations. For exact duplicates, keeps the entity
+with the highest confidence score.
+
+Examples of preserved variations:
+    - "María Pilar" and "María Pilar Rodríguez" are kept as different
+    - "PER:John Smith" (confidence 0.95) replaces "PER:John Smith" (0.85)
+
+Args:
+    entities: List of entity dictionaries with keys:
+        - label: Entity type (e.g., "PER", "ORG", "LOC")
+        - text: Exact entity text
+        - confidence: Confidence score (0-1)
+
+Returns:
+    Deduplicated list of entities, preserving order of first occurrence.
+    Exact duplicates with lower confidence are removed and replaced
+    with higher-confidence versions.
+
+Note:
+    This is called during finalize_job() to clean up entities collected
+    from multiple chunks. Uses grouping by (label, text) without fuzzy
+    matching to preserve intentional variations.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>get_job_creation_time</h4>
+                    <p>Retrieve the ISO 8601 creation timestamp for a job.
+
+Fetches the job's created_at timestamp from Redis metadata and converts
+it to ISO 8601 format for inclusion in final results.
+
+Args:
+    job_id: Unique identifier of the job.
+
+Returns:
+    ISO 8601 formatted timestamp string (e.g., "2024-03-27T10:30:45"),
+    or None if metadata not found or created_at is not set.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>check_job_completion</h4>
+                    <p>Poll Redis to check if all required pipeline steps are completed.
+
+Determines which steps are required based on document type and features:
+  - Full pipeline (default): extraction, embeddings, entities, metadata
+  - Spreadsheet: extraction, entities (MIME type check)
+  - With inferences: Adds 'inferences' if feature was requested
+
+If all required steps have completed status, triggers finalize_job()
+to aggregate results and save to file.
+
+Document type detection:
+    Spreadsheets detected by MIME type:
+    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    - application/vnd.ms-excel
+    - text/csv
+    - application/zip (Excel files may show as ZIP)
+
+Feature detection:
+    If job:features JSON contains "inferences" key, adds it to
+    required_steps set.
+
+Args:
+    job_id: Unique identifier of the job.
+
+Returns:
+    None. This method is fire-and-forget; if completion is detected,
+    it calls finalize_job() as a side effect.
+
+Raises:
+    Does not raise exceptions; errors are logged and processing continues.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>finalize_job</h4>
+                    <p>Aggregate all worker results and finalize a completed job.
+
+This is the final aggregation step that brings together results from
+all workers (extraction, embeddings, entities, metadata, inferences).
+
+Process:
+    1. Fetch all job data from Redis in a single pipeline operation
+    2. Check if job is not already finalized (idempotent check)
+    3. Parse and aggregate results from each worker:
+       - Deduplicate entities (keep highest confidence)
+       - Normalize embeddings with model metadata
+       - Parse optional source_classification and micro_inferences
+    4. Save aggregated results to file (/results/{job_id}.json)
+    5. Send webhook notification (if configured)
+    6. Mark job status as "completed" in Redis
+    7. Publish job_completed event
+
+Error handling:
+    On any exception during finalization:
+    - Job status marked as "failed"
+    - Error message stored in Redis
+    - Webhook notification sent with error details
+    - Metrics recorded for failure case
+
+Redis keys read:
+    - orchestrator:job:{job_id}:meta (job metadata)
+    - orchestrator:job:{job_id}:status (current status)
+    - orchestrator:job:{job_id}:text (raw text)
+    - orchestrator:job:{job_id}:metadata:document (MIME type, etc.)
+    - orchestrator:job:{job_id}:metadata:text (text metadata)
+    - orchestrator:job:{job_id}:chunks (extracted chunks)
+    - orchestrator:job:{job_id}:embeddings (vector embeddings)
+    - orchestrator:job:{job_id}:entities_raw (raw entities before dedup)
+    - orchestrator:job:{job_id}:source_classification (document classification)
+    - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)
+
+Redis keys written:
+    - orchestrator:job:{job_id}:results (final aggregated results)
+    - orchestrator:job:{job_id}:meta (add completed_at timestamp)
+    - orchestrator:job:{job_id}:status (mark status="completed")
+    - orchestrator:job:{job_id}:error (on failure only)
+
+Args:
+    job_id: Unique identifier of the job.
+
+Returns:
+    None.
+
+Raises:
+    Does not raise exceptions. All errors are caught, logged, and
+    converted to job failure status.
+
+Side effects:
+    - Writes /results/{job_id}.json file
+    - Sends webhook notification (if WEBHOOK_URL configured)
+    - Publishes job_completed or job_failed event
+    - Updates Prometheus metrics
+
+Note:
+    Idempotent: If job is already marked as "completed" status,
+    function returns early without re-processing.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>handle_event</h4>
+                    <p>Process incoming job progress event from Redis pub/sub.
+
+This is the event handler called by Redis pub/sub listener for each
+message on the job:events channel. It parses the event, extracts the
+job_id and event_type, and triggers job completion checks if the
+event is of type "job_progress".
+
+Event structure:
+    {
+        "type": "message" (Redis pub/sub message type),
+        "data": JSON string containing:
+            {
+                "event_type": "job_progress" | other,
+                "job_id": str,
+                ...other fields...
+            }
+    }
+
+Behavior:
+    - Ignores non-"message" type events (e.g., "subscribe" confirmations)
+    - For "job_progress" events, calls check_job_completion(job_id)
+    - Logs event receipt for debugging
+
+Args:
+    message: Dictionary from Redis pub/sub listener with keys:
+        - type: "message" | "subscribe" | "unsubscribe"
+        - channel: "job:events"
+        - data: JSON string containing event details
+
+Returns:
+    None.
+
+Raises:
+    Does not raise exceptions. Parsing errors are logged and ignored.
+
+Note:
+    Exceptions during parsing or check_job_completion are caught
+    and logged at ERROR level without stopping the pub/sub listener.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>start</h4>
+                    <p>Start the completion worker and listen for job progress events.
+
+Main entry point for the worker. Subscribes to the job:events Redis
+pub/sub channel and begins processing job progress notifications.
+
+This method runs indefinitely and implements exponential backoff
+reconnection logic to handle Redis connection failures gracefully:
+    - Initial backoff: 1 second
+    - Exponential increase with each reconnection
+    - Maximum backoff cap: 60 seconds
+
+Connection failures are logged but do not halt the worker; instead,
+the worker waits and reconnects automatically.
+
+Process:
+    1. Connect to Redis and subscribe to job:events channel
+    2. For each message received, call handle_event()
+    3. On connection error, close pubsub connection and wait
+    4. Reconnect with exponential backoff
+
+Returns:
+    Never returns under normal operation; runs indefinitely.
+
+Raises:
+    Does not raise exceptions. All errors are logged and handled
+    with automatic reconnection.
+
+Side effects:
+    - Logs "Completion worker started, listening for job events..."
+    - Logs connection errors and reconnection delays
+    - Calls handle_event() for each incoming message</p>
+                </div>
+            </div>
+        </div>
+        
+        <h2>Functions</h2>
+        <div class="function">
+            <h3>main</h3>
+            <p>Entry point for the completion worker service.
+
+Initializes Prometheus metrics server and starts the CompletionWorker
+to listen for job progress events.
+
+Prometheus metrics are exposed on METRICS_PORT (default 8005) at:
+    http://localhost:8005/metrics
+
+Returns:
+    Never returns; runs indefinitely until process is terminated.
+
+Raises:
+    Does not raise exceptions. All errors are handled within
+    CompletionWorker.start() with automatic reconnection logic.</p>
+        </div>
+        
+        
+        <footer>
+            <p>Generated on 2026-03-27</p>
+        </footer>
+    </div>
+</body>
+</html>

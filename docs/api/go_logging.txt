@@ -1,0 +1,14 @@
+package logging // import "ia-text-orchestrator/pkg/logging"
+
+
+FUNCTIONS
+
+func Debug() *zerolog.Event
+func Error() *zerolog.Event
+func Fatal() *zerolog.Event
+func GetLogger() zerolog.Logger
+func Info() *zerolog.Event
+func Init(level string) zerolog.Logger
+func Panic() *zerolog.Event
+func Warn() *zerolog.Event
+func With() zerolog.Context

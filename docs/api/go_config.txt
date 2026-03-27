@@ -1,0 +1,61 @@
+package config // import "ia-text-orchestrator/internal/config"
+
+
+FUNCTIONS
+
+func InitLogger(level string) zerolog.Logger
+func ValidateStartup() error
+    ValidateStartup performs quick startup validation
+
+
+TYPES
+
+type Config struct {
+	RabbitMQURL        string        `env:"RABBITMQ_URL,required"`
+	RedisURL           string        `env:"REDIS_URL" default:"redis://localhost:6379"`
+	DoclingURL         string        `env:"DOCLING_URL" default:"http://localhost:8000"`
+	ResourceManagerURL string        `env:"RESOURCE_MANAGER_URL" default:"http://localhost:9090"`
+	HTTPPort           int           `env:"HTTP_PORT" default:"8080"`
+	LogLevel           string        `env:"LOG_LEVEL" default:"info"`
+	JobTimeout         time.Duration `env:"JOB_TIMEOUT" default:"60m"`
+	JobTTL             time.Duration `env:"JOB_TTL" default:"24h"`
+	MaxRetries         int           `env:"MAX_RETRIES" default:"3"`
+	RetryDelay         time.Duration `env:"RETRY_DELAY" default:"1s"`
+	EmbeddingsQueue    string        `env:"EMBEDDINGS_QUEUE" default:"embeddings"`
+	EntitiesQueue      string        `env:"ENTITIES_QUEUE" default:"entities"`
+	ExtractQueue       string        `env:"EXTRACT_QUEUE" default:"extract_text"`
+	MetadataQueue      string        `env:"METADATA_QUEUE" default:"metadata"`
+	InferencesQueue    string        `env:"INFERENCES_QUEUE" default:"inferences"`
+	AllowLocalURLs     bool          `env:"ALLOW_LOCAL_URLS" default:"false"`
+	WebhookURL         string        `env:"WEBHOOK_URL" default:""`
+	UploadPath         string        `env:"UPLOAD_PATH" default:"/app/data/uploads"`
+	ResultsPath        string        `env:"RESULTS_PATH" default:"/app/data/results"`
+	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
+}
+
+func Load() (*Config, error)
+
+func LoadWithValidation(allowWarnings bool) (*Config, error)
+    LoadWithValidation loads configuration and validates connectivity
+
+func (c *Config) ParseLogLevel() zerolog.Level
+
+type ValidationResult struct {
+	Component string
+	Status    string
+	Message   string
+	Duration  time.Duration
+}
+
+type Validator struct {
+	// Has unexported fields.
+}
+
+func NewValidator(cfg *Config) *Validator
+
+func (v *Validator) IsValid() bool
+    IsValid returns true if all validations passed
+
+func (v *Validator) ValidateAll() []ValidationResult
+    ValidateAll runs all validation checks and returns results
+

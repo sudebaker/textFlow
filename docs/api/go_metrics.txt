@@ -1,0 +1,214 @@
+package metrics // import "ia-text-orchestrator/pkg/metrics"
+
+
+VARIABLES
+
+var (
+	// HTTP metrics
+	HTTPRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_http_requests_total",
+			Help: "Total number of HTTP requests",
+		},
+		[]string{"method", "endpoint", "status"},
+	)
+
+	HTTPLatencySeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "ia_text_http_latency_seconds",
+			Help:    "HTTP request latency in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	// Job metrics
+	JobsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_jobs_total",
+			Help: "Total number of jobs processed",
+		},
+		[]string{"status", "type"},
+	)
+
+	JobDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "ia_text_job_duration_seconds",
+			Help:    "Job processing duration in seconds",
+			Buckets: []float64{5, 10, 30, 60, 120, 300, 600},
+		},
+		[]string{"type"},
+	)
+
+	JobsInProgress = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ia_text_jobs_in_progress",
+			Help: "Number of jobs currently being processed",
+		},
+	)
+
+	// Queue metrics
+	QueueDepth = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ia_text_queue_depth",
+			Help: "Number of messages in each queue",
+		},
+		[]string{"queue"},
+	)
+
+	QueuePublishTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_queue_publish_total",
+			Help: "Total messages published to each queue",
+		},
+		[]string{"queue"},
+	)
+
+	QueueConsumeTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_queue_consume_total",
+			Help: "Total messages consumed from each queue",
+		},
+		[]string{"queue"},
+	)
+
+	// Redis metrics
+	RedisLatencySeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "ia_text_redis_latency_seconds",
+			Help:    "Redis operation latency in seconds",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5},
+		},
+		[]string{"operation"},
+	)
+
+	RedisErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_redis_errors_total",
+			Help: "Total Redis errors",
+		},
+	)
+
+	// RabbitMQ metrics
+	RabbitMQErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_rabbitmq_errors_total",
+			Help: "Total RabbitMQ errors",
+		},
+	)
+
+	RabbitMQReconnects = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_rabbitmq_reconnects_total",
+			Help: "Total RabbitMQ reconnection attempts",
+		},
+	)
+
+	RabbitMQReconnectErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_rabbitmq_reconnect_errors_total",
+			Help: "Total RabbitMQ reconnection failures",
+		},
+	)
+
+	// Runtime metrics
+	GoroutineCount = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ia_text_goroutine_count",
+			Help: "Number of goroutines currently running",
+		},
+	)
+
+	MemoryAllocBytes = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ia_text_memory_alloc_bytes",
+			Help: "Number of bytes allocated and still in use",
+		},
+	)
+
+	MemorySysBytes = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ia_text_memory_sys_bytes",
+			Help: "Number of bytes obtained from system",
+		},
+	)
+
+	// Job step metrics
+	JobStepDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "ia_text_job_step_duration_seconds",
+			Help:    "Duration of individual job steps in seconds",
+			Buckets: []float64{1, 5, 10, 30, 60, 120, 300},
+		},
+		[]string{"step", "job_type"},
+	)
+
+	// Queue consumer lag
+	QueueConsumerLag = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ia_text_queue_consumer_lag",
+			Help: "Consumer lag per queue (messages waiting)",
+		},
+		[]string{"queue"},
+	)
+
+	// Cache metrics
+	CacheHits = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_cache_hits_total",
+			Help: "Total number of cache hits",
+		},
+		[]string{"cache_type"},
+	)
+
+	CacheMisses = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_cache_misses_total",
+			Help: "Total number of cache misses",
+		},
+		[]string{"cache_type"},
+	)
+
+	// Circuit breaker metrics
+	CircuitBreakerState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ia_text_circuit_breaker_state",
+			Help: "Circuit breaker state (0=closed, 1=half-open, 2=open)",
+		},
+		[]string{"name"},
+	)
+
+	CircuitBreakerOpen = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_circuit_breaker_open_total",
+			Help: "Total number of times circuit breaker opened",
+		},
+		[]string{"name"},
+	)
+
+	CircuitBreakerTooMany = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_circuit_breaker_too_many_total",
+			Help: "Total number of times request was rejected while circuit was half-open",
+		},
+		[]string{"name"},
+	)
+
+	CircuitBreakerErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_circuit_breaker_errors_total",
+			Help: "Total number of circuit breaker errors",
+		},
+		[]string{"name"},
+	)
+)
+
+FUNCTIONS
+
+func Init()
+    Init initializes queue metrics with default values
+
+func StartMetricsCollector(ctx context.Context)
+    StartMetricsCollector starts a goroutine that periodically collects runtime
+    metrics and stops when the provided context is cancelled
+

@@ -1,0 +1,198 @@
+# System Architecture
+
+## System Overview
+
+Event-driven microservices system for extracting and processing documents. Orchestrates extraction, metadata, embeddings, entities, and optional inference extraction from PDFs, DOCX, and other document formats. Air-gapped capable (all ML models run locally).
+
+## Key Components
+
+- **Orchestrator** (Go, port 8080): REST API, job orchestration, Redis state management
+- **Resource Manager** (Go, port 9090): GPU memory monitoring
+- **Extraction Worker** (Python): Docling integration, text chunking, source classification
+- **Embeddings Worker** (Python): BAAI/bge-m3 embeddings
+- **Entities Worker** (Python): GLiNER NER extraction
+- **Metadata Worker** (Python): Lightweight text analytics
+- **Inference Worker** (Python): Optional LLM-based fact extraction
+- **Completion Worker** (Python): Results aggregation, webhook notifications
+- **Redis**: State persistence, 24h TTL
+- **RabbitMQ**: Async message queuing
+- **Docling**: Document extraction service (optional, self-hosted)
+- **vLLM**: LLM serving (optional, for inferences)
+
+## Architecture Diagram
+
+```mermaid
+graph TB
+    Client["Client"]
+    Client -->|POST /documents| Orchestrator["Orchestrator<br/>(Go, port 8080)"]
+    
+    Orchestrator -->|validate| Redis[("Redis<br/>(State Store)")]
+    Orchestrator -->|publish| Q_Extract["RabbitMQ<br/>extract_text"]
+    
+    Q_Extract --> ExtractionWorker["Extraction Worker<br/>(Python)"]
+    ExtractionWorker -->|Docling REST| Docling["Docling<br/>(port 5001)"]
+    ExtractionWorker -->|store text,chunks| Redis
+    ExtractionWorker -->|publish| Q_Embed["RabbitMQ<br/>embeddings"]
+    ExtractionWorker -->|publish| Q_Ent["RabbitMQ<br/>entities"]
+    ExtractionWorker -->|publish| Q_Meta["RabbitMQ<br/>metadata"]
+    ExtractionWorker -->|publish?| Q_Inf["RabbitMQ<br/>inferences"]
+    
+    Q_Embed --> EmbeddingsWorker["Embeddings Worker<br/>(BAAI/bge-m3)"]
+    Q_Ent --> EntitiesWorker["Entities Worker<br/>(GLiNER)"]
+    Q_Meta --> MetadataWorker["Metadata Worker<br/>(text analytics)"]
+    Q_Inf --> InferenceWorker["Inference Worker<br/>(vLLM)"]
+    
+    EmbeddingsWorker -->|store embeddings| Redis
+    EntitiesWorker -->|store entities| Redis
+    MetadataWorker -->|store metadata| Redis
+    InferenceWorker -->|vLLM REST| vLLM["vLLM<br/>(optional)"]
+    InferenceWorker -->|store inferences| Redis
+    
+    Redis -->|pub/sub: job:events| CompletionWorker["Completion Worker<br/>(aggregator)"]
+    CompletionWorker -->|finalize| Orchestrator
+    CompletionWorker -->|POST| Webhook["Client Webhook"]
+    
+    ResourceManager["Resource Manager<br/>(GPU monitoring)"]
+    
+    style Orchestrator fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style Redis fill:#E74C3C,stroke:#A73B2D,color:#fff
+    style ExtractionWorker fill:#27AE60,stroke:#1B6D42,color:#fff
+    style EmbeddingsWorker fill:#27AE60,stroke:#1B6D42,color:#fff
+    style EntitiesWorker fill:#27AE60,stroke:#1B6D42,color:#fff
+    style MetadataWorker fill:#27AE60,stroke:#1B6D42,color:#fff
+    style InferenceWorker fill:#27AE60,stroke:#1B6D42,color:#fff
+    style CompletionWorker fill:#8E44AD,stroke:#6C3483,color:#fff
+```
+
+## Data Flow
+
+The typical document processing flow:
+
+1. **Upload**: Client performs `POST /documents` with `document_base64` or `document_url`
+2. **Creation**: Orchestrator creates job, stores in Redis, publishes to extraction queue
+3. **Extraction**: Extraction worker downloads/decodes, extracts text, chunks it, classifies source, publishes to embeddings/entities/metadata/inferences queues
+4. **Processing**: 4 workers (or 3 if no inferences) process in parallel, store results in Redis
+5. **Completion**: CompletionWorker watches Redis pub/sub, when all steps done, finalizes job, saves to file, sends webhook
+
+## Redis Key Schema
+
+Namespaced key structure with pattern `{namespace}:job:{jobID}:{field}`:
+
+```
+Status/Lifecycle:
+  orchestrator:job:abc123:status → "completed"
+  orchestrator:job:abc123:error → "error message"
+  orchestrator:job:abc123:created_at → 1234567890
+  orchestrator:job:abc123:completed_at → 1234567999
+
+Data Results:
+  orchestrator:job:abc123:text → "extracted text..."
+  orchestrator:job:abc123:chunks → JSON array
+  orchestrator:job:abc123:embeddings → float32 vector
+  orchestrator:job:abc123:entities → JSON array
+  orchestrator:job:abc123:metadata → JSON object
+
+Processing State:
+  orchestrator:job:abc123:steps → {"extraction": "completed", "embeddings": "completed", ...}
+  orchestrator:job:abc123:features → JSON array (requested features)
+
+Results:
+  orchestrator:job:abc123:results → full JobResults JSON
+
+Optional:
+  orchestrator:job:abc123:inferences → JSON array (if requested)
+  orchestrator:job:abc123:llm_model → "gpt-3.5-turbo"
+  orchestrator:job:abc123:llm_max_len → 512
+```
+
+All keys expire after **24 hours** (configurable via `JOB_TTL` env var).
+
+## Environment Variables
+
+Key configuration variables:
+
+- `REDIS_URL`: Redis connection string (default: `redis://localhost:6379`)
+- `RABBITMQ_URL`: RabbitMQ AMQP URL (default: `amqp://localhost:5672/`)
+- `DOCLING_URL`: Docling service endpoint (default: `http://docling:5001`)
+- `LLM_URL`: vLLM endpoint (default: empty, inferences disabled)
+- `JOB_TIMEOUT`: Job processing timeout (default: `60m`)
+- `JOB_TTL`: Redis key expiration (default: `24h`)
+- `WEBHOOK_URL`: Optional client webhook for notifications
+- `HF_HUB_OFFLINE`: Set to `1` for air-gapped mode (embeddings/entities workers)
+- `TRANSFORMERS_OFFLINE`: Set to `1` for air-gapped mode
+
+## Error Handling & Resilience
+
+### Circuit Breaker Pattern
+External service failures (vLLM, Docling) are protected by circuit breaker:
+- **Closed**: Normal operation
+- **Open**: Too many failures, block all requests
+- **Half-Open**: Testing probes after timeout
+
+Default thresholds: 60% failure rate, 3+ requests to trip.
+
+### Retry Policy
+Exponential backoff applied to transient failures:
+- Initial delay: 1s
+- Multiplier: 2x
+- Max delay: 10s
+- Max retries: 3
+
+Used by: Pipeline (orchestration failures), workers (network hiccups).
+
+### Graceful Degradation
+If optional services unavailable:
+- vLLM unavailable → Inferences skipped, job completes without inferences
+- Webhook URL not set → Notification optional, no error
+- Docling temporarily down → Retry with circuit breaker
+
+### Stuck Job Expiration
+Jobs that exceed `JOB_TIMEOUT` are forcefully expired:
+- Status set to `failed`
+- Error message recorded
+- Redis keys expire after `JOB_TTL` (24h default)
+
+## Scalability Notes
+
+- **RabbitMQ Prefetch**: Configurable per worker (default: 3 messages) to prevent overload
+- **Redis Single-Threaded**: Monitor for bottlenecks; consider Redis Cluster for high volume
+- **Worker Concurrency**: Each worker processes multiple jobs via async I/O (Python `asyncio`, Go goroutines)
+- **No Leader Election**: Any number of worker replicas can run simultaneously (horizontal scaling)
+- **Idempotent Operations**: Safe to restart workers or duplicate messages; deduplication via job ID
+- **State Versioning**: Redis key schema allows migration without downtime
+
+## Deployment Models
+
+### Single-Node Development
+```bash
+make infra-up          # Start RabbitMQ, Redis, Docling
+make run-orchestrator  # Port 8080
+make run-workers       # All workers
+```
+
+### Air-Gapped Production
+Mount model directories (no internet at build/runtime):
+```bash
+docker run -v /models/bge-m3:/models/bge-m3 \
+           -v /models/gliner:/models/gliner \
+           -e HF_HUB_OFFLINE=1 \
+           -e TRANSFORMERS_OFFLINE=1 \
+           embeddings-worker
+```
+
+### Kubernetes
+Deploy orchestrator, resource-manager as services; workers as StatefulSet or Deployment with horizontal autoscaling based on RabbitMQ queue depth.
+
+## Health & Monitoring
+
+- **HTTP /health**: Orchestrator health endpoint
+- **Prometheus /metrics**: Worker metrics (job counts, durations, queue depth)
+- **Redis PING**: Health check for state store
+- **RabbitMQ Management**: Queue monitoring at http://localhost:15672
+
+Recommended alerts:
+- Circuit breaker open (external service down)
+- Redis CPU >80%
+- RabbitMQ queue depth >1000
+- Job timeout rate increasing
+- Worker memory usage >90%

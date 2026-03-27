@@ -25,9 +25,12 @@ class TestInferenceWorker:
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
+                    # Match /v1/chat/completions response format
                     mock_response.json.return_value = {
                         "choices": [{
-                            "text": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entities": ["500000 EUR"]}]'
+                            "message": {
+                                "content": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entities": ["500000 EUR"]}]'
+                            }
                         }]
                     }
                     mock_post.return_value = mock_response

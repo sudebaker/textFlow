@@ -1,0 +1,47 @@
+package broker // import "ia-text-orchestrator/internal/broker"
+
+
+CONSTANTS
+
+const (
+	MaxReconnectAttempts   = 10
+	InitialBackoff         = 2 * time.Second
+	MaxBackoff             = 60 * time.Second
+	ChannelMonitorInterval = 5 * time.Second
+)
+
+TYPES
+
+type QueueInfo struct {
+	Name      string `json:"name"`
+	Messages  int    `json:"messages"`
+	Consumers int    `json:"consumers"`
+}
+
+type RabbitMQBroker struct {
+	// Has unexported fields.
+}
+
+func New(cfg *config.Config) (*RabbitMQBroker, error)
+
+func (b *RabbitMQBroker) Close() error
+
+func (b *RabbitMQBroker) Consume(queue string, handler func([]byte) error) error
+    Consume is deprecated, use ConsumeWithContext instead Maintained for
+    backwards compatibility
+
+func (b *RabbitMQBroker) ConsumeWithContext(ctx context.Context, queue string, handler func([]byte) error) error
+    ConsumeWithContext starts consuming messages with context cancelation
+    support
+
+func (b *RabbitMQBroker) GetQueueInfo(queue string) (*QueueInfo, error)
+
+func (b *RabbitMQBroker) HealthCheck() error
+
+func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message interface{}) error
+
+func (b *RabbitMQBroker) PublishJobMessage(ctx context.Context, jobMsg *models.JobMessage) error
+
+func (b *RabbitMQBroker) UpdateQueueMetrics() error
+    UpdateQueueMetrics updates Prometheus metrics for all queues
+

@@ -396,7 +396,7 @@ services:
           cpus: '0.5'
           memory: 512M
   redis-exporter:
-    image: oliver006/redis_exporter:latest
+    image: oliver006/redis_exporter:v1.67.0
     container_name: ia-text-redis-exporter
     environment:
       REDIS_ADDR: "redis://redis:6379"

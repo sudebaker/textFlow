@@ -68,6 +68,10 @@ func main() {
 		logger.Fatal().Msgf("Failed to load configuration: %v", err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		logger.Fatal().Err(err).Msg("Config validation failed")
+	}
+
 	// Re-initialize logger with configured log level
 	logger = logging.Init(cfg.LogLevel)
 

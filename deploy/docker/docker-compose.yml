@@ -83,6 +83,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     deploy:
       resources:
@@ -105,6 +111,12 @@ services:
     - HTTP_PORT=9090
     networks:
     - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     deploy:
       resources:
@@ -132,6 +144,12 @@ services:
         condition: service_healthy
       docling:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
     - backend
     - datastore
@@ -168,6 +186,12 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
     - backend
     - datastore
@@ -211,9 +235,9 @@ services:
     - GLINER_LOC_THRESHOLD=0.35
     - GLINER_DATE_THRESHOLD=0.45
     - GLINER_MONEY_THRESHOLD=0.55
-     - DEDUPLICATION_ENABLED=false
-     - ENTITIES_DEVICE=${ENTITIES_DEVICE:-cpu}
-     - CUDA_VISIBLE_DEVICES=0
+    - DEDUPLICATION_ENABLED=false
+    - ENTITIES_DEVICE=${ENTITIES_DEVICE:-cpu}
+    - CUDA_VISIBLE_DEVICES=0
     - ENTITY_TYPES=PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL
     - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
     - INFERENCES_QUEUE=inferences
@@ -224,6 +248,12 @@ services:
         condition: service_healthy
       regex-entity-extractor:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
     - backend
     - datastore
@@ -259,6 +289,12 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
     - backend
     - datastore
@@ -318,6 +354,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
     - backend
     - datastore
@@ -339,6 +381,12 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
     - datastore
     restart: unless-stopped
@@ -347,6 +395,26 @@ services:
         limits:
           cpus: '0.5'
           memory: 512M
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: ia-text-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    ports:
+      - "9121:9121"
+    networks:
+      - datastore
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 128M
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: ia-text-docling

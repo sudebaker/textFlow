@@ -108,7 +108,8 @@ func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status mod
 		return fmt.Errorf("failed to set job status: %w", err)
 	}
 	if err := c.client.Expire(ctx, key, c.jobTTL).Err(); err != nil {
-		c.logger.Warn().Err(err).Str("key", key).Msg("Failed to set TTL on job status key")
+		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job status key")
+		return fmt.Errorf("set TTL for %s: %w", key, err)
 	}
 	return nil
 }
@@ -331,7 +332,8 @@ func (c *RedisClient) UpdateJobStep(ctx context.Context, jobID string, step stri
 		return fmt.Errorf("failed to update job step: %w", err)
 	}
 	if err := c.client.Expire(ctx, key, c.jobTTL).Err(); err != nil {
-		c.logger.Warn().Err(err).Str("key", key).Msg("Failed to set TTL on job steps key")
+		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job steps key")
+		return fmt.Errorf("set TTL for %s: %w", key, err)
 	}
 	return nil
 }
@@ -363,7 +365,8 @@ func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 		return fmt.Errorf("failed to set job created time: %w", err)
 	}
 	if err := c.client.Expire(ctx, key, c.jobTTL).Err(); err != nil {
-		c.logger.Warn().Err(err).Str("key", key).Msg("Failed to set TTL on job meta key")
+		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job meta key")
+		return fmt.Errorf("set TTL for %s: %w", key, err)
 	}
 	return nil
 }
@@ -397,7 +400,8 @@ func (c *RedisClient) SetJobCompleted(ctx context.Context, jobID string) error {
 		return fmt.Errorf("failed to set job completed time: %w", err)
 	}
 	if err := c.client.Expire(ctx, key, c.jobTTL).Err(); err != nil {
-		c.logger.Warn().Err(err).Str("key", key).Msg("Failed to set TTL on job meta key")
+		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job meta key")
+		return fmt.Errorf("set TTL for %s: %w", key, err)
 	}
 	return nil
 }

@@ -54,6 +54,7 @@ METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
 EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "32"))
 EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
 # GPU/CPU device selection - normalize empty string to None for auto-detection
 _device_env = os.getenv("EMBEDDINGS_DEVICE", "").strip()
@@ -65,6 +66,18 @@ def detect_gpu() -> bool:
     if torch is None:
         return False
     return torch.cuda.is_available()
+
+
+def _get_retry_count(properties) -> int:
+    """Extract retry count from RabbitMQ x-death headers."""
+    if properties.headers and "x-death" in properties.headers:
+        return sum(d.get("count", 0) for d in properties.headers["x-death"])
+    return 0
+
+
+def _should_retry(properties) -> bool:
+    """Return True if message should be requeued (under MAX_RETRIES)."""
+    return _get_retry_count(properties) < MAX_RETRIES
 
 
 class EmbeddingsWorker:
@@ -180,8 +193,12 @@ class EmbeddingsWorker:
         except Exception as e:
             logger.error(f"Error processing embeddings: {e}")
             jobs_total.labels(status="error").inc()
-            # Nack the message to requeue it for retry
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            requeue = _should_retry(properties)
+            if not requeue:
+                logger.warning(
+                    f"Message exceeded max retries ({MAX_RETRIES}), sending to DLQ"
+                )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
 
 
 def signal_handler(signum, frame):

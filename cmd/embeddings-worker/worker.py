@@ -42,6 +42,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_stopping = False
+
 jobs_total = Counter("embeddings_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram("embeddings_worker_job_duration_seconds", "Job duration")
 gpu_available = Gauge("embeddings_worker_gpu_available", "GPU availability", ["device"])
@@ -199,6 +201,11 @@ class EmbeddingsWorker:
                     f"Message exceeded max retries ({MAX_RETRIES}), sending to DLQ"
                 )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
+
+        finally:
+            if _stopping and ch.is_open:
+                logger.info("Graceful shutdown: stopping consumer after current message")
+                ch.stop_consuming()
 
 
 def signal_handler(signum, frame):

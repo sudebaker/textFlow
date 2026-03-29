@@ -37,6 +37,8 @@ from typing import Callable, Dict, Optional, Any
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+
 import pika
 import redis
 import requests
@@ -212,6 +214,7 @@ class BaseWorker:
         self.queue_name = queue_name
         self.requires_gpu = requires_gpu
         self.metrics_port = metrics_port
+        self.max_retries = MAX_RETRIES
         self._shutdown_requested = False
         self._stopping = False
         self._rabbitmq_connected = False
@@ -450,6 +453,39 @@ class BaseWorker:
 
         self.logger.info(f"{self.worker_name} shutdown complete")
 
+    def _get_retry_count(self, properties) -> int:
+        """Extract retry count from RabbitMQ x-death headers.
+
+        RabbitMQ automatically adds an x-death header when a message is
+        dead-lettered. Each entry has a 'count' field indicating how many
+        times the message was dead-lettered from that queue/exchange.
+
+        Args:
+            properties: RabbitMQ message properties (pika.BasicProperties)
+
+        Returns:
+            Total retry count (sum of all x-death 'count' values), or 0
+            if no x-death header exists.
+        """
+        if properties.headers and "x-death" in properties.headers:
+            return sum(d.get("count", 0) for d in properties.headers["x-death"])
+        return 0
+
+    def _should_retry(self, properties) -> bool:
+        """Return True if message should be requeued (under max retries).
+
+        Checks x-death headers to determine how many times this message
+        has already been dead-lettered. If under max_retries, returns True
+        (requeue); otherwise False (send to DLQ permanently).
+
+        Args:
+            properties: RabbitMQ message properties (pika.BasicProperties)
+
+        Returns:
+            True if retry count < max_retries, False otherwise.
+        """
+        return self._get_retry_count(properties) < self.max_retries
+
     def _on_message(self, ch, method, properties, body) -> None:
         """
         Handle incoming message from RabbitMQ.
@@ -497,7 +533,7 @@ class BaseWorker:
             )
 
             # Auto-retry with exponential backoff
-            self._handle_transient_error(job_id, ch, method, e)
+            self._handle_transient_error(job_id, ch, method, properties, e)
 
         except Exception as e:
             # Permanent error — dead-letter the job
@@ -533,34 +569,29 @@ class BaseWorker:
             self._on_message_processed()
 
     def _handle_transient_error(
-        self, job_id: str, ch, method, error: Exception, max_retries: int = 3
+        self, job_id: str, ch, method, properties, error: Exception
     ) -> None:
         """
-        Handle transient error with exponential backoff retry logic.
+        Handle transient error with DLQ pattern using x-death headers.
 
-        Automatically retries transient errors (ConnectionError, TimeoutError) up to
-        max_retries times with exponential backoff: 2^retry_count seconds (capped at 60s).
+        Uses RabbitMQ x-death headers to determine how many times this message
+        has been dead-lettered. If under max_retries, requeues for retry.
+        If at/over max_retries, rejects to DLQ (requeue=False).
 
         Args:
             job_id: Job ID for tracking retries
             ch: RabbitMQ channel
             method: Delivery method
+            properties: RabbitMQ message properties (contains x-death headers)
             error: The transient exception that occurred
-            max_retries: Maximum number of retries (default 3)
         """
-        retry_key = f"orchestrator:job:{job_id}:retry:{self.queue_name}"
-        retry_count = 0
+        retry_count = self._get_retry_count(properties)
 
-        try:
-            retry_count = int(self.redis_client.get(retry_key) or 0)
-        except Exception:
-            retry_count = 0
-
-        if retry_count >= max_retries:
+        if not self._should_retry(properties):
             # Max retries exceeded - dead-letter the job
-            self.logger.error(
-                f"Job {job_id} exceeded max retries ({max_retries}) on queue {self.queue_name}. "
-                f"Dead-lettering. Error: {error}"
+            self.logger.warning(
+                f"Message exceeded max retries ({self.max_retries}), sending to DLQ. "
+                f"Job: {job_id}, Error: {error}"
             )
             self.jobs_total.labels(status="max_retries_exceeded").inc()
 
@@ -580,20 +611,17 @@ class BaseWorker:
                 except Exception as redis_error:
                     self.logger.error(f"Failed to update job status: {redis_error}")
 
-            # Reject without requeue
+            # Reject without requeue → goes to DLQ via DLX
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         else:
             # Retry with exponential backoff
-            retry_count += 1
-            backoff_seconds = min(2**retry_count, 60)  # Cap at 60 seconds
+            next_attempt = retry_count + 1
+            backoff_seconds = min(2**next_attempt, 60)  # Cap at 60 seconds
 
             self.logger.info(
                 f"Job {job_id} will retry in {backoff_seconds}s "
-                f"(attempt {retry_count}/{max_retries})"
+                f"(attempt {next_attempt}/{self.max_retries})"
             )
-
-            # Store retry count in Redis with TTL
-            self.redis_client.setex(retry_key, 3600, str(retry_count))  # 1 hour TTL
 
             # Sleep before requeuing
             # NOTE: This blocks the consumer thread for up to 60 seconds per retry.

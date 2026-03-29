@@ -6,9 +6,11 @@ The service provides text chunking and embedding generation using BAAI/bge-m3 mo
 """
 
 import logging
-import sys
 import os
+import sys
+import time
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -221,10 +223,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             "detail": str(exc)
         }
     )
-
-
-# Import time for request logging
-import time
 
 
 def main():

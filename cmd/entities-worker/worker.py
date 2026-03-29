@@ -80,12 +80,23 @@ FUZZY_MATCH_THRESHOLD = app_settings.fuzzy_match_threshold
 REGEX_ENTITY_EXTRACTOR_URL = os.getenv(
     "REGEX_ENTITY_EXTRACTOR_URL", "http://regex-entity-extractor:8081"
 )
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
 # GPU/CPU device selection
 ENTITIES_DEVICE = os.getenv("ENTITIES_DEVICE", "cpu")
-
-# Thresholds per entity type (from canonical settings)
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
+
+
+def _get_retry_count(properties) -> int:
+    """Extract retry count from RabbitMQ x-death headers."""
+    if properties.headers and "x-death" in properties.headers:
+        return sum(d.get("count", 0) for d in properties.headers["x-death"])
+    return 0
+
+
+def _should_retry(properties) -> bool:
+    """Return True if message should be requeued (under MAX_RETRIES)."""
+    return _get_retry_count(properties) < MAX_RETRIES
 
 
 class EntitiesWorker:
@@ -784,8 +795,12 @@ class EntitiesWorker:
         except Exception as e:
             logger.error(f"Error processing entities: {e}")
             jobs_total.labels(status="error").inc()
-            # Nack the message to requeue it for retry
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            requeue = _should_retry(properties)
+            if not requeue:
+                logger.warning(
+                    f"Message exceeded max retries ({MAX_RETRIES}), sending to DLQ"
+                )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
 
 
 def signal_handler(signum, frame):

@@ -658,6 +658,24 @@ class BaseWorker:
             # Reject and requeue (message goes back to queue)
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
+    def _extract_job_id(self, body: bytes) -> str | None:
+        """Extract job_id from message body JSON without raising.
+
+        Tries 'job_id' first, then falls back to 'id'. Returns None if the
+        body is not valid JSON or contains neither field.
+
+        Args:
+            body: Raw message body bytes
+
+        Returns:
+            Job ID string or None
+        """
+        try:
+            data = json.loads(body)
+            return data.get("job_id") or data.get("id") or None
+        except Exception:
+            return None
+
     def process_message(self, message: Dict) -> Any:
         """
         Process a single message.

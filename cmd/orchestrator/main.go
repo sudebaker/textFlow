@@ -487,7 +487,9 @@ func createJobHandler(c *gin.Context) {
 
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
 		logger.Error().Msgf("Failed to publish job message: %v", err)
-		redis.SetJobStatus(ctx, jobID, models.StatusFailed)
+		if statusErr := redis.SetJobStatus(ctx, jobID, models.StatusFailed); statusErr != nil {
+			logger.Error().Err(statusErr).Str("job_id", jobID).Msg("Failed to mark job as failed after publish error")
+		}
 		metrics.JobsInProgress.Dec()
 		metrics.JobsTotal.WithLabelValues("failed", "publish").Inc()
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{

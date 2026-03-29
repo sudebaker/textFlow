@@ -97,7 +97,7 @@ class InferenceWorker:
     Lifecycle:
         1. __init__: Connect to Redis, discover LLM model (one-time at startup), set up Event Bus
         2. process: Consume messages from RabbitMQ, extract inferences per chunk, assemble results
-        3. Graceful shutdown: SIGINT/SIGTERM triggers sys.exit()
+        3. Graceful shutdown: SIGINT/SIGTERM sets _stopping=True; consumer drains current message then stops
 
     State:
         - redis_client: Redis connection for storing intermediate and final results
@@ -764,7 +764,7 @@ def main():
           - inference_worker_job_duration_seconds: Histogram of processing time per chunk
 
     Shutdown Sequence:
-        1. SIGINT/SIGTERM → signal_handler() → sys.exit(0)
+        1. SIGINT/SIGTERM → signal_handler() → sets _stopping=True → consumer finishes current message → stop_consuming()
         2. RabbitMQ channel cleanup (handled by context manager)
         3. Unack messages returned to queue for reprocessing
 

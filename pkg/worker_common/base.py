@@ -425,6 +425,10 @@ class BaseWorker:
                     # Mark as connected
                     self._rabbitmq_connected = True
 
+                    # Assign channel to instance so _on_message_processed()
+                    # can call stop_consuming() on graceful shutdown.
+                    self._channel = channel
+
                     # Declare queue
                     channel.queue_declare(queue=self.queue_name, durable=True)
                     self.logger.info(f"Consuming from queue: {self.queue_name}")

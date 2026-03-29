@@ -346,10 +346,36 @@ class BaseWorker:
 
     @property
     def redis_client(self) -> redis.Redis:
-        """Get Redis client, lazily initialized."""
+        """Get Redis client with automatic reconnection on failure."""
+        return self._get_redis()
+
+    def _get_redis(self) -> redis.Redis:
+        """Return Redis client, reconnecting if the connection is lost."""
         if self._redis_client is None:
-            self._redis_client = redis.from_url(self.redis_url, decode_responses=True)
+            self._redis_client = self._connect_redis()
+        else:
+            try:
+                self._redis_client.ping()
+            except (redis.ConnectionError, redis.TimeoutError):
+                self.logger.warning("Redis connection lost, reconnecting...")
+                self._redis_client = self._connect_redis()
         return self._redis_client
+
+    def _connect_redis(self) -> redis.Redis:
+        """Create a new Redis connection with exponential backoff retry."""
+        for attempt in range(1, 6):
+            try:
+                client = redis.from_url(self.redis_url, decode_responses=True)
+                client.ping()
+                return client
+            except (redis.ConnectionError, redis.TimeoutError) as e:
+                if attempt == 5:
+                    raise
+                wait = min(2 ** attempt, 30)
+                self.logger.warning(
+                    f"Redis connect attempt {attempt} failed: {e}. Retrying in {wait}s..."
+                )
+                time.sleep(wait)
 
     @property
     def event_bus(self) -> EventBus:

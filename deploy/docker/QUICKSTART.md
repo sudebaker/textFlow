@@ -36,6 +36,7 @@ Edita `.env` y ajusta según tu entorno:
 
 ```env
 # Credenciales RabbitMQ
+# NOTA: No uses guest:guest en producción. Consulta .env.example para orientación.
 RABBITMQ_USER=guest
 RABBITMQ_PASS=guest
 

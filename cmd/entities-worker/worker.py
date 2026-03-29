@@ -50,6 +50,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_stopping = False
+
 jobs_total = Counter("entities_worker_jobs_total",
                      "Total jobs processed", ["status"])
 job_duration = Histogram(
@@ -801,6 +803,11 @@ class EntitiesWorker:
                     f"Message exceeded max retries ({MAX_RETRIES}), sending to DLQ"
                 )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
+
+        finally:
+            if _stopping and ch.is_open:
+                logger.info("Graceful shutdown: stopping consumer after current message")
+                ch.stop_consuming()
 
 
 def signal_handler(signum, frame):

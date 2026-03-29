@@ -64,6 +64,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_stopping = False
+
 # Prometheus metrics
 jobs_total = Counter("extraction_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram(
@@ -1037,6 +1039,9 @@ class ExtractionWorker:
                     os.remove(temp_file_path)
                 except Exception as e:
                     logger.debug(f"Ignored error: {e}")
+            if _stopping and ch.is_open:
+                logger.info("Graceful shutdown: stopping consumer after current message")
+                ch.stop_consuming()
 
 
 def signal_handler(signum, frame):

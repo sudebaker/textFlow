@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/gin-gonic/gin"
@@ -801,5 +805,31 @@ func main() {
 	router.GET("/health", healthHandler)
 	router.HEAD("/health", healthHandler)
 	log.Println("INFO: Servicio de pre-procesamiento escuchando en el puerto 8081...")
-	router.Run(":8081")
+
+	srv := &http.Server{
+		Addr:         ":8081",
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("FATAL: El servidor falló al arrancar: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("INFO: Apagando regex-entity-extractor...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("FATAL: El servidor fue forzado a apagarse: %v", err)
+	}
+	log.Println("INFO: Servidor apagado limpiamente.")
 }

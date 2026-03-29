@@ -74,6 +74,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_stopping = False
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
@@ -700,6 +702,11 @@ Respond with ONLY the JSON array (no other text):"""
             logger.error(f"Error processing inferences: {e}")
             jobs_total.labels(status="error").inc()
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+        finally:
+            if _stopping and ch.is_open:
+                logger.info("Graceful shutdown: stopping consumer after current message")
+                ch.stop_consuming()
 
 
 def signal_handler(signum, frame):

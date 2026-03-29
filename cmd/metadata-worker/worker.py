@@ -53,6 +53,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_stopping = False
+
 jobs_total = Counter("metadata_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram("metadata_worker_job_duration_seconds", "Job duration")
 
@@ -301,6 +303,11 @@ class MetadataWorker:
             logger.error(f"Error processing metadata: {e}")
             jobs_total.labels(status="error").inc()
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+        finally:
+            if _stopping and ch.is_open:
+                logger.info("Graceful shutdown: stopping consumer after current message")
+                ch.stop_consuming()
 
 
 def signal_handler(signum, frame):

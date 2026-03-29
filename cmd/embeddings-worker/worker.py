@@ -70,6 +70,8 @@ def detect_gpu() -> bool:
     return torch.cuda.is_available()
 
 
+# NOTE: _get_retry_count and _should_retry are duplicated from pkg/worker_common/base.py
+# Refactor if these workers migrate to BaseWorker.
 def _get_retry_count(properties) -> int:
     """Extract retry count from RabbitMQ x-death headers."""
     if properties.headers and "x-death" in properties.headers:

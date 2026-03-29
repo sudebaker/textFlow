@@ -37,8 +37,6 @@ from typing import Callable, Dict, Optional, Any
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
-MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
-
 import pika
 import redis
 import requests
@@ -57,6 +55,8 @@ sys.path.insert(0, "/app")
 
 from pkg.events_python import EventBus
 from pkg.logging_python import setup_logging, JobLogger
+
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
 
 def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:

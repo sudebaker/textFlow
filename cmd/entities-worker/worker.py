@@ -89,6 +89,8 @@ ENTITIES_DEVICE = os.getenv("ENTITIES_DEVICE", "cpu")
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
 
 
+# NOTE: _get_retry_count and _should_retry are duplicated from pkg/worker_common/base.py
+# Refactor if these workers migrate to BaseWorker.
 def _get_retry_count(properties) -> int:
     """Extract retry count from RabbitMQ x-death headers."""
     if properties.headers and "x-death" in properties.headers:

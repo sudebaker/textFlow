@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"ia-text-orchestrator/internal/config"
@@ -330,6 +331,30 @@ func TestRedisClient_SetJobCreatedAndCompleted(t *testing.T) {
 	// Set completed time
 	err = client.SetJobCompleted(ctx, jobID)
 	require.NoError(t, err)
+}
+
+func TestRedisClient_TTLSetFailure_PropagatesError(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	cfg := &config.Config{
+		RedisURL: "redis://" + mr.Addr(),
+		JobTTL:   1 * time.Hour,
+	}
+	client, err := New(cfg)
+	require.NoError(t, err)
+
+	// Inject a pre-hook so that EXPIRE always returns an error, while HSet still succeeds.
+	mr.Server().SetPreHook(func(p *server.Peer, cmd string, args ...string) bool {
+		if cmd == "EXPIRE" {
+			p.WriteError("ERR simulated EXPIRE failure")
+			return true
+		}
+		return false
+	})
+
+	// SetJobStatus should propagate the EXPIRE error instead of silently swallowing it.
+	err = client.SetJobStatus(context.Background(), "job-1", models.StatusProcessing)
+	assert.Error(t, err, "Expected TTL failure to be propagated")
 }
 
 func TestGetJobResults_MicroInferences(t *testing.T) {

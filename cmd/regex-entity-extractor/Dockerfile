@@ -35,6 +35,9 @@ COPY cmd/regex-entity-extractor/regex_patterns.json .
 
 EXPOSE 8081
 
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
 # Healthcheck: GET /health endpoint
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=5s \
   CMD curl -sf http://localhost:8081/health || exit 1

@@ -334,27 +334,60 @@ func TestRedisClient_SetJobCreatedAndCompleted(t *testing.T) {
 }
 
 func TestRedisClient_TTLSetFailure_PropagatesError(t *testing.T) {
-	mr := miniredis.RunT(t)
-
-	cfg := &config.Config{
-		RedisURL: "redis://" + mr.Addr(),
-		JobTTL:   1 * time.Hour,
+	methods := []struct {
+		name string
+		fn   func(client *RedisClient) error
+	}{
+		{
+			name: "SetJobStatus",
+			fn: func(c *RedisClient) error {
+				return c.SetJobStatus(context.Background(), "job-1", models.StatusProcessing)
+			},
+		},
+		{
+			name: "UpdateJobStep",
+			fn: func(c *RedisClient) error {
+				return c.UpdateJobStep(context.Background(), "job-1", "step-name", "completed")
+			},
+		},
+		{
+			name: "SetJobCreated",
+			fn: func(c *RedisClient) error {
+				return c.SetJobCreated(context.Background(), "job-1")
+			},
+		},
+		{
+			name: "SetJobCompleted",
+			fn: func(c *RedisClient) error {
+				return c.SetJobCompleted(context.Background(), "job-1")
+			},
+		},
 	}
-	client, err := New(cfg)
-	require.NoError(t, err)
 
-	// Inject a pre-hook so that EXPIRE always returns an error, while HSet still succeeds.
-	mr.Server().SetPreHook(func(p *server.Peer, cmd string, args ...string) bool {
-		if cmd == "EXPIRE" {
-			p.WriteError("ERR simulated EXPIRE failure")
-			return true
-		}
-		return false
-	})
+	for _, tc := range methods {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
 
-	// SetJobStatus should propagate the EXPIRE error instead of silently swallowing it.
-	err = client.SetJobStatus(context.Background(), "job-1", models.StatusProcessing)
-	assert.Error(t, err, "Expected TTL failure to be propagated")
+			cfg := &config.Config{
+				RedisURL: "redis://" + mr.Addr(),
+				JobTTL:   1 * time.Hour,
+			}
+			client, err := New(cfg)
+			require.NoError(t, err)
+
+			// Inject a pre-hook so that EXPIRE always returns an error, while HSet still succeeds.
+			mr.Server().SetPreHook(func(p *server.Peer, cmd string, args ...string) bool {
+				if cmd == "EXPIRE" {
+					p.WriteError("ERR simulated EXPIRE failure")
+					return true
+				}
+				return false
+			})
+
+			err = tc.fn(client)
+			assert.Error(t, err, "%s must propagate EXPIRE error", tc.name)
+		})
+	}
 }
 
 func TestGetJobResults_MicroInferences(t *testing.T) {

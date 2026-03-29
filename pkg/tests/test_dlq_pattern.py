@@ -238,7 +238,8 @@ class TestTransientErrorNackBehavior:
             props.headers = {"x-death": [{"count": count}]}
         return props
 
-    def test_nack_requeue_true_when_under_max_retries(self):
+    @patch('pkg.worker_common.base.time.sleep', return_value=None)
+    def test_nack_requeue_true_when_under_max_retries(self, mock_sleep):
         """basic_nack must be called with requeue=True when retry count < max_retries."""
         worker = _make_failing_worker(max_retries=3)
 
@@ -321,7 +322,8 @@ class TestTransientErrorNackBehavior:
             delivery_tag="tag-789", requeue=False
         )
 
-    def test_nack_requeue_true_on_first_failure(self):
+    @patch('pkg.worker_common.base.time.sleep', return_value=None)
+    def test_nack_requeue_true_on_first_failure(self, mock_sleep):
         """On first failure (no x-death headers), basic_nack must use requeue=True."""
         worker = _make_failing_worker(max_retries=3)
 

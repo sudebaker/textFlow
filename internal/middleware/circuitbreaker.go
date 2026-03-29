@@ -4,6 +4,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -119,9 +120,10 @@ type CircuitBreaker struct {
 //   - IsSuccessful: only nil errors are considered successful
 func NewCircuitBreaker(settings Settings) *CircuitBreaker {
 	cb := &CircuitBreaker{
-		name:     settings.Name,
-		state:    StateClosed,
-		settings: settings,
+		name:              settings.Name,
+		state:             StateClosed,
+		settings:          settings,
+		lastIntervalStart: time.Now(),
 	}
 	if cb.settings.MaxRequests == 0 {
 		cb.settings.MaxRequests = 3
@@ -202,16 +204,15 @@ func (cb *CircuitBreaker) beforeRequest() error {
 
 // executeRequest runs fn with timeout and panic recovery.
 // The function executes in a goroutine; if ctx is cancelled before fn completes,
-// the context error is returned. Panics are recovered and converted to an error.
-func (cb *CircuitBreaker) executeRequest(ctx context.Context, fn func() error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.New("panic recovered")
-		}
-	}()
-
+// the context error is returned. Panics inside fn are recovered and converted to an error.
+func (cb *CircuitBreaker) executeRequest(ctx context.Context, fn func() error) error {
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("panic: %v", r)
+			}
+		}()
 		done <- fn()
 	}()
 

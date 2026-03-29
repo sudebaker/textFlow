@@ -248,24 +248,19 @@ func TestCircuitBreaker_ContextCancellation(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-// TestCircuitBreaker_PanicInFnEscapes documents a known limitation: panics inside fn()
-// are NOT recovered by the circuit breaker because fn() runs in a child goroutine,
-// and Go's recover() cannot catch panics from goroutines other than its own.
-// The defer/recover in executeRequest is effectively dead code for the fn() goroutine.
-//
-// BUG: The documentation says "Panics are recovered and converted to an error" but
-// this is incorrect — the panic will crash the program. To fix, the recover() must
-// be placed inside the anonymous goroutine that calls fn().
-func TestCircuitBreaker_PanicInFnEscapes(t *testing.T) {
-	// This test intentionally does NOT call Execute with a panicking fn because
-	// that would crash the test process. Instead, it documents the design bug:
-	// the recover() in executeRequest() is in the outer goroutine and cannot
-	// catch panics from the inner goroutine (go func() { done <- fn() }()).
-	//
-	// To verify the bug without crashing: we confirm the recover lives in wrong scope.
-	t.Log("BUG: panic recovery in executeRequest is ineffective for fn() goroutine panics")
-	t.Log("The defer/recover is in the outer goroutine; fn() runs in a child goroutine.")
-	t.Log("Fix: move recover() inside the 'go func() { ... }()' that wraps fn().")
+// TestCircuitBreaker_PanicInFnIsRecovered verifies that a panic inside fn() is caught
+// by the circuit breaker and returned as an error, rather than crashing the program.
+func TestCircuitBreaker_PanicInFnIsRecovered(t *testing.T) {
+	cb := middleware.NewCircuitBreaker(middleware.Settings{Name: "test"})
+
+	err := cb.Execute(context.Background(), func() error {
+		panic("something went wrong")
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "panic")
+	assert.Equal(t, middleware.StateClosed, cb.State(),
+		"circuit should remain closed after a recovered panic")
 }
 
 // TestCircuitBreaker_StateString verifies human-readable state strings.
@@ -275,32 +270,19 @@ func TestCircuitBreaker_StateString(t *testing.T) {
 	assert.Equal(t, "open", middleware.StateOpen.String())
 }
 
-// TestCircuitBreaker_DefaultReadyToTrip documents a known bug: the default ReadyToTrip
-// logic never triggers because lastIntervalStart is zero-initialized, causing afterRequest
-// to reset windowCounts on every call (since time.Now() - zero_time >> 30s Interval).
-//
-// BUG: NewCircuitBreaker does not initialize lastIntervalStart to time.Now().
-// This means the very first request always resets windowCounts in afterRequest, so
-// windowCounts.Requests is always one behind: after 3 failures, windowCounts only
-// shows 2 requests (first was counted then wiped), preventing the circuit from opening.
-//
-// Fix: add `lastIntervalStart: time.Now()` in NewCircuitBreaker.
+// TestCircuitBreaker_DefaultReadyToTrip verifies that the default ReadyToTrip logic
+// opens the circuit after at least 3 requests with a ≥60% failure rate.
 func TestCircuitBreaker_DefaultReadyToTrip(t *testing.T) {
 	cb := middleware.NewCircuitBreaker(middleware.Settings{Name: "test"})
 
 	someErr := errors.New("error")
 
-	// Execute 3 failures — with the bug, the circuit never opens because windowCounts
-	// is reset on the first call due to zero-initialized lastIntervalStart.
 	_ = cb.Execute(context.Background(), func() error { return someErr })
 	_ = cb.Execute(context.Background(), func() error { return someErr })
 	_ = cb.Execute(context.Background(), func() error { return someErr })
 
-	// BUG: expected StateOpen but circuit stays Closed due to uninitialized lastIntervalStart.
-	// When the bug is fixed, this assertion should be: assert.Equal(t, middleware.StateOpen, cb.State())
-	assert.Equal(t, middleware.StateClosed, cb.State(),
-		"BUG: circuit should open after 3 failures with default policy but stays closed "+
-			"because lastIntervalStart is zero-initialized causing windowCounts to reset on first call")
+	assert.Equal(t, middleware.StateOpen, cb.State(),
+		"circuit should open after 3 failures with default policy")
 }
 
 // TestCircuitBreaker_CustomReadyToTrip verifies that a custom ReadyToTrip function

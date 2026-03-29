@@ -546,8 +546,8 @@ class ExtractionWorker:
 
         try:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Ignored error: {e}")
 
     def _docling_convert(self, document_bytes: bytes, filename: str) -> Dict[str, Any]:
         """Submit document to Docling async endpoint and poll until completion.
@@ -1035,8 +1035,8 @@ class ExtractionWorker:
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ignored error: {e}")
 
 
 def signal_handler(signum, frame):

@@ -2,11 +2,12 @@ package broker
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
-	amqp "github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/pkg/logging"
 )
@@ -84,6 +85,9 @@ func TestRabbitMQBroker_CloseStopMonitoring(t *testing.T) {
 }
 
 func TestRabbitMQBroker_PublishReconnectOnNilChannel(t *testing.T) {
+	if os.Getenv("RABBITMQ_URL") == "" {
+		t.Skip("Skipping: RABBITMQ_URL not set (requires real RabbitMQ)")
+	}
 	broker := &RabbitMQBroker{
 		channel:  nil,
 		mu:       sync.RWMutex{},
@@ -103,6 +107,9 @@ func TestRabbitMQBroker_PublishReconnectOnNilChannel(t *testing.T) {
 }
 
 func TestRabbitMQBroker_GetQueueInfoReconnectOnNilChannel(t *testing.T) {
+	if os.Getenv("RABBITMQ_URL") == "" {
+		t.Skip("Skipping: RABBITMQ_URL not set (requires real RabbitMQ)")
+	}
 	broker := &RabbitMQBroker{
 		channel:  nil,
 		mu:       sync.RWMutex{},

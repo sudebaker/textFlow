@@ -18,4 +18,7 @@ COPY --from=builder /app/resource-manager .
 
 EXPOSE 9090
 
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
 CMD ["./resource-manager"]

@@ -789,12 +789,16 @@ class EntitiesWorker:
 
 
 def signal_handler(signum, frame):
-    logger.info("Received shutdown signal, stopping worker...")
-    sys.exit(0)
+    logger.info("Received shutdown signal, initiating graceful shutdown...")
+    global _stopping
+    _stopping = True
 
 
 def main():
     logger.info("Starting Entities Worker")
+
+    global _stopping
+    _stopping = False
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -805,7 +809,7 @@ def main():
     worker = EntitiesWorker()
     worker.load_model()
 
-    while True:
+    while not _stopping:
         try:
             with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
@@ -819,7 +823,10 @@ def main():
 
         except Exception as e:
             logger.error(f"RabbitMQ connection error: {e}")
-            time.sleep(5)
+            if not _stopping:
+                time.sleep(5)
+
+    logger.info("Entities worker shutdown complete")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,10 @@
 """
-Tests for Dead Letter Queue (DLQ) pattern in BaseWorker.
+Tests for the DLQ (Dead Letter Queue) pattern implementation in BaseWorker.
 
-RED phase: These tests verify that:
-1. _get_retry_count correctly reads x-death headers
-2. _should_retry returns True/False based on retry count vs max_retries
-3. basic_nack is called with requeue=False when max_retries is exceeded
-4. basic_nack is called with requeue=True when under max_retries
+Verifies that:
+- x-death header retry counting is correct
+- Messages are retried up to max_retries, then sent to DLQ
+- basic_nack is called with requeue=False when max retries exceeded
 """
 
 import json

@@ -70,10 +70,11 @@ scrape_configs:
           service: 'rabbitmq'
           component: 'queue'
 
-  # Redis exporter (optional - requires separate exporter container)
-  # - job_name: 'redis'
-  #   static_configs:
-  #     - targets: ['redis-exporter:9121']
-  #       labels:
-  #         service: 'redis'
-  #         component: 'cache'
+  # Redis exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+          component: 'cache'
+    scrape_interval: 15s

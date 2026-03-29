@@ -213,6 +213,7 @@ class BaseWorker:
         self.requires_gpu = requires_gpu
         self.metrics_port = metrics_port
         self._shutdown_requested = False
+        self._stopping = False
         self._rabbitmq_connected = False
 
         # Setup logging
@@ -263,8 +264,25 @@ class BaseWorker:
 
     def _signal_handler(self, signum, frame) -> None:
         """Handle shutdown signals."""
-        self.logger.info(f"Received shutdown signal ({signum}), stopping worker...")
+        self.logger.info(
+            f"Received signal {signum}, initiating graceful shutdown..."
+        )
         self._shutdown_requested = True
+        self._stopping = True
+
+    def _on_message_processed(self) -> None:
+        """Call at the end of each message callback.
+
+        Stops the RabbitMQ consumer if a graceful shutdown was requested.
+        This ensures the worker finishes the current message before stopping,
+        preventing jobs from being left in a permanent 'processing' state.
+        """
+        if self._stopping:
+            self.logger.info(
+                "Graceful shutdown: stopping consumer after current message"
+            )
+            if hasattr(self, "_channel") and self._channel and self._channel.is_open:
+                self._channel.stop_consuming()
 
     def _init_health_server(self) -> None:
         """Initialize FastAPI app for health checks."""
@@ -504,6 +522,11 @@ class BaseWorker:
 
             # Dead-letter the message (no requeue)
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+        finally:
+            # Always check if shutdown was requested after processing each message.
+            # This stops the consumer cleanly without interrupting ongoing work.
+            self._on_message_processed()
 
     def _handle_transient_error(
         self, job_id: str, ch, method, error: Exception, max_retries: int = 3

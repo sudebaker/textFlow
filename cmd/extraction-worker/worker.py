@@ -1042,15 +1042,17 @@ class ExtractionWorker:
 def signal_handler(signum, frame):
     """Handle termination signals (SIGTERM, SIGINT) gracefully.
 
-    Logs shutdown notice and exits cleanly, allowing RabbitMQ connection to close
-    and temporary files to be cleaned up by ExtractionWorker.__del__.
+    Sets the global _stopping flag to initiate graceful shutdown after the
+    current message finishes processing. Does NOT call sys.exit() to avoid
+    interrupting a message in flight.
 
     Args:
         signum: Signal number (SIGINT=2, SIGTERM=15).
         frame: Current stack frame.
     """
-    logger.info("Received shutdown signal, stopping worker...")
-    sys.exit(0)
+    logger.info("Received shutdown signal, initiating graceful shutdown...")
+    global _stopping
+    _stopping = True
 
 
 def main():
@@ -1077,6 +1079,9 @@ def main():
     """
     logger.info("Starting Extraction Worker")
 
+    global _stopping
+    _stopping = False
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -1085,7 +1090,7 @@ def main():
 
     worker = ExtractionWorker()
 
-    while True:
+    while not _stopping:
         try:
             with connect_rabbitmq(RABBITMQ_URL, prefetch_count=PREFETCH_COUNT) as (
                 connection,
@@ -1101,7 +1106,10 @@ def main():
                 channel.start_consuming()
         except Exception as e:
             logger.error(f"RabbitMQ connection error: {e}")
-            time.sleep(5)
+            if not _stopping:
+                time.sleep(5)
+
+    logger.info("Extraction worker shutdown complete")
 
 
 if __name__ == "__main__":

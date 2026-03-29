@@ -531,7 +531,7 @@ class BaseWorker:
 
         try:
             message = json.loads(body)
-            job_id = message.get("job_id")
+            job_id = message.get("job_id") or message.get("id")
 
             # Call subclass method for actual processing
             result = self.process_message(message)

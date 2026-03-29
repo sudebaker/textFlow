@@ -706,20 +706,17 @@ def signal_handler(signum, frame):
     """
     Handle graceful shutdown on SIGINT or SIGTERM.
 
-    Triggered by:
-        - SIGTERM: Container/orchestrator shutdown signal
-        - SIGINT: Ctrl+C from user
-
-    Behavior:
-        - Logs INFO message indicating shutdown
-        - Calls sys.exit(0) to terminate process
-        - RabbitMQ channel cleanup handled by context manager (connect_rabbitmq)
+    Sets the global _stopping flag to stop the consumer loop after the current
+    message finishes processing. Does NOT call sys.exit() to avoid interrupting
+    a message in flight and leaving jobs in 'processing' state permanently.
 
     Args:
         signum (int): Signal number (signal.SIGINT or signal.SIGTERM)
         frame: Signal frame object (unused)
     """
-    sys.exit(0)
+    logger.info("Received shutdown signal, initiating graceful shutdown...")
+    global _stopping
+    _stopping = True
 
 
 def main():
@@ -788,6 +785,10 @@ def main():
     import signal
 
     logger.info("Starting Inference Worker")
+
+    global _stopping
+    _stopping = False
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -796,7 +797,7 @@ def main():
 
     worker = InferenceWorker()
 
-    while True:
+    while not _stopping:
         try:
             with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
@@ -816,7 +817,10 @@ def main():
 
         except Exception as e:
             logger.error(f"RabbitMQ connection error: {e}")
-            time.sleep(5)
+            if not _stopping:
+                time.sleep(5)
+
+    logger.info("Inference worker shutdown complete")
 
 
 if __name__ == "__main__":

@@ -80,6 +80,16 @@ class Settings(BaseSettings):
         description="Logging level (DEBUG, INFO, WARNING, ERROR)"
     )
 
+    # CORS Configuration
+    cors_origins: str = Field(
+        default="http://localhost:8080",
+        description="Comma-separated list of allowed CORS origins"
+    )
+
+    @property
+    def cors_origins_list(self) -> list:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
     # GPU Configuration (optional)
     torch_cuda_arch_list: Optional[str] = Field(
         default=None,

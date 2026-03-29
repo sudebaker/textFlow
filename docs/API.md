@@ -391,7 +391,7 @@ Environment variables (set in `docker-compose.yml` or `.env`):
 
 ### Infrastructure Services
 
-- **RabbitMQ:** `RABBITMQ_URL` (default: `amqp://guest:guest@rabbitmq:5672`)
+- **RabbitMQ:** `RABBITMQ_URL` (default: `amqp://guest:guest@rabbitmq:5672`) <!-- NOTE: Do not use guest:guest in production. See .env.example for guidance. -->
 - **Redis:** `REDIS_URL` (default: `redis://redis:6379`)
 - **Docling (Extraction):** `DOCLING_URL` (default: `http://localhost:8000`)
 - **Regex Entity Extractor:** `REGEX_ENTITY_EXTRACTOR_URL` (default: `http://regex-entity-extractor:8081`)

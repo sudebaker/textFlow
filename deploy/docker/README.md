@@ -61,6 +61,7 @@ Configure for your deployment:
 
 ```env
 # RabbitMQ
+# NOTE: Do not use guest:guest in production. See .env.example for guidance.
 RABBITMQ_USER=guest
 RABBITMQ_PASS=guest
 

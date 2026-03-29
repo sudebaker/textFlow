@@ -306,16 +306,17 @@ class MetadataWorker:
 def signal_handler(signum, frame):
     """Handle graceful shutdown on SIGINT or SIGTERM.
 
-    Registered as the handler for SIGINT (Ctrl+C) and SIGTERM (Docker stop)
-    signals. Logs shutdown message and exits cleanly without dropping pending
-    RabbitMQ messages.
+    Sets the global _stopping flag to stop the consumer loop after the current
+    message finishes. Does NOT call sys.exit() to avoid interrupting a message
+    in flight.
 
     Args:
         signum: Signal number (signal.SIGINT or signal.SIGTERM)
         frame: Current stack frame at time of signal
     """
-    logger.info("Received shutdown signal, stopping worker...")
-    sys.exit(0)
+    logger.info("Received shutdown signal, initiating graceful shutdown...")
+    global _stopping
+    _stopping = True
 
 
 def main():
@@ -347,6 +348,9 @@ def main():
     """
     logger.info("Starting Metadata Worker")
 
+    global _stopping
+    _stopping = False
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -355,7 +359,7 @@ def main():
 
     worker = MetadataWorker()
 
-    while True:
+    while not _stopping:
         try:
             with connect_rabbitmq(RABBITMQ_URL, prefetch_count=10) as (
                 connection,
@@ -372,7 +376,10 @@ def main():
 
         except Exception as e:
             logger.error(f"RabbitMQ connection error: {e}")
-            time.sleep(5)
+            if not _stopping:
+                time.sleep(5)
+
+    logger.info("Metadata worker shutdown complete")
 
 
 if __name__ == "__main__":

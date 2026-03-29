@@ -448,7 +448,12 @@ func createJobHandler(c *gin.Context) {
 	}
 
 	if err := redis.SetJobCreated(ctx, jobID); err != nil {
-		logger.Error().Msgf("Failed to set job created time: %v", err)
+		logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to mark job as created")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to initialize job",
+		})
+		return
 	}
 
 	// Store features and LLM URL in Redis
@@ -469,7 +474,8 @@ func createJobHandler(c *gin.Context) {
 
 	// Publish JobCreated event
 	if err := eventBus.PublishJobCreated(ctx, jobID); err != nil {
-		logger.Warn().Err(err).Msg("Failed to publish JobCreated event")
+		logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to publish JobCreated event")
+		// No return — job is in Redis, event publication is best-effort
 	}
 
 	jobMsg := &models.JobMessage{
@@ -646,7 +652,12 @@ func deleteJobHandler(c *gin.Context) {
 
 	if status == models.StatusCompleted || status == models.StatusFailed {
 		if err := redis.DeleteJob(ctx, jobID); err != nil {
-			logger.Error().Msgf("Failed to delete job: %v", err)
+			logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to delete job")
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+				Error:  "internal_error",
+				Detail: "failed to delete job",
+			})
+			return
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"message": "job deleted",
@@ -1072,7 +1083,12 @@ func uploadHandler(c *gin.Context) {
 	}
 
 	if err := redis.SetJobCreated(ctx, jobID); err != nil {
-		logger.Error().Err(err).Msg("failed to set job created time")
+		logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to mark job as created")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to initialize job",
+		})
+		return
 	}
 
 	jobMsg := models.JobMessage{

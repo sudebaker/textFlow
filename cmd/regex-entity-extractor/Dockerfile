@@ -35,7 +35,8 @@ COPY cmd/regex-entity-extractor/regex_patterns.json .
 
 EXPOSE 8081
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    chown -R appuser:appgroup /app
 USER appuser
 
 # Healthcheck: GET /health endpoint

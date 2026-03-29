@@ -18,7 +18,9 @@ COPY --from=builder /app/orchestrator .
 
 EXPOSE 8080
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    mkdir -p /app/data/uploads /app/data/results && \
+    chown -R appuser:appgroup /app
 USER appuser
 
 CMD ["./orchestrator"]

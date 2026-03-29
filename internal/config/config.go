@@ -34,6 +34,13 @@ type Config struct {
 	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
 }
 
+func (c *Config) Validate() error {
+	if strings.Contains(c.RabbitMQURL, "guest:guest") {
+		return fmt.Errorf("SECURITY: RabbitMQ default credentials detected — set RABBITMQ_URL with proper credentials before deploying")
+	}
+	return nil
+}
+
 func (c *Config) ParseLogLevel() zerolog.Level {
 	switch strings.ToLower(c.LogLevel) {
 	case "debug":

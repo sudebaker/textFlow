@@ -4,8 +4,8 @@ services:
     image: rabbitmq:3.12-management
     container_name: ia-text-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
     healthcheck:
       test: rabbitmq-diagnostics -q ping
       interval: 10s
@@ -57,7 +57,7 @@ services:
     - backend
     - datastore
     environment:
-    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - REDIS_URL=redis://redis:6379
     - DOCLING_URL=http://docling:5001
     - RESOURCE_MANAGER_URL=http://resource-manager:9090
@@ -118,7 +118,7 @@ services:
     container_name: ia-text-extraction-worker
     environment:
     - REDIS_URL=redis://redis:6379
-    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - DOCLING_URL=http://docling:5001
     - QUEUE_NAME=extract_text
     - PREFETCH_COUNT=3
@@ -156,7 +156,7 @@ services:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
-    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - LOG_LEVEL=info
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
@@ -197,7 +197,7 @@ services:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
-    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - LOG_LEVEL=info
     - QUEUE_NAME=entities
     - METRICS_PORT=8002
@@ -247,7 +247,7 @@ services:
     container_name: ia-text-inference-worker
     environment:
     - REDIS_URL=redis://redis:6379
-    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - LOG_LEVEL=info
     - QUEUE_NAME=inferences
     - METRICS_PORT=8006
@@ -308,7 +308,7 @@ services:
     container_name: ia-text-metadata-worker
     environment:
     - REDIS_URL=redis://redis:6379
-    - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+    - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - LOG_LEVEL=info
     - QUEUE_NAME=metadata
     - METRICS_PORT=8003

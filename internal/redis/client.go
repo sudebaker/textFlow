@@ -10,10 +10,16 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"github.com/vmihailenco/msgpack/v5"
 	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/internal/models"
 	"ia-text-orchestrator/pkg/logging"
 )
+
+// activeJobsSuffix is the Redis Sorted Set key suffix used to track active (non-terminal) jobs.
+// Score = Unix timestamp of job creation; used by ExpireStuckJobs for O(log N) range queries
+// instead of full SCAN, preventing latency spikes with large job counts.
+const activeJobsSuffix = "active_jobs"
 
 // RedisClient manages all Redis operations for job state persistence across the pipeline.
 // It is the single source of truth for job status, extracted text, embeddings, entities,
@@ -59,6 +65,16 @@ func New(cfg *config.Config) (*RedisClient, error) {
 		opt.PoolTimeout = 4 * time.Second
 	}
 
+	// Explicit pool configuration to prevent connection starvation under high load.
+	// Default PoolSize = runtime.NumCPU() is insufficient when 100+ goroutines
+	// may need concurrent Redis access during parallel job processing.
+	if opt.PoolSize == 0 {
+		opt.PoolSize = 100
+	}
+	if opt.MinIdleConns == 0 {
+		opt.MinIdleConns = 10
+	}
+
 	client := redis.NewClient(opt)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -99,7 +115,8 @@ func (c *RedisClient) key(parts ...string) string {
 // SetJobStatus stores the job status in Redis with automatic TTL expiration.
 // Redis key: {namespace}:job:{jobID}:status (hash with field "status")
 // TTL: jobTTL (typically 24 hours), refreshed on each write.
-// Used by orchestrator to track job progression through the pipeline.
+// When transitioning to terminal states (completed/failed), the job is removed
+// from the active_jobs sorted set to keep stuck-job detection accurate.
 // Returns error if Redis operation fails.
 func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status models.JobStatus) error {
 	key := c.key("job", jobID, "status")
@@ -111,6 +128,16 @@ func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status mod
 		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job status key")
 		return fmt.Errorf("failed to set TTL for key %s: %w", key, err)
 	}
+
+	// Remove from active_jobs ZSET when job reaches a terminal state
+	if status == models.StatusCompleted || status == models.StatusFailed {
+		activeKey := c.key(activeJobsSuffix)
+		if err := c.client.ZRem(ctx, activeKey, jobID).Err(); err != nil {
+			// Non-fatal; job will be cleaned up by TTL or next ExpireStuckJobs run
+			c.logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to remove job from active_jobs ZSET")
+		}
+	}
+
 	return nil
 }
 
@@ -202,14 +229,15 @@ func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.
 	return &results, nil
 }
 
-// SetJobEmbeddings stores float32 embedding vectors as JSON.
+// SetJobEmbeddings stores chunk embedding vectors using MessagePack binary serialization.
 // Redis key: {namespace}:job:{jobID}:embeddings
 // TTL: jobTTL (typically 24 hours), set on initial write.
-// Stores dense vector representation from embeddings worker (BAAI/bge-m3).
+// Stores a map of chunk_id -> dense float32 vector from embeddings worker (BAAI/bge-m3).
+// MsgPack encoding reduces storage ~75% vs JSON for float32 vectors.
 // Returns error if marshaling or Redis operation fails.
-func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embeddings []float32) error {
+func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embeddings map[string][]float32) error {
 	key := c.key("job", jobID, "embeddings")
-	data, err := json.Marshal(embeddings)
+	data, err := msgpack.Marshal(embeddings)
 	if err != nil {
 		return fmt.Errorf("failed to marshal embeddings: %w", err)
 	}
@@ -220,12 +248,12 @@ func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embedd
 	return nil
 }
 
-// GetJobEmbeddings retrieves embedding vectors for a job.
+// GetJobEmbeddings retrieves chunk embedding vectors for a job.
 // Redis key: {namespace}:job:{jobID}:embeddings
-// Returns []float32 on success.
+// Returns map[chunk_id][]float32 on success.
 // Returns error with "job embeddings not found" message if key does not exist (redis.Nil).
-// Returns error if Redis operation or JSON unmarshaling fails.
-func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) ([]float32, error) {
+// Returns error if Redis operation or MessagePack unmarshaling fails.
+func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) (map[string][]float32, error) {
 	key := c.key("job", jobID, "embeddings")
 	data, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
@@ -234,8 +262,8 @@ func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) ([]flo
 		}
 		return nil, fmt.Errorf("failed to get job embeddings: %w", err)
 	}
-	var embeddings []float32
-	if err := json.Unmarshal(data, &embeddings); err != nil {
+	var embeddings map[string][]float32
+	if err := msgpack.Unmarshal(data, &embeddings); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embeddings: %w", err)
 	}
 	return embeddings, nil
@@ -354,13 +382,15 @@ func (c *RedisClient) GetJobSteps(ctx context.Context, jobID string) (map[string
 
 // SetJobCreated records the job creation timestamp as Unix seconds.
 // Redis key: {namespace}:job:{jobID}:meta (hash with field "created_at")
+// Also registers the job in the active_jobs sorted set (score = creation Unix timestamp)
+// for efficient stuck-job detection without full SCAN. See ExpireStuckJobs.
 // TTL: jobTTL (typically 24 hours), refreshed on each write.
 // Timestamp is set to current time at creation.
-// Used by ExpireStuckJobs to detect jobs that exceed processing timeout.
 // Returns error if Redis operation fails.
 func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
+	now := time.Now()
 	key := c.key("job", jobID, "meta")
-	err := c.client.HSet(ctx, key, "created_at", time.Now().Unix()).Err()
+	err := c.client.HSet(ctx, key, "created_at", now.Unix()).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set job created time: %w", err)
 	}
@@ -368,6 +398,17 @@ func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job meta key")
 		return fmt.Errorf("failed to set TTL for key %s: %w", key, err)
 	}
+
+	// Register in active_jobs sorted set for O(log N) stuck-job detection
+	activeKey := c.key(activeJobsSuffix)
+	if err := c.client.ZAdd(ctx, activeKey, redis.Z{
+		Score:  float64(now.Unix()),
+		Member: jobID,
+	}).Err(); err != nil {
+		// Non-fatal: SCAN fallback still works; log and continue
+		c.logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to register job in active_jobs ZSET")
+	}
+
 	return nil
 }
 
@@ -525,24 +566,84 @@ func (c *RedisClient) HealthCheck() error {
 // ExpireStuckJobs finds jobs that have been in "pending", "processing", or "extracting" state
 // for longer than the specified timeout and marks them as failed.
 //
-// Algorithm:
-// 1. Scans all {namespace}:job:*:meta keys in batches
-// 2. For each job, reads created_at timestamp (supports both Unix seconds and RFC3339 formats)
-// 3. Compares elapsed time against timeout parameter
-// 4. If timeout exceeded AND job is in pending/processing/extracting state:
-//   - Logs a warning with job ID, elapsed time, timeout, and current status
-//   - Sets error message: "Job timeout after {timeout}"
-//   - Updates job status to "failed"
+// Algorithm (O(log N + M) using Sorted Set instead of SCAN):
+// 1. Queries the active_jobs ZSET for jobs with score < (now - timeout) — O(log N + M)
+// 2. For each candidate, verifies job is still in a pending/processing state
+// 3. If timeout exceeded: marks job as failed and removes from active_jobs ZSET
 //
-// 5. Skips jobs in completed/failed/cancelled state (they are already terminal)
+// Falls back to legacy SCAN if the ZSET is empty (e.g., after a restart before ZSET is populated).
 //
 // This is critical for preventing zombie jobs that hang forever due to worker crashes
 // or network failures. Typically called by a background maintenance goroutine.
 //
-// Returns error if Redis scan operation fails. Individual job update failures are logged
-// but do not stop scanning other jobs.
+// Returns error if Redis operation fails. Individual job update failures are logged
+// but do not stop processing other jobs.
 func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration) error {
-	// Scan for all job:meta keys
+	now := time.Now()
+	cutoffScore := fmt.Sprintf("%d", now.Unix()-int64(timeout.Seconds()))
+	activeKey := c.key(activeJobsSuffix)
+
+	// Query ZSET for jobs older than cutoff — O(log N + M)
+	jobIDs, err := c.client.ZRangeByScore(ctx, activeKey, &redis.ZRangeBy{
+		Min: "-inf",
+		Max: cutoffScore,
+	}).Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("failed to query active_jobs ZSET: %w", err)
+	}
+
+	// If ZSET has no entries (e.g., first run after restart), fall back to legacy SCAN
+	if len(jobIDs) == 0 {
+		total, _ := c.client.ZCard(ctx, activeKey).Result()
+		if total == 0 {
+			return c.expireStuckJobsViaScan(ctx, timeout)
+		}
+		return nil // No stuck jobs
+	}
+
+	for _, jobID := range jobIDs {
+		// Check current status
+		statusStr, err := c.client.HGet(ctx, c.key("job", jobID, "status"), "status").Result()
+		if err != nil && err != redis.Nil {
+			c.logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to read job status")
+			continue
+		}
+
+		if statusStr == "pending" || statusStr == "processing" || statusStr == "extracting" {
+			// Calculate elapsed from ZSET score (no extra Redis call needed)
+			scoreCmd := c.client.ZScore(ctx, activeKey, jobID)
+			elapsed := now.Sub(time.Unix(int64(scoreCmd.Val()), 0))
+
+			c.logger.Warn().
+				Str("job_id", jobID).
+				Dur("elapsed", elapsed).
+				Dur("timeout", timeout).
+				Str("status", statusStr).
+				Msg("Job exceeded timeout, marking as failed")
+
+			errorMsg := fmt.Sprintf("Job timeout after %v", timeout)
+			if err := c.SetJobError(ctx, jobID, errorMsg); err != nil {
+				c.logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to set job error")
+			}
+			if err := c.client.HSet(ctx, c.key("job", jobID, "status"),
+				"status", "failed",
+				"error", errorMsg).Err(); err != nil {
+				c.logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to update job status")
+			}
+			// Remove from ZSET — job is now terminal
+			c.client.ZRem(ctx, activeKey, jobID) //nolint:errcheck
+		} else {
+			// Job is in a terminal state but still in ZSET — clean up
+			c.client.ZRem(ctx, activeKey, jobID) //nolint:errcheck
+		}
+	}
+
+	return nil
+}
+
+// expireStuckJobsViaScan is the legacy fallback for ExpireStuckJobs when the active_jobs
+// ZSET is empty (typically on first run after a restart). Uses SCAN O(N) over all job:*:meta keys.
+func (c *RedisClient) expireStuckJobsViaScan(ctx context.Context, timeout time.Duration) error {
 	var cursor uint64
 	var count int64 = 100
 
@@ -555,14 +656,12 @@ func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration
 		now := time.Now()
 
 		for _, metaKey := range keys {
-			// Extract job ID from key (format: orchestrator:job:{id}:meta)
 			parts := strings.Split(metaKey, ":")
 			if len(parts) < 4 {
 				continue
 			}
 			jobID := parts[2]
 
-			// Get created_at timestamp
 			createdAtStr, err := c.client.HGet(ctx, metaKey, "created_at").Result()
 			if err != nil {
 				if err == redis.Nil {
@@ -572,10 +671,8 @@ func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration
 				continue
 			}
 
-			// Parse timestamp
 			createdAt, err := time.Parse(time.RFC3339, createdAtStr)
 			if err != nil {
-				// Try parsing as Unix timestamp (for backward compatibility)
 				unixSeconds := 0
 				fmt.Sscanf(createdAtStr, "%d", &unixSeconds)
 				if unixSeconds > 0 {
@@ -587,31 +684,25 @@ func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration
 				}
 			}
 
-			// Check if job has exceeded timeout
 			if now.Sub(createdAt) > timeout {
-				// Check current status
 				statusStr, err := c.client.HGet(ctx, c.key("job", jobID, "status"), "status").Result()
 				if err != nil && err != redis.Nil {
 					c.logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to read job status")
 					continue
 				}
 
-				// Only expire jobs in pending/processing/extracting state
 				if statusStr == "pending" || statusStr == "processing" || statusStr == "extracting" {
 					c.logger.Warn().
 						Str("job_id", jobID).
 						Dur("elapsed", now.Sub(createdAt)).
 						Dur("timeout", timeout).
 						Str("status", statusStr).
-						Msg("Job exceeded timeout, marking as failed")
+						Msg("Job exceeded timeout (via SCAN fallback), marking as failed")
 
-					// Mark job as failed
 					errorMsg := fmt.Sprintf("Job timeout after %v", timeout)
 					if err := c.SetJobError(ctx, jobID, errorMsg); err != nil {
 						c.logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to set job error")
 					}
-
-					// Update status
 					if err := c.client.HSet(ctx, c.key("job", jobID, "status"),
 						"status", "failed",
 						"error", errorMsg).Err(); err != nil {

@@ -147,14 +147,19 @@ func TestRedisClient_SetAndGetJobEmbeddings(t *testing.T) {
 
 	ctx := context.Background()
 	jobID := "test-job-123"
-	embeddings := []float32{0.1, 0.2, 0.3, 0.4, 0.5}
+	embeddings := map[string][]float32{
+		"chunk-1": {0.1, 0.2, 0.3},
+		"chunk-2": {0.4, 0.5, 0.6, 0.7},
+	}
 
 	err := client.SetJobEmbeddings(ctx, jobID, embeddings)
 	require.NoError(t, err)
 
 	retrieved, err := client.GetJobEmbeddings(ctx, jobID)
 	require.NoError(t, err)
-	assert.Equal(t, embeddings, retrieved)
+	assert.Equal(t, len(embeddings), len(retrieved))
+	assert.InDeltaSlice(t, embeddings["chunk-1"], retrieved["chunk-1"], 1e-6)
+	assert.InDeltaSlice(t, embeddings["chunk-2"], retrieved["chunk-2"], 1e-6)
 }
 
 func TestRedisClient_SetAndGetJobEntities(t *testing.T) {

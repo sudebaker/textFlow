@@ -178,6 +178,16 @@ class EmbeddingService:
                     logger.info("   Model converted to FP16 (half-precision)")
                     logger.info(f"   Expected VRAM reduction: ~50%")
 
+                # ⭐ Optional torch.compile for ~10-30% inference speedup
+                # First inference will be slower (compilation time)
+                if os.getenv("TORCH_COMPILE", "false").lower() in ("1", "true", "yes"):
+                    try:
+                        logger.info("Compiling model with torch.compile (mode=reduce-overhead)...")
+                        self.model = torch.compile(self.model, mode="reduce-overhead")
+                        logger.info("   torch.compile applied — first inference will be slower")
+                    except Exception as compile_err:
+                        logger.warning(f"torch.compile failed, continuing without it: {compile_err}")
+
                 # Optimize for inference
                 if hasattr(self.model, "eval"):
                     self.model.eval()

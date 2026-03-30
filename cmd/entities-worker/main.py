@@ -188,6 +188,20 @@ class GLiNERAdapter:
         self.logger = logger
         self.model: Any = None
         self.model_status: str = "not_loaded"
+        # Auto-detect GPU if ENTITIES_DEVICE not set
+        self._device = self._resolve_device()
+
+    @staticmethod
+    def _resolve_device() -> str:
+        """Auto-detect GPU availability. Fallback to CPU if not available."""
+        device_param = os.getenv("ENTITIES_DEVICE", "").strip().lower()
+        if device_param:
+            return device_param
+        try:
+            import torch
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            return "cpu"
 
     def _resolve_entity_types(self, options: Optional[ExtractOptions]) -> List[str]:
         if options and options.entity_types:
@@ -251,6 +265,17 @@ class GLiNERAdapter:
                     "GLiNER model loaded from local cache",
                     extra={"model_path": str(model_path)},
                 )
+                # Move model to configured device
+                if self._device != "cpu":
+                    self.logger.info(f"Moving GLiNER model to device: {self._device}")
+                    self.model = self.model.to(self._device)
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            mem_gb = torch.cuda.memory_allocated() / 1e9
+                            self.logger.info(f"GPU memory allocated: {mem_gb:.2f} GB")
+                    except Exception:
+                        pass
                 return
             except Exception as e:
                 self.logger.warning(f"Failed to load from local path: {e}")

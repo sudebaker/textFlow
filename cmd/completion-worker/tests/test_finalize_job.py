@@ -176,3 +176,56 @@ def test_deduplicate_entities_fallback_without_entity_id():
     eid = list(result.keys())[0]
     assert len(eid) == 12
     assert result[eid]["confidence"] == 0.9  # highest wins
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy deduplication tests
+# ---------------------------------------------------------------------------
+
+def test_deduplicate_entities_fuzzy_identical_text():
+    """Entities with identical text and same label must merge into one."""
+    worker = _make_worker()
+    entities = [
+        {"label": "PER", "text": "María García", "confidence": 0.9, "entity_id": "aaa000000001"},
+        {"label": "PER", "text": "María García", "confidence": 0.7, "entity_id": "aaa000000002"},
+    ]
+    result = worker.deduplicate_entities(entities)
+    assert len(result) == 1, "identical text → must merge"
+    eid = list(result.keys())[0]
+    assert result[eid]["confidence"] == 0.9  # highest wins
+
+
+def test_deduplicate_entities_fuzzy_similar_text():
+    """Entities with very similar text (>= threshold) and same label must merge."""
+    worker = _make_worker()
+    # "Departamento de Educacion" vs "Departamento de Educación" — differ only in accent
+    entities = [
+        {"label": "ORG", "text": "Departamento de Educacion", "confidence": 0.8, "entity_id": "bbb000000001"},
+        {"label": "ORG", "text": "Departamento de Educación", "confidence": 0.9, "entity_id": "bbb000000002"},
+    ]
+    result = worker.deduplicate_entities(entities)
+    assert len(result) == 1, "accent-only difference → must merge after normalization"
+    eid = list(result.keys())[0]
+    assert result[eid]["confidence"] == 0.9  # highest wins
+
+
+def test_deduplicate_entities_fuzzy_different_text():
+    """Entities with clearly different text must remain separate."""
+    worker = _make_worker()
+    entities = [
+        {"label": "PER", "text": "María García", "confidence": 0.9, "entity_id": "ccc000000001"},
+        {"label": "PER", "text": "Juan López",   "confidence": 0.8, "entity_id": "ccc000000002"},
+    ]
+    result = worker.deduplicate_entities(entities)
+    assert len(result) == 2, "clearly different texts → must stay separate"
+
+
+def test_deduplicate_entities_fuzzy_different_label_no_merge():
+    """Same text but different label must NOT merge."""
+    worker = _make_worker()
+    entities = [
+        {"label": "PER", "text": "Aragón", "confidence": 0.9, "entity_id": "ddd000000001"},
+        {"label": "LOC", "text": "Aragón", "confidence": 0.8, "entity_id": "ddd000000002"},
+    ]
+    result = worker.deduplicate_entities(entities)
+    assert len(result) == 2, "same text but different label → must NOT merge"

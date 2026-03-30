@@ -90,6 +90,16 @@ func New(cfg *config.Config) (*RabbitMQBroker, error) {
 			"Failed to declare delayed exchange — plugin may not be enabled; " +
 				"workers will fall back to blocking retry",
 		)
+		// AMQP closes the channel on a 406 PRECONDITION_FAILED error.
+		// Reopen it so subsequent declarations (queues, DLX bindings) can proceed.
+		newCh, chErr := conn.Channel()
+		if chErr != nil {
+			broker.Close()
+			return nil, fmt.Errorf("failed to reopen channel after delayed exchange error: %w", chErr)
+		}
+		broker.mu.Lock()
+		broker.channel = newCh
+		broker.mu.Unlock()
 	}
 
 	if err := broker.declareQueues(); err != nil {

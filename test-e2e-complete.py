@@ -258,10 +258,10 @@ def download_results(job_id: str) -> Optional[Dict[str, Any]]:
         if "entities" in results:
             entities = results["entities"]
 
-            # ✅ ASSERTION 2: Entities must be a list with at least 1 entity
-            if not isinstance(entities, list):
+            # ✅ ASSERTION 2: Entities must be a dict with at least 1 entity
+            if not isinstance(entities, dict):
                 print(
-                    f"❌ ASSERTION FAILED: Entities is not a list, got {type(entities)}"
+                    f"❌ ASSERTION FAILED: Entities is not a dict, got {type(entities)}"
                 )
                 return None
             if len(entities) == 0:
@@ -269,13 +269,13 @@ def download_results(job_id: str) -> Optional[Dict[str, Any]]:
                 return None
             print(f"✅ Entities assertion passed: {len(entities)} entities found")
 
-            # ✅ ASSERTION 3: Each entity must have required fields
-            required_entity_fields = {"text", "label", "score", "start", "end"}
-            for i, entity in enumerate(entities):
+            # ✅ ASSERTION 3: Each entity value must have required fields
+            required_entity_fields = {"text", "label", "confidence"}
+            for entity_id, entity in entities.items():
                 missing_fields = required_entity_fields - set(entity.keys())
                 if missing_fields:
                     print(
-                        f"❌ ASSERTION FAILED: Entity {i} missing fields: {missing_fields}"
+                        f"❌ ASSERTION FAILED: Entity '{entity_id}' missing fields: {missing_fields}"
                     )
                     return None
             print(
@@ -286,7 +286,7 @@ def download_results(job_id: str) -> Optional[Dict[str, Any]]:
 
             # Count by type
             entity_types = {}
-            for entity in entities:
+            for entity_id, entity in entities.items():
                 entity_type = entity.get("label", "unknown")
                 entity_types[entity_type] = entity_types.get(entity_type, 0) + 1
 
@@ -295,56 +295,16 @@ def download_results(job_id: str) -> Optional[Dict[str, Any]]:
 
             # Show sample entities
             print(f"\n   Sample entities:")
-            for entity in entities[:5]:
+            for entity_id, entity in list(entities.items())[:5]:
                 print(
-                    f"      • {entity.get('text')} ({entity.get('label')}) - confidence: {entity.get('confidence', 0):.2f}"
+                    f"      • [{entity_id}] {entity.get('text')} ({entity.get('label')}) - confidence: {entity.get('confidence', 0):.2f}"
                 )
 
-        # Display embeddings with assertions
-        if "embeddings" in results:
-            embeddings = results["embeddings"]
-
-            # ✅ ASSERTION 4: Embeddings must be present
-            if embeddings is None:
-                print(f"❌ ASSERTION FAILED: Embeddings are None")
-                return None
-
-            # Check if embeddings is in expected format (dict with model, dimension, and embedding data)
-            if isinstance(embeddings, dict):
-                dimension = embeddings.get("dimension", 0)
-                model = embeddings.get("model", "unknown")
-
-                # ✅ ASSERTION 5: Dimension must be 1024 for BAAI/bge-m3
-                if dimension != 1024:
-                    print(
-                        f"❌ ASSERTION FAILED: Embedding dimension is {dimension}, expected 1024"
-                    )
-                    return None
-                print(f"✅ Embedding dimension assertion passed: {dimension}")
-
-                # ✅ ASSERTION 6: Must have embedding data (count chunks with embeddings)
-                embedding_count = 0
-                for key in embeddings:
-                    if key not in ["model", "dimension"] and isinstance(
-                        embeddings[key], (list, dict)
-                    ):
-                        embedding_count += 1
-
-                if embedding_count == 0:
-                    print(f"❌ ASSERTION FAILED: No embedding data found")
-                    return None
-                print(
-                    f"✅ Embedding data assertion passed: Found embeddings for {embedding_count} chunks"
-                )
-            elif isinstance(embeddings, list):
-                print(f"🔢 Embeddings: {len(embeddings)} dimensions")
-                print(f"   Sample: {embeddings[:5]}...")
-
-        # Display chunks with assertion
+        # Verify per-chunk embeddings and inferences
         if "chunks" in results:
             chunks = results["chunks"]
 
-            # ✅ ASSERTION 7: Chunks must be a list with at least 1 chunk
+            # ✅ ASSERTION 4: Chunks must be a list with at least 1 chunk
             if not isinstance(chunks, list):
                 print(f"❌ ASSERTION FAILED: Chunks is not a list, got {type(chunks)}")
                 return None
@@ -353,10 +313,40 @@ def download_results(job_id: str) -> Optional[Dict[str, Any]]:
                 return None
             print(f"✅ Chunks assertion passed: {len(chunks)} chunks found")
 
-        # Display metadata
-        if "metadata" in results:
-            metadata = results["metadata"]
-            print(f"\n📄 Metadata:")
+            # ✅ ASSERTION 5: Embeddings must be present inside chunks
+            chunks_with_embeddings = [c for c in chunks if c.get("embeddings")]
+            if len(chunks_with_embeddings) == 0:
+                print(f"❌ ASSERTION FAILED: No chunk has embeddings")
+                return None
+            # ✅ ASSERTION 6: Embedding dimension must be 1024 for BAAI/bge-m3
+            sample_emb = chunks_with_embeddings[0]["embeddings"]
+            if len(sample_emb) != 1024:
+                print(
+                    f"❌ ASSERTION FAILED: Embedding dimension is {len(sample_emb)}, expected 1024"
+                )
+                return None
+            print(
+                f"✅ Embedding assertions passed: {len(chunks_with_embeddings)} chunks have 1024-dim embeddings"
+            )
+
+            # ✅ ASSERTION 7: entity_ids field must be present in chunks (can be empty list)
+            for i, chunk in enumerate(chunks):
+                if "entity_ids" not in chunk:
+                    print(
+                        f"❌ ASSERTION FAILED: Chunk {i} missing 'entity_ids' field"
+                    )
+                    return None
+            print(f"✅ chunk.entity_ids assertion passed: present in all chunks")
+
+            # Report inferences (optional — only present if inferences feature enabled)
+            inference_count = sum(len(c.get("inferences", [])) for c in chunks)
+            if inference_count > 0:
+                print(f"✅ Inferences found: {inference_count} across {len(chunks)} chunks")
+
+        # Display document metadata
+        if "document_metadata" in results:
+            metadata = results["document_metadata"]
+            print(f"\n📄 Document Metadata:")
             for key, value in metadata.items():
                 if isinstance(value, (str, int, float)):
                     print(f"      {key}: {value}")
@@ -446,7 +436,7 @@ def main():
     print_section("✅ Test Completed Successfully", "=")
     print(f"Job ID: {job_id}")
     print(f"Status: {results.get('status')}")
-    print(f"Entities extracted: {len(results.get('entities', []))}")
+    print(f"Entities extracted: {len(results.get('entities', {}))}")
     print(f"Text length: {len(results.get('text', ''))} characters")
     print(f"\n🎉 End-to-end test passed!")
 

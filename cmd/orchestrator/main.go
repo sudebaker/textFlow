@@ -581,8 +581,8 @@ func getJobHandler(c *gin.Context) {
 		} else if results == nil {
 			logger.Warn().Msgf("GetJobResults returned nil for job: %s", jobID)
 		} else {
-			logger.Info().Msgf("Got results: job_id=%s, chunks=%d, embeddings=%d",
-				results.JobID, len(results.Chunks), len(results.Embeddings))
+			logger.Info().Msgf("Got results: job_id=%s, chunks=%d",
+				results.JobID, len(results.Chunks))
 		}
 	}
 

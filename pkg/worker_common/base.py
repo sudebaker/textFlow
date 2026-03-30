@@ -480,21 +480,25 @@ class BaseWorker:
         self.logger.info(f"{self.worker_name} shutdown complete")
 
     def _get_retry_count(self, properties) -> int:
-        """Extract retry count from RabbitMQ x-death headers.
+        """Extract retry count from message headers.
 
-        RabbitMQ automatically adds an x-death header when a message is
-        dead-lettered. Each entry has a 'count' field indicating how many
-        times the message was dead-lettered from that queue/exchange.
+        First checks the custom ``x-retry-count`` header set by the delayed
+        exchange retry path.  Falls back to summing ``x-death`` entries for
+        backwards compatibility with the old DLX-based approach.
 
         Args:
             properties: RabbitMQ message properties (pika.BasicProperties)
 
         Returns:
-            Total retry count (sum of all x-death 'count' values), or 0
-            if no x-death header exists.
+            Retry count, or 0 if no retry headers are present.
         """
-        if properties.headers and "x-death" in properties.headers:
-            return sum(d.get("count", 0) for d in properties.headers["x-death"])
+        if properties.headers:
+            # Preferred: custom header written by delayed-exchange retry path
+            if "x-retry-count" in properties.headers:
+                return int(properties.headers["x-retry-count"])
+            # Legacy: x-death headers from DLX-based retry
+            if "x-death" in properties.headers:
+                return sum(d.get("count", 0) for d in properties.headers["x-death"])
         return 0
 
     def _should_retry(self, properties) -> bool:
@@ -559,7 +563,7 @@ class BaseWorker:
             )
 
             # Auto-retry with exponential backoff
-            self._handle_transient_error(job_id, ch, method, properties, e)
+            self._handle_transient_error(job_id, ch, method, properties, e, body)
 
         except Exception as e:
             # Permanent error — dead-letter the job
@@ -595,26 +599,39 @@ class BaseWorker:
             self._on_message_processed()
 
     def _handle_transient_error(
-        self, job_id: str, ch, method, properties, error: Exception
+        self,
+        job_id: str,
+        ch,
+        method,
+        properties,
+        error: Exception,
+        body: bytes = b"",
     ) -> None:
-        """
-        Handle transient error with DLQ pattern using x-death headers.
+        """Handle transient error with delayed-exchange retry (non-blocking).
 
-        Uses RabbitMQ x-death headers to determine how many times this message
-        has been dead-lettered. If under max_retries, requeues for retry.
-        If at/over max_retries, rejects to DLQ (requeue=False).
+        Publishes the original message to ``document_processor_delayed`` with
+        an ``x-delay`` header so RabbitMQ delivers it back to the original
+        queue after the backoff period, without blocking the consumer thread.
+
+        If the ``DELAYED_EXCHANGE_ENABLED`` env var is set to ``"false"`` (or
+        the publish to the delayed exchange fails), falls back to the legacy
+        ``basic_nack(requeue=True)`` with ``time.sleep()`` blocking behaviour.
+
+        When max retries are exceeded, the message is dead-lettered by calling
+        ``basic_nack(requeue=False)``.
 
         Args:
-            job_id: Job ID for tracking retries
-            ch: RabbitMQ channel
-            method: Delivery method
-            properties: RabbitMQ message properties (contains x-death headers)
-            error: The transient exception that occurred
+            job_id: Job ID for tracking retries.
+            ch: RabbitMQ channel.
+            method: Delivery method (routing_key, delivery_tag).
+            properties: RabbitMQ message properties.
+            error: The transient exception that occurred.
+            body: Raw message body bytes (required for re-publish).
         """
         retry_count = self._get_retry_count(properties)
 
         if not self._should_retry(properties):
-            # Max retries exceeded - dead-letter the job
+            # Max retries exceeded — dead-letter the job
             self.logger.warning(
                 f"Message exceeded max retries ({self.max_retries}), sending to DLQ. "
                 f"Job: {job_id}, Error: {error}"
@@ -639,24 +656,89 @@ class BaseWorker:
 
             # Reject without requeue → goes to DLQ via DLX
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        else:
-            # Retry with exponential backoff
-            next_attempt = retry_count + 1
-            backoff_seconds = min(2**next_attempt, 60)  # Cap at 60 seconds
+            return
 
-            self.logger.info(
-                f"Job {job_id} will retry in {backoff_seconds}s "
-                f"(attempt {next_attempt}/{self.max_retries})"
+        next_attempt = retry_count + 1
+        backoff_ms = int(min(2**next_attempt, 60) * 1000)  # milliseconds for x-delay
+
+        # Check whether delayed exchange is enabled (default: true)
+        delayed_enabled = os.environ.get("DELAYED_EXCHANGE_ENABLED", "true").lower() != "false"
+
+        if delayed_enabled:
+            self._retry_via_delayed_exchange(
+                job_id, ch, method, properties, error, body, next_attempt, backoff_ms
+            )
+        else:
+            self._retry_via_sleep(job_id, ch, method, properties, error, next_attempt, backoff_ms // 1000)
+
+    def _retry_via_delayed_exchange(
+        self,
+        job_id: str,
+        ch,
+        method,
+        properties,
+        error: Exception,
+        body: bytes,
+        next_attempt: int,
+        backoff_ms: int,
+    ) -> None:
+        """Publish to delayed exchange; falls back to sleep+nack on failure."""
+        original_queue = method.routing_key
+
+        self.logger.info(
+            f"Job {job_id} scheduled for retry in {backoff_ms}ms via delayed exchange "
+            f"(attempt {next_attempt}/{self.max_retries})"
+        )
+
+        # Build new headers: propagate existing headers, set retry tracking
+        headers = dict(properties.headers or {})
+        headers["x-retry-count"] = next_attempt
+        headers["x-delay"] = backoff_ms
+        # Remove x-death to avoid confusion (we track retries via x-retry-count)
+        headers.pop("x-death", None)
+
+        try:
+            ch.basic_publish(
+                exchange="document_processor_delayed",
+                routing_key=original_queue,
+                body=body,
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # persistent
+                    headers=headers,
+                    content_type=properties.content_type,
+                ),
+            )
+            # ACK the original message — we have re-published to the delayed queue
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        except Exception as pub_err:
+            self.logger.error(
+                f"Failed to publish to delayed exchange: {pub_err}; "
+                f"falling back to blocking requeue"
+            )
+            backoff_seconds = backoff_ms // 1000
+            self._retry_via_sleep(
+                job_id, ch, method, properties, pub_err, next_attempt, backoff_seconds
             )
 
-            # Sleep before requeuing
-            # NOTE: This blocks the consumer thread for up to 60 seconds per retry.
-            # For high-throughput scenarios, consider using a separate delayed queue
-            # or dead-letter exchange with TTL instead of blocking.
-            time.sleep(backoff_seconds)
-
-            # Reject and requeue (message goes back to queue)
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+    def _retry_via_sleep(
+        self,
+        job_id: str,
+        ch,
+        method,
+        properties,
+        error: Exception,
+        next_attempt: int,
+        backoff_seconds: int,
+    ) -> None:
+        """Legacy blocking retry: sleep then basic_nack(requeue=True)."""
+        self.logger.info(
+            f"Job {job_id} will retry in {backoff_seconds}s "
+            f"(attempt {next_attempt}/{self.max_retries}) [blocking fallback]"
+        )
+        # NOTE: This blocks the consumer thread for up to 60 seconds per retry.
+        # Use DELAYED_EXCHANGE_ENABLED=true (default) to avoid this.
+        time.sleep(backoff_seconds)
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def _extract_job_id(self, body: bytes) -> str | None:
         """Extract job_id from message body JSON without raising.

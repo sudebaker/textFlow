@@ -14,12 +14,17 @@ The worker is designed for air-gapped deployments with offline models and no
 internet access at runtime. It uses RabbitMQ for async job processing with
 automatic retries and graceful error handling.
 
+This worker uses asyncio + aio_pika + aiohttp to enable concurrent processing
+of multiple Docling jobs simultaneously (up to EXTRACTION_CONCURRENCY at once),
+eliminating the serial bottleneck of blocking I/O.
+
 Environment variables:
     REDIS_URL: Redis connection URL (default: redis://localhost:6379)
     RABBITMQ_URL: RabbitMQ connection URL (default: amqp://localhost:5672/)
     DOCLING_URL: Docling API endpoint (default: http://docling:5001)
     QUEUE_NAME: Input queue for extraction jobs (default: extract_text)
-    PREFETCH_COUNT: Max jobs to prefetch from queue (default: 3)
+    EXTRACTION_CONCURRENCY: Max concurrent Docling jobs (default: 5)
+    PREFETCH_COUNT: Backwards-compat alias for EXTRACTION_CONCURRENCY (default: 5)
     METRICS_PORT: Prometheus metrics port (default: 8004)
     CHUNK_SIZE_TOKENS: Tokens per chunk (default: 512)
     CHUNK_OVERLAP_TOKENS: Overlap between chunks (default: 50)
@@ -29,42 +34,39 @@ Environment variables:
     DOCLING_CONVERSION_TIMEOUT: Max seconds for Docling conversion (default: 1800)
 """
 
-import os
-import signal
-import sys
-import json
+import asyncio
 import base64
 import hashlib
-import subprocess
-import tempfile
+import json
 import logging
+import os
+import signal
+import subprocess
+import sys
+import tempfile
 import time
-import pika
-import redis
-import requests
-import magic
-import langdetect
-import textstat
-from typing import Dict, Optional, List, Any
-from urllib.parse import urlparse
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+import aio_pika
+import aio_pika.abc
+import aiohttp
+import langdetect
+import magic
+import redis
+import textstat
 import tiktoken
 from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
-from pkg.worker_common.rabbitmq import (
-    parse_rabbitmq_url,
-    connect_rabbitmq,
-    declare_queue,
-)
+from pkg.worker_common.rabbitmq_async import declare_queue_async
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-_stopping = False
 
 # Prometheus metrics
 jobs_total = Counter("extraction_worker_jobs_total", "Total jobs processed", ["status"])
@@ -76,7 +78,9 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
 DOCLING_URL = os.getenv("DOCLING_URL", "http://docling:5001")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "extract_text")
-PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "3"))
+# EXTRACTION_CONCURRENCY replaces PREFETCH_COUNT for the extraction worker.
+# Falls back to PREFETCH_COUNT for backwards compatibility with docker-compose.yml.
+PREFETCH_COUNT = int(os.getenv("EXTRACTION_CONCURRENCY", os.getenv("PREFETCH_COUNT", "5")))
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8004"))
 
 CHUNK_SIZE_TOKENS = int(os.getenv("CHUNK_SIZE_TOKENS", "512"))
@@ -274,12 +278,12 @@ def chunk_text(
         while start < len(tokens):
             end = min(start + chunk_size, len(tokens))
             chunk_tokens = tokens[start:end]
-            chunk_text = tokenizer.decode(chunk_tokens)
+            chunk_text_str = tokenizer.decode(chunk_tokens)
 
             chunks.append(
                 {
                     "chunk_id": f"chunk_{chunk_num:03d}",
-                    "text": chunk_text,
+                    "text": chunk_text_str,
                     "start_offset": start,
                     "end_offset": end,
                     "token_count": len(chunk_tokens),
@@ -304,12 +308,12 @@ def chunk_text(
         while start < char_count:
             end = min(start + effective_chunk_size, char_count)
             chunk_chars = chars[start:end]
-            chunk_text = "".join(chunk_chars)
+            chunk_text_str = "".join(chunk_chars)
 
             chunks.append(
                 {
                     "chunk_id": f"chunk_{chunk_num:03d}",
-                    "text": chunk_text,
+                    "text": chunk_text_str,
                     "start_offset": start,
                     "end_offset": end,
                     "token_count": (end - start) // chars_per_token,
@@ -507,7 +511,7 @@ class SourceClassifier:
 
 
 class ExtractionWorker:
-    """RabbitMQ consumer for document extraction and metadata pipeline.
+    """Async RabbitMQ consumer for document extraction and metadata pipeline.
 
     Processes documents from the extraction queue by:
     1. Downloading documents (file path, base64, or URL)
@@ -516,20 +520,24 @@ class ExtractionWorker:
     4. Analyzing text for language, readability, and patterns
     5. Chunking text into overlapping token-based segments
     6. Classifying document source type (notariado, catastro, etc.)
-    7. Storing results to Redis
+    7. Storing results to Redis (sync — fast, acceptable brief blocking)
     8. Publishing job to downstream queues (embeddings, entities, metadata)
 
     This is the first step in the document processing pipeline. Results are stored
     in Redis under keys like orchestrator:job:{job_id}:{text,chunks,metadata:document}.
 
+    Concurrent processing is enabled via asyncio.create_task(): up to PREFETCH_COUNT
+    Docling jobs can run simultaneously, with each independently polling Docling
+    using non-blocking aiohttp calls.
+
     Attributes:
-        redis_client: Redis connection for result storage.
+        redis_client: Sync Redis connection (fast I/O, no need for async).
         event_bus: EventBus instance for job progress updates.
         temp_dir: Temporary directory for storing intermediate files.
     """
 
     def __init__(self):
-        """Initialize extraction worker with Redis and RabbitMQ clients.
+        """Initialize extraction worker with Redis client.
 
         Sets up Redis connection for result storage, initializes event bus for
         job progress updates, and creates temporary directory for intermediate
@@ -551,12 +559,16 @@ class ExtractionWorker:
         except Exception as e:
             logger.debug(f"Ignored error: {e}")
 
-    def _docling_convert(self, document_bytes: bytes, filename: str) -> Dict[str, Any]:
+    async def _docling_convert_async(self, document_bytes: bytes, filename: str) -> Dict[str, Any]:
         """Submit document to Docling async endpoint and poll until completion.
 
-        Implements async conversion with long-polling to avoid uvicorn's per-request
-        timeout (~120s), which is insufficient for large PDFs on CPU. Uses exponential
-        backoff (5-30s) between polls.
+        Uses aiohttp for non-blocking HTTP calls, allowing other coroutines
+        (other documents) to run while waiting for Docling polls.
+
+        Implements async long-polling: the ?wait= parameter keeps the server
+        connection open for up to N seconds before returning, reducing poll
+        frequency. A 2s sleep between polls guards against immediate returns
+        (e.g., task still queued on the Docling side).
 
         Args:
             document_bytes: Raw binary content of document.
@@ -571,70 +583,78 @@ class ExtractionWorker:
         Raises:
             TimeoutError: If conversion exceeds DOCLING_CONVERSION_TIMEOUT (1800s default).
             RuntimeError: If Docling returns failure/error status.
-            requests.RequestException: On HTTP errors or connection failures.
-
-        Note:
-            Uses Docling's ?wait= parameter for server-side long-polling to reduce
-            API call frequency. Minimum 5s sleep between polls to prevent busy-waiting.
+            aiohttp.ClientError: On HTTP errors or connection failures.
         """
-        # Submit conversion job asynchronously
-        submit_resp = requests.post(
-            f"{DOCLING_URL}/v1/convert/file/async",
-            files={"files": (filename, document_bytes)},
-            data={
-                "do_ocr": str(DOCLING_DO_OCR).lower(),
-                "ocr_engine": DOCLING_OCR_ENGINE,
-                # Use placeholder instead of embedded base64 to keep output size
-                # manageable. Embedded images inflate markdown to tens of MB,
-                # producing thousands of unnecessary chunks downstream.
-                "image_export_mode": "placeholder",
-            },
-            timeout=30,
-        )
-        submit_resp.raise_for_status()
-        task_id = submit_resp.json()["task_id"]
-        logger.info(f"Docling async task submitted: {task_id}")
-
-        # Poll until task_status is 'success' or 'failure'.
-        # Use docling's long-poll ?wait= param so the server holds the connection
-        # up to N seconds before returning, reducing polling frequency.
-        # A minimum sleep of 5 s between iterations guards against tight-looping
-        # if docling returns immediately (e.g. task still queued).
-        poll_deadline = time.time() + DOCLING_CONVERSION_TIMEOUT
-        while True:
-            remaining = poll_deadline - time.time()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"Docling conversion timed out after {DOCLING_CONVERSION_TIMEOUT}s"
-                    f" (task_id={task_id})"
-                )
-            wait_secs = min(30, remaining)
-            status_resp = requests.get(
-                f"{DOCLING_URL}/v1/status/poll/{task_id}",
-                params={"wait": wait_secs},
-                timeout=wait_secs + 10,
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Submit conversion job
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "files",
+                document_bytes,
+                filename=filename,
+                content_type="application/octet-stream",
             )
-            status_resp.raise_for_status()
-            status_data = status_resp.json()
-            task_status = status_data.get("task_status", "")
-            logger.info(f"Docling task {task_id} status: {task_status}")
+            form_data.add_field("do_ocr", str(DOCLING_DO_OCR).lower())
+            form_data.add_field("ocr_engine", DOCLING_OCR_ENGINE)
+            # Use placeholder instead of embedded base64 to keep output size
+            # manageable. Embedded images inflate markdown to tens of MB,
+            # producing thousands of unnecessary chunks downstream.
+            form_data.add_field("image_export_mode", "placeholder")
 
-            if task_status == "success":
-                break
-            if task_status in ("failure", "error"):
-                raise RuntimeError(f"Docling conversion failed (task_id={task_id}): {status_data}")
-            # Still pending/processing — sleep before next poll to avoid spinning
-            time.sleep(5)
+            async with session.post(
+                f"{DOCLING_URL}/v1/convert/file/async",
+                data=form_data,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                resp.raise_for_status()
+                task_id = (await resp.json())["task_id"]
 
-        # Fetch the result
-        result_resp = requests.get(
-            f"{DOCLING_URL}/v1/result/{task_id}",
-            timeout=30,
-        )
-        result_resp.raise_for_status()
-        return result_resp.json()
+            logger.info(f"Docling async task submitted: {task_id}")
 
-    def extract_text_from_base64(
+            # Step 2: Poll until task_status is 'success' or 'failure'.
+            # Use docling's long-poll ?wait= param so the server holds the
+            # connection up to N seconds before returning, reducing polling
+            # frequency. A 2s sleep between iterations guards against
+            # tight-looping if docling returns immediately (e.g. still queued).
+            poll_deadline = asyncio.get_event_loop().time() + DOCLING_CONVERSION_TIMEOUT
+            while True:
+                remaining = poll_deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Docling conversion timed out after {DOCLING_CONVERSION_TIMEOUT}s"
+                        f" (task_id={task_id})"
+                    )
+
+                wait_secs = min(30, remaining)
+                async with session.get(
+                    f"{DOCLING_URL}/v1/status/poll/{task_id}",
+                    params={"wait": int(wait_secs)},
+                    timeout=aiohttp.ClientTimeout(total=wait_secs + 10),
+                ) as resp:
+                    resp.raise_for_status()
+                    status_data = await resp.json()
+
+                task_status = status_data.get("task_status", "")
+                logger.info(f"Docling task {task_id} status: {task_status}")
+
+                if task_status == "success":
+                    break
+                if task_status in ("failure", "error"):
+                    raise RuntimeError(
+                        f"Docling conversion failed (task_id={task_id}): {status_data}"
+                    )
+                # Still pending/processing — yield control to other coroutines
+                await asyncio.sleep(2)
+
+            # Step 3: Fetch the result
+            async with session.get(
+                f"{DOCLING_URL}/v1/result/{task_id}",
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+
+    async def extract_text_from_base64(
         self, document_base64: str, filename: str = "document"
     ) -> Dict[str, Any]:
         """Extract text from base64-encoded document.
@@ -666,7 +686,7 @@ class ExtractionWorker:
                     filename = filename + ".pdf"
                     logger.info(f"Adjusted filename to: {filename}")
 
-            result = self._docling_convert(document_bytes, filename)
+            result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
 
@@ -684,7 +704,9 @@ class ExtractionWorker:
             logger.error(f"Failed to extract text from base64: {e}")
             raise
 
-    def extract_text_from_file(self, file_path: str, filename: str = "document") -> Dict[str, Any]:
+    async def extract_text_from_file(
+        self, file_path: str, filename: str = "document"
+    ) -> Dict[str, Any]:
         """Extract text from document file on disk.
 
         Reads file from disk and passes to Docling for text extraction.
@@ -704,11 +726,12 @@ class ExtractionWorker:
             RuntimeError: If Docling fails.
         """
         try:
+            # File I/O is fast (local disk) — acceptable brief sync call
             with open(file_path, "rb") as f:
                 document_bytes = f.read()
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
 
-            result = self._docling_convert(document_bytes, filename)
+            result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
 
@@ -726,12 +749,12 @@ class ExtractionWorker:
             logger.error(f"Failed to extract text from file: {e}")
             raise
 
-    def extract_text_from_url(self, document_url: str) -> Dict[str, Any]:
+    async def extract_text_from_url(self, document_url: str) -> Dict[str, Any]:
         """Extract text from document at URL.
 
         Handles internal docling: URLs with path traversal protection, and
         remote HTTP(S) URLs. Internal URLs are resolved to local paths and
-        read from disk; external URLs are fetched via HTTP.
+        read from disk; external URLs are fetched via aiohttp (non-blocking).
 
         Args:
             document_url: URL to document (docling:// or http(s)://).
@@ -743,7 +766,7 @@ class ExtractionWorker:
 
         Raises:
             ValueError: If path traversal attempted or URL is invalid.
-            requests.RequestException: If HTTP fetch fails.
+            aiohttp.ClientError: If async HTTP fetch fails.
             TimeoutError: If Docling conversion times out.
             RuntimeError: If Docling fails.
 
@@ -773,20 +796,26 @@ class ExtractionWorker:
                 except ValueError:
                     raise ValueError(f"Path traversal attempt detected: {local_path}")
 
+                # Local file read — fast, sync is fine
                 with open(resolved_path, "rb") as f:
                     document_bytes = f.read()
 
                 filename = resolved_path.name
             else:
-                response = requests.get(document_url, timeout=30)
-                response.raise_for_status()
-                document_bytes = response.content
+                # External URL — fetch with aiohttp (non-blocking)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        document_url,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        resp.raise_for_status()
+                        document_bytes = await resp.read()
 
                 filename = document_url.split("/")[-1]
                 if "." not in filename:
                     filename = "document.pdf"
 
-            result = self._docling_convert(document_bytes, filename)
+            result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
 
@@ -804,18 +833,22 @@ class ExtractionWorker:
             logger.error(f"Failed to extract text from URL: {e}")
             raise
 
-    def process_message(self, ch, method, properties, body):
-        """Process a single extraction job from RabbitMQ queue.
+    async def _process_message_async(
+        self,
+        message: aio_pika.abc.AbstractIncomingMessage,
+        channel: aio_pika.abc.AbstractChannel,
+    ) -> None:
+        """Process a single extraction job message asynchronously.
 
         Main message handler that orchestrates the full extraction pipeline:
         1. Parse job message (JSON with document_path, document_base64, or document_url)
-        2. Extract text via Docling (async polling)
+        2. Extract text via Docling (async polling — non-blocking)
         3. Extract document metadata (author, creation date, page count, etc.)
         4. Analyze text (language, readability, patterns)
         5. Chunk text into overlapping token-based segments
         6. Classify document source type
-        7. Store all results to Redis
-        8. Route to downstream queues (embeddings, entities, metadata)
+        7. Store all results to Redis (sync — fast I/O)
+        8. Route to downstream queues (embeddings, entities, metadata) via aio_pika
         9. Publish job progress update
 
         Input message format (JSON):
@@ -855,266 +888,265 @@ class ExtractionWorker:
             }
 
         Error handling:
-            - Docling timeouts: Raises TimeoutError, job marked as failed
-            - Empty text: Raises ValueError, includes MIME type mismatch details
+            - Docling timeouts: TimeoutError, job marked as failed, message nacked
+            - Empty text: ValueError, MIME type mismatch details logged
             - Source classification: Logged as warning, doesn't fail job
             - exiftool missing: Gracefully degraded, metadata partially filled
             - Any exception: Job status set to "failed", error stored to Redis,
               published to failed queue, message nacked (not requeued)
 
+        The aio_pika message.process() context manager handles ack/nack:
+            - Normal exit: message is acked
+            - Exception raised: message is nacked with requeue=False
+
         Metrics recorded:
             - extraction_worker_jobs_total (counter): success/error labels
             - extraction_worker_job_duration_seconds (histogram): job duration
-
-        Temporary files:
-            - Base64 documents: Created in temp directory, cleaned up in finally
-            - File paths: Used directly, not copied
-
-        Raises:
-            Never raises exceptions. All errors are caught, logged, and converted
-            to failed job status in Redis. This allows RabbitMQ to move on to
-            next job without requeuing.
         """
         job_id = None
         temp_file_path = None
         start_time = time.time()
 
-        try:
-            message = json.loads(body)
-            job_id = message.get("job_id")
-
-            logger.info(f"Processing text extraction for job: {job_id}")
-
-            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "extracting")
-
-            if message.get("document_path"):
-                result = self.extract_text_from_file(
-                    message["document_path"], os.path.basename(message["document_path"])
-                )
-                text = result["text"]
-            elif message.get("document_base64"):
-                result = self.extract_text_from_base64(
-                    message["document_base64"],
-                    filename=message.get("filename", "document"),
-                )
-                text = result["text"]
-            elif message.get("document_url"):
-                result = self.extract_text_from_url(message["document_url"])
-                text = result["text"]
-            else:
-                raise ValueError("No document provided")
-
-            # For metadata extraction, use original file if available
-            if message.get("document_path"):
-                temp_file_path = message["document_path"]
-            else:
-                # Derive file extension from message filename or mime_type
-                filename = message.get("filename", "document")
-                file_ext = Path(filename).suffix or ".bin"
-                temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext)
-                try:
-                    os.write(temp_fd, base64.b64decode(message.get("document_base64", "")))
-                finally:
-                    os.close(temp_fd)
-
-            document_metadata = extract_pdf_metadata(
-                temp_file_path,
-                os.path.basename(message.get("document_path", "document.pdf")),
-            )
-
-            # Guard: fail if Docling returned empty text (likely file type mismatch)
-            if not text:
-                actual_mime = document_metadata.get("mime_type", "unknown")
-                declared_mime = message.get("mime_type", "unknown")
-                raise ValueError(
-                    f"Empty text extracted from document. "
-                    f"Actual MIME type: {actual_mime}, declared: {declared_mime}. "
-                    f"File may be corrupt or have wrong extension."
-                )
-
-            text_metadata = analyze_text(text)
-
-            chunks = chunk_text(text)
-
-            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "processing")
-
-            self.redis_client.set(f"orchestrator:job:{job_id}:text", text)
-            self.redis_client.set(f"orchestrator:job:{job_id}:chunks", json.dumps(chunks))
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:metadata:document",
-                json.dumps(document_metadata),
-            )
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:metadata:text", json.dumps(text_metadata)
-            )
-
-            self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "extraction", "completed")
-
-            # Classify document source
+        # message.process() auto-acks on clean exit, nacks on exception
+        async with message.process(requeue=False):
             try:
-                classification = SourceClassifier.classify(text)
-                if classification:
-                    self.redis_client.set(
-                        f"orchestrator:job:{job_id}:source_classification",
-                        json.dumps(classification),
+                body = json.loads(message.body)
+                job_id = body.get("job_id")
+
+                logger.info(f"Processing text extraction for job: {job_id}")
+
+                self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "extracting")
+
+                if body.get("document_path"):
+                    result = await self.extract_text_from_file(
+                        body["document_path"], os.path.basename(body["document_path"])
                     )
-                    logger.info(
-                        f"Document classified as: {classification['document_type']} "
-                        f"(confidence={classification['confidence']:.2f})"
+                    text = result["text"]
+                elif body.get("document_base64"):
+                    result = await self.extract_text_from_base64(
+                        body["document_base64"],
+                        filename=body.get("filename", "document"),
                     )
-            except Exception as e:
-                logger.warning(f"Source classification failed: {e}")
-                # Continue anyway - classification is optional
+                    text = result["text"]
+                elif body.get("document_url"):
+                    result = await self.extract_text_from_url(body["document_url"])
+                    text = result["text"]
+                else:
+                    raise ValueError("No document provided")
 
-            logger.info(
-                f"Stored for job {job_id}: text={len(text)} chars, chunks={len(chunks)}, doc_metadata keys={list(document_metadata.keys())}"
-            )
+                # For metadata extraction, use original file if available
+                if body.get("document_path"):
+                    temp_file_path = body["document_path"]
+                else:
+                    # Derive file extension from message filename or mime_type
+                    filename = body.get("filename", "document")
+                    file_ext = Path(filename).suffix or ".bin"
+                    temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext)
+                    try:
+                        os.write(temp_fd, base64.b64decode(body.get("document_base64", "")))
+                    finally:
+                        os.close(temp_fd)
 
-            params = parse_rabbitmq_url(RABBITMQ_URL)
-            connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-
-            job_message = {
-                "job_id": job_id,
-                "chunks": chunks,
-                "document_metadata": document_metadata,
-            }
-
-            if message.get("entity_types"):
-                job_message["entity_types"] = message["entity_types"]
-
-            # Determine if this is a spreadsheet (reduce pipeline: entities only)
-            is_spreadsheet = False
-            if message.get("mime_type") == "application/spreadsheet":
-                is_spreadsheet = True
-            elif message.get("document_path"):
-                path_lower = message["document_path"].lower()
-                if path_lower.endswith((".csv", ".xls", ".xlsx")):
-                    is_spreadsheet = True
-
-            # Route to appropriate queues
-            if is_spreadsheet:
-                target_queues = ["entities"]
-                logger.info(f"Detected spreadsheet, routing to entities-only pipeline")
-            else:
-                target_queues = ["embeddings", "entities", "metadata"]
-
-            job_message_json = json.dumps(job_message)
-            for queue in target_queues:
-                channel.basic_publish(
-                    exchange="",
-                    routing_key=queue,
-                    body=job_message_json,
-                    properties=pika.BasicProperties(
-                        delivery_mode=2,
-                        content_type="application/json",
-                    ),
+                document_metadata = extract_pdf_metadata(
+                    temp_file_path,
+                    os.path.basename(body.get("document_path", "document.pdf")),
                 )
-                logger.info(f"Published job {job_id} to queue: {queue}")
 
-            connection.close()
+                # Guard: fail if Docling returned empty text (likely file type mismatch)
+                if not text:
+                    actual_mime = document_metadata.get("mime_type", "unknown")
+                    declared_mime = body.get("mime_type", "unknown")
+                    raise ValueError(
+                        f"Empty text extracted from document. "
+                        f"Actual MIME type: {actual_mime}, declared: {declared_mime}. "
+                        f"File may be corrupt or have wrong extension."
+                    )
 
-            self.event_bus.publish_job_progress(job_id, 25, "processing")
+                text_metadata = analyze_text(text)
 
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            logger.info(f"Text extraction completed for job: {job_id}")
+                chunks = chunk_text(text)
 
-            # Record metrics
-            job_duration.observe(time.time() - start_time)
-            jobs_total.labels(status="success").inc()
+                self.redis_client.hset(
+                    f"orchestrator:job:{job_id}:status", "status", "processing"
+                )
 
-        except Exception as e:
-            logger.error(f"Error processing extraction: {e}")
-            if job_id:
-                self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "failed")
-                self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
-                self.event_bus.publish_job_failed(job_id, str(e))
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                self.redis_client.set(f"orchestrator:job:{job_id}:text", text)
+                self.redis_client.set(f"orchestrator:job:{job_id}:chunks", json.dumps(chunks))
+                self.redis_client.set(
+                    f"orchestrator:job:{job_id}:metadata:document",
+                    json.dumps(document_metadata),
+                )
+                self.redis_client.set(
+                    f"orchestrator:job:{job_id}:metadata:text", json.dumps(text_metadata)
+                )
 
-            # Record failure metrics
-            jobs_total.labels(status="error").inc()
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
+                self.redis_client.hset(
+                    f"orchestrator:job:{job_id}:steps", "extraction", "completed"
+                )
+
+                # Classify document source
                 try:
-                    os.remove(temp_file_path)
+                    classification = SourceClassifier.classify(text)
+                    if classification:
+                        self.redis_client.set(
+                            f"orchestrator:job:{job_id}:source_classification",
+                            json.dumps(classification),
+                        )
+                        logger.info(
+                            f"Document classified as: {classification['document_type']} "
+                            f"(confidence={classification['confidence']:.2f})"
+                        )
                 except Exception as e:
-                    logger.debug(f"Ignored error: {e}")
-            if _stopping and ch.is_open:
-                logger.info("Graceful shutdown: stopping consumer after current message")
-                ch.stop_consuming()
+                    logger.warning(f"Source classification failed: {e}")
+                    # Continue anyway - classification is optional
+
+                logger.info(
+                    f"Stored for job {job_id}: text={len(text)} chars, chunks={len(chunks)}, "
+                    f"doc_metadata keys={list(document_metadata.keys())}"
+                )
+
+                job_message = {
+                    "job_id": job_id,
+                    "chunks": chunks,
+                    "document_metadata": document_metadata,
+                }
+
+                if body.get("entity_types"):
+                    job_message["entity_types"] = body["entity_types"]
+
+                # Determine if this is a spreadsheet (reduce pipeline: entities only)
+                is_spreadsheet = False
+                if body.get("mime_type") == "application/spreadsheet":
+                    is_spreadsheet = True
+                elif body.get("document_path"):
+                    path_lower = body["document_path"].lower()
+                    if path_lower.endswith((".csv", ".xls", ".xlsx")):
+                        is_spreadsheet = True
+
+                # Route to appropriate queues
+                if is_spreadsheet:
+                    target_queues = ["entities"]
+                    logger.info(f"Detected spreadsheet, routing to entities-only pipeline")
+                else:
+                    target_queues = ["embeddings", "entities", "metadata"]
+
+                job_message_json = json.dumps(job_message).encode()
+                for queue_name in target_queues:
+                    await channel.default_exchange.publish(
+                        aio_pika.Message(
+                            body=job_message_json,
+                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                            content_type="application/json",
+                        ),
+                        routing_key=queue_name,
+                    )
+                    logger.info(f"Published job {job_id} to queue: {queue_name}")
+
+                self.event_bus.publish_job_progress(job_id, 25, "processing")
+
+                logger.info(f"Text extraction completed for job: {job_id}")
+
+                # Record metrics
+                job_duration.observe(time.time() - start_time)
+                jobs_total.labels(status="success").inc()
+
+            except Exception as e:
+                logger.error(f"Error processing extraction: {e}")
+                if job_id:
+                    self.redis_client.hset(
+                        f"orchestrator:job:{job_id}:status", "status", "failed"
+                    )
+                    self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
+                    self.event_bus.publish_job_failed(job_id, str(e))
+
+                # Record failure metrics
+                jobs_total.labels(status="error").inc()
+
+                raise  # Re-raise so message.process() will nack the message
+            finally:
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.remove(temp_file_path)
+                    except Exception as e:
+                        logger.debug(f"Ignored error cleaning up temp file: {e}")
 
 
-def signal_handler(signum, frame):
-    """Handle termination signals (SIGTERM, SIGINT) gracefully.
+async def _run() -> None:
+    """Async main loop for the extraction worker.
 
-    Sets the global _stopping flag to initiate graceful shutdown after the
-    current message finishes processing. Does NOT call sys.exit() to avoid
-    interrupting a message in flight.
+    Connects to RabbitMQ using aio_pika robust connection (auto-reconnect).
+    Dispatches each incoming message as an independent asyncio task, allowing
+    up to PREFETCH_COUNT Docling jobs to run concurrently.
 
-    Args:
-        signum: Signal number (SIGINT=2, SIGTERM=15).
-        frame: Current stack frame.
+    Graceful shutdown:
+        - SIGINT / SIGTERM sets a stop_event
+        - The queue iterator loop breaks on stop_event
+        - Pending tasks are awaited before exit (up to their natural completion)
     """
-    logger.info("Received shutdown signal, initiating graceful shutdown...")
-    global _stopping
-    _stopping = True
+    worker = ExtractionWorker()
 
+    loop = asyncio.get_event_loop()
+    stop_event = asyncio.Event()
 
-def main():
-    """Main entry point for extraction worker.
+    def _handle_signal() -> None:
+        logger.info("Shutdown signal received, finishing current messages...")
+        stop_event.set()
 
-    Initializes infrastructure and starts consuming from RabbitMQ extraction queue.
-    Sets up signal handlers for graceful shutdown (SIGINT/SIGTERM) and Prometheus
-    metrics endpoint. Implements auto-reconnect with 5-second backoff on connection
-    failures.
-
-    Metrics endpoint:
-        Prometheus metrics available at http://localhost:METRICS_PORT/metrics
-        Tracks:
-            - extraction_worker_jobs_total (counter): Jobs by status (success/error)
-            - extraction_worker_job_duration_seconds (histogram): Job duration
-
-    Queue configuration:
-        Input queue: QUEUE_NAME (extract_text by default)
-        Prefetch count: PREFETCH_COUNT (3 by default) - max jobs to prefetch from queue
-
-    Error recovery:
-        If RabbitMQ connection fails, waits 5 seconds and retries. Continues
-        indefinitely until signal received.
-    """
-    logger.info("Starting Extraction Worker")
-
-    global _stopping
-    _stopping = False
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _handle_signal)
 
     start_http_server(METRICS_PORT)
     logger.info(f"Metrics server started on port {METRICS_PORT}")
 
-    worker = ExtractionWorker()
+    pending_tasks: set = set()
 
-    while not _stopping:
+    while not stop_event.is_set():
         try:
-            with connect_rabbitmq(RABBITMQ_URL, prefetch_count=PREFETCH_COUNT) as (
-                connection,
-                channel,
-            ):
-                declare_queue(channel, QUEUE_NAME)
-                logger.info(f"Consuming from queue: {QUEUE_NAME}")
-                channel.basic_consume(
-                    queue=QUEUE_NAME,
-                    on_message_callback=worker.process_message,
-                    auto_ack=False,
+            connection = await aio_pika.connect_robust(RABBITMQ_URL)
+            async with connection:
+                channel = await connection.channel()
+                await channel.set_qos(prefetch_count=PREFETCH_COUNT)
+
+                queue = await declare_queue_async(channel, QUEUE_NAME)
+                logger.info(
+                    f"Consuming from queue: {QUEUE_NAME} "
+                    f"(concurrency={PREFETCH_COUNT})"
                 )
-                channel.start_consuming()
+
+                async with queue.iterator() as q_iter:
+                    async for message in q_iter:
+                        if stop_event.is_set():
+                            break
+
+                        # Dispatch concurrently — each Docling poll yields the
+                        # event loop so other tasks progress in parallel.
+                        task = asyncio.create_task(
+                            worker._process_message_async(message, channel)
+                        )
+                        pending_tasks.add(task)
+                        task.add_done_callback(pending_tasks.discard)
+
         except Exception as e:
-            logger.error(f"RabbitMQ connection error: {e}")
-            if not _stopping:
-                time.sleep(5)
+            if stop_event.is_set():
+                break
+            logger.error(f"RabbitMQ connection error: {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
+
+    # Wait for any in-flight tasks to complete before exiting
+    if pending_tasks:
+        logger.info(f"Waiting for {len(pending_tasks)} in-flight task(s) to complete...")
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
 
     logger.info("Extraction worker shutdown complete")
+
+
+def main() -> None:
+    """Main entry point for extraction worker.
+
+    Initialises the async event loop and runs _run() until termination signal.
+    """
+    logger.info("Starting Extraction Worker")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

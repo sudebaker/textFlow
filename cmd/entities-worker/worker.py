@@ -26,6 +26,7 @@ import pika
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import time
+import hashlib
 import sys
 import signal
 import logging
@@ -113,6 +114,12 @@ def _get_retry_count(properties) -> int:
 def _should_retry(properties) -> bool:
     """Return True if message should be requeued (under MAX_RETRIES)."""
     return _get_retry_count(properties) < MAX_RETRIES
+
+
+def entity_id(label: str, text: str) -> str:
+    """Return a stable 12-char hex ID for a (label, text) pair."""
+    key = f"{label}:{text.lower().strip()}"
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
 class EntitiesWorker:
@@ -762,6 +769,8 @@ class EntitiesWorker:
 
             # Store in Redis
             entities_key = f"orchestrator:job:{job_id}:entities_raw"
+            for ent in all_entities:
+                ent["entity_id"] = entity_id(ent.get("label", ""), ent.get("text", ""))
             self.redis_client.set(entities_key, json.dumps(all_entities))
 
             self.redis_client.hset(

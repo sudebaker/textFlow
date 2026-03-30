@@ -226,7 +226,16 @@ class TestMaxRetriesAttribute:
 
 
 class TestTransientErrorNackBehavior:
-    """Tests that transient errors use _should_retry for nack requeue flag."""
+    """Tests that transient errors use _should_retry for the correct ack/nack behaviour.
+
+    With ``DELAYED_EXCHANGE_ENABLED=true`` (default):
+      - Under max retries → basic_publish to delayed exchange + basic_ack
+      - At/over max retries → basic_nack(requeue=False)
+
+    With ``DELAYED_EXCHANGE_ENABLED=false`` (legacy fallback):
+      - Under max retries → time.sleep + basic_nack(requeue=True)
+      - At/over max retries → basic_nack(requeue=False)
+    """
 
     def _make_props_with_xdeath(self, count):
         """Helper: create mock properties with x-death count."""
@@ -237,48 +246,94 @@ class TestTransientErrorNackBehavior:
             props.headers = {"x-death": [{"count": count}]}
         return props
 
-    @patch('pkg.worker_common.base.time.sleep', return_value=None)
-    def test_nack_requeue_true_when_under_max_retries(self, mock_sleep):
-        """basic_nack must be called with requeue=True when retry count < max_retries."""
+    # ------------------------------------------------------------------
+    # Delayed-exchange path (DELAYED_EXCHANGE_ENABLED=true, default)
+    # ------------------------------------------------------------------
+
+    def test_basic_ack_and_publish_when_under_max_retries(self, monkeypatch):
+        """With delayed exchange enabled, retry → basic_publish + basic_ack (no nack)."""
+        monkeypatch.setenv("DELAYED_EXCHANGE_ENABLED", "true")
         worker = _make_failing_worker(max_retries=3)
 
-        # Mock Redis to avoid connection
         mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        mock_redis.set = MagicMock()
-        mock_redis.setex = MagicMock()
         worker._redis_client = mock_redis
-
-        # Mock event_bus
         worker._event_bus = MagicMock()
 
         ch = MagicMock()
         method = MagicMock()
         method.delivery_tag = "tag-123"
+        method.routing_key = "test_queue"
 
         props = self._make_props_with_xdeath(1)  # 1 < 3 → should retry
+        props.content_type = "application/json"
 
         body = json.dumps({"job_id": "job-test-1"}).encode()
 
         worker._on_message(ch, method, props, body)
 
-        # basic_nack must have been called with requeue=True
-        ch.basic_nack.assert_called_once_with(
-            delivery_tag="tag-123", requeue=True
-        )
+        # Must have published to the delayed exchange
+        ch.basic_publish.assert_called_once()
+        call_kwargs = ch.basic_publish.call_args
+        assert call_kwargs.kwargs["exchange"] == "document_processor_delayed"
+        assert call_kwargs.kwargs["routing_key"] == "test_queue"
+
+        # Must have ACKed the original message
+        ch.basic_ack.assert_called_once_with(delivery_tag="tag-123")
+        ch.basic_nack.assert_not_called()
+
+    def test_retry_headers_contain_x_retry_count(self, monkeypatch):
+        """Re-published message must have x-retry-count set to next_attempt."""
+        monkeypatch.setenv("DELAYED_EXCHANGE_ENABLED", "true")
+        worker = _make_failing_worker(max_retries=3)
+        worker._redis_client = MagicMock()
+        worker._event_bus = MagicMock()
+
+        ch = MagicMock()
+        method = MagicMock()
+        method.delivery_tag = "tag-hdr"
+        method.routing_key = "test_queue"
+
+        props = self._make_props_with_xdeath(1)  # retry_count=1 → next_attempt=2
+        props.content_type = "application/json"
+
+        body = json.dumps({"job_id": "job-hdr"}).encode()
+        worker._on_message(ch, method, props, body)
+
+        published_props = ch.basic_publish.call_args.kwargs["properties"]
+        assert published_props.headers["x-retry-count"] == 2
+
+    def test_basic_ack_and_publish_on_first_failure(self, monkeypatch):
+        """On first failure (no prior retry headers), retry via delayed exchange."""
+        monkeypatch.setenv("DELAYED_EXCHANGE_ENABLED", "true")
+        worker = _make_failing_worker(max_retries=3)
+        worker._redis_client = MagicMock()
+        worker._event_bus = MagicMock()
+
+        ch = MagicMock()
+        method = MagicMock()
+        method.delivery_tag = "tag-first"
+        method.routing_key = "test_queue"
+
+        props = self._make_props_with_xdeath(None)  # No prior retries
+        props.content_type = "application/json"
+
+        body = json.dumps({"job_id": "job-first"}).encode()
+        worker._on_message(ch, method, props, body)
+
+        ch.basic_publish.assert_called_once()
+        ch.basic_ack.assert_called_once_with(delivery_tag="tag-first")
+        ch.basic_nack.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # DLQ path (max retries exceeded) — same regardless of exchange mode
+    # ------------------------------------------------------------------
 
     def test_nack_requeue_false_when_max_retries_exceeded(self):
         """basic_nack must be called with requeue=False when retry count >= max_retries."""
         worker = _make_failing_worker(max_retries=3)
 
-        # Mock Redis to avoid connection
         mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        mock_redis.set = MagicMock()
-        mock_redis.setex = MagicMock()
         worker._redis_client = mock_redis
-
-        # Mock event_bus
         worker._event_bus = MagicMock()
 
         ch = MagicMock()
@@ -291,7 +346,6 @@ class TestTransientErrorNackBehavior:
 
         worker._on_message(ch, method, props, body)
 
-        # basic_nack must have been called with requeue=False
         ch.basic_nack.assert_called_once_with(
             delivery_tag="tag-456", requeue=False
         )
@@ -301,9 +355,6 @@ class TestTransientErrorNackBehavior:
         worker = _make_failing_worker(max_retries=3)
 
         mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        mock_redis.set = MagicMock()
-        mock_redis.setex = MagicMock()
         worker._redis_client = mock_redis
         worker._event_bus = MagicMock()
 
@@ -321,28 +372,78 @@ class TestTransientErrorNackBehavior:
             delivery_tag="tag-789", requeue=False
         )
 
-    @patch('pkg.worker_common.base.time.sleep', return_value=None)
-    def test_nack_requeue_true_on_first_failure(self, mock_sleep):
-        """On first failure (no x-death headers), basic_nack must use requeue=True."""
-        worker = _make_failing_worker(max_retries=3)
+    # ------------------------------------------------------------------
+    # Legacy fallback path (DELAYED_EXCHANGE_ENABLED=false)
+    # ------------------------------------------------------------------
 
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        mock_redis.set = MagicMock()
-        mock_redis.setex = MagicMock()
-        worker._redis_client = mock_redis
+    @patch('pkg.worker_common.base.time.sleep', return_value=None)
+    def test_nack_requeue_true_when_delayed_exchange_disabled(self, mock_sleep, monkeypatch):
+        """With DELAYED_EXCHANGE_ENABLED=false, retry falls back to nack(requeue=True)."""
+        monkeypatch.setenv("DELAYED_EXCHANGE_ENABLED", "false")
+        worker = _make_failing_worker(max_retries=3)
+        worker._redis_client = MagicMock()
         worker._event_bus = MagicMock()
 
         ch = MagicMock()
         method = MagicMock()
-        method.delivery_tag = "tag-first"
+        method.delivery_tag = "tag-legacy"
+        method.routing_key = "test_queue"
 
-        props = self._make_props_with_xdeath(None)  # No x-death → first attempt
+        props = self._make_props_with_xdeath(1)  # 1 < 3 → should retry
 
-        body = json.dumps({"job_id": "job-test-first"}).encode()
-
+        body = json.dumps({"job_id": "job-legacy"}).encode()
         worker._on_message(ch, method, props, body)
 
-        ch.basic_nack.assert_called_once_with(
-            delivery_tag="tag-first", requeue=True
-        )
+        # Legacy path: sleep then nack with requeue=True
+        mock_sleep.assert_called_once()
+        ch.basic_nack.assert_called_once_with(delivery_tag="tag-legacy", requeue=True)
+        ch.basic_publish.assert_not_called()
+
+    @patch('pkg.worker_common.base.time.sleep', return_value=None)
+    def test_nack_requeue_true_on_first_failure_legacy(self, mock_sleep, monkeypatch):
+        """With DELAYED_EXCHANGE_ENABLED=false and no prior headers, nack(requeue=True)."""
+        monkeypatch.setenv("DELAYED_EXCHANGE_ENABLED", "false")
+        worker = _make_failing_worker(max_retries=3)
+        worker._redis_client = MagicMock()
+        worker._event_bus = MagicMock()
+
+        ch = MagicMock()
+        method = MagicMock()
+        method.delivery_tag = "tag-first-legacy"
+        method.routing_key = "test_queue"
+
+        props = self._make_props_with_xdeath(None)
+
+        body = json.dumps({"job_id": "job-first-legacy"}).encode()
+        worker._on_message(ch, method, props, body)
+
+        ch.basic_nack.assert_called_once_with(delivery_tag="tag-first-legacy", requeue=True)
+
+    # ------------------------------------------------------------------
+    # Fallback when delayed exchange publish fails
+    # ------------------------------------------------------------------
+
+    @patch('pkg.worker_common.base.time.sleep', return_value=None)
+    def test_fallback_to_nack_when_publish_fails(self, mock_sleep, monkeypatch):
+        """If publishing to delayed exchange raises, fall back to nack(requeue=True)."""
+        monkeypatch.setenv("DELAYED_EXCHANGE_ENABLED", "true")
+        worker = _make_failing_worker(max_retries=3)
+        worker._redis_client = MagicMock()
+        worker._event_bus = MagicMock()
+
+        ch = MagicMock()
+        ch.basic_publish.side_effect = Exception("connection lost")
+        method = MagicMock()
+        method.delivery_tag = "tag-fallback"
+        method.routing_key = "test_queue"
+
+        props = self._make_props_with_xdeath(1)
+        props.content_type = "application/json"
+
+        body = json.dumps({"job_id": "job-fallback"}).encode()
+        worker._on_message(ch, method, props, body)
+
+        # basic_publish was attempted, failed, then fell back to nack+requeue
+        ch.basic_publish.assert_called_once()
+        mock_sleep.assert_called_once()
+        ch.basic_nack.assert_called_once_with(delivery_tag="tag-fallback", requeue=True)

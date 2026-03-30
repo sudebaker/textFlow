@@ -133,7 +133,7 @@ services:
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - DOCLING_URL=http://docling:5001
     - QUEUE_NAME=extract_text
-    - PREFETCH_COUNT=3
+    - PREFETCH_COUNT=10
     - LOG_LEVEL=info
     - METRICS_PORT=8004
     - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
@@ -178,7 +178,7 @@ services:
     - LOG_LEVEL=info
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
-    - PREFETCH_COUNT=5
+    - PREFETCH_COUNT=20
     - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
     - CUDA_VISIBLE_DEVICES=0
     depends_on:
@@ -225,7 +225,7 @@ services:
     - LOG_LEVEL=info
     - QUEUE_NAME=entities
     - METRICS_PORT=8002
-    - PREFETCH_COUNT=5
+    - PREFETCH_COUNT=15
     - HF_HOME=/home/app/.cache/huggingface
     - GLINER_MODEL_PATH=/models/gliner-small-v2.1
     - ALLOW_REMOTE_DOWNLOAD=false
@@ -236,7 +236,7 @@ services:
     - GLINER_DATE_THRESHOLD=0.45
     - GLINER_MONEY_THRESHOLD=0.55
     - DEDUPLICATION_ENABLED=false
-    - ENTITIES_DEVICE=${ENTITIES_DEVICE:-cpu}
+    - ENTITIES_DEVICE=${ENTITIES_DEVICE:-}
     - CUDA_VISIBLE_DEVICES=0
     - ENTITY_TYPES=PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL
     - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
@@ -368,7 +368,7 @@ services:
       resources:
         limits:
           cpus: '1'
-          memory: 512M
+          memory: 1G
   completion-worker:
     build:
       context: ../../

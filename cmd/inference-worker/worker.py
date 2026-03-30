@@ -8,7 +8,7 @@ This is an OPTIONAL feature — only activated when a job requests features=["in
 Architecture:
     - Consumes messages from RabbitMQ inferences queue
     - For each chunk, calls vLLM /v1/chat/completions API to extract facts
-    - Each fact includes confidence score and referenced entities
+    - Each fact includes confidence score and entity_refs (referenced entity names)
     - Stores raw results in Redis intermediate keys
     - Assembles final results when all chunks complete
     - Publishes progress events to Event Bus
@@ -29,7 +29,7 @@ Input (RabbitMQ Message):
 
 Output (Redis):
     - micro_inferences: Final assembled list of all extracted facts from all chunks
-    - Each inference: {"text": str, "confidence": 0.0-1.0, "entities": [str]}
+    - Each inference: {"text": str, "confidence": 0.0-1.0, "entity_refs": [str]}
 
 Environment Variables:
     - REDIS_URL: Redis connection URL (default: redis://redis:6379)
@@ -281,12 +281,13 @@ class InferenceWorker:
 
         Input Processing:
             - Uses full chunk text (no truncation) for fact extraction
-            - Entity names are included in prompt as context for the LLM
+            - Entity names are NOT included in prompt (entities parameter is received for
+              backward compatibility but not used in the LLM call)
             - Source type (notariado, catastro, etc.) is provided for document context
 
         LLM Prompt Structure:
-            - System prompt: Instructs LLM to extract concrete, verifiable facts
-            - User prompt: Provides chunk text, entity list, and max inference count
+            - System prompt: Instructs LLM to synthesize condensed facts (not copy text)
+            - User prompt: Provides only chunk text and max inference count
             - Temperature: 0.1 (low randomness, deterministic)
             - Thinking disabled: enable_thinking=False to avoid <think> tags
 
@@ -295,7 +296,7 @@ class InferenceWorker:
             2. Removes thinking tags: <think>...</think> blocks (some models output these)
             3. Extracts outermost JSON array using bracket counting
             4. Parses JSON and validates each item has "text" field
-            5. Normalizes fields: text (string), confidence (float), entities (list)
+            5. Normalizes fields: text (string), confidence (float), entity_refs (list)
 
         vLLM API Contract:
             - Endpoint: POST {LLM_URL}/v1/chat/completions
@@ -308,8 +309,9 @@ class InferenceWorker:
                              (notariado, catastro documents). Full text sent to LLM
                              (no truncation).
             entities (List[Dict[str, Any]]): Named entities detected in this chunk.
-                                             Each entity dict includes at least a "text" field.
-                                             Entity names provided in prompt to guide inference.
+                                             Received for backward compatibility with
+                                             RabbitMQ message schema but NOT used in
+                                             the LLM prompt.
             source_type (str): Document source type (e.g., "notariado", "catastro", "bancario").
                               Used for context but not currently interpolated in prompt.
             max_inferences (int): Maximum number of inferences to extract (default: 8).
@@ -318,9 +320,9 @@ class InferenceWorker:
         Returns:
             List[Dict[str, Any]]: List of extracted inferences, each with structure:
                 {
-                    "text": str,           # The factual statement
-                    "confidence": float,   # Confidence score 0.0-1.0
-                    "entities": List[str]  # Names of entities mentioned in the fact
+                    "text": str,              # The factual statement (synthesized, not copied)
+                    "confidence": float,      # Confidence score 0.0-1.0
+                    "entity_refs": List[str]  # Names of entities referenced in the fact
                 }
             Returns empty list [] if:
                 - No LLM configured (LLM_URL empty or not set)
@@ -451,11 +453,20 @@ Respond with ONLY the JSON array:"""
             validated = []
             for inf in inferences:
                 if isinstance(inf, dict) and "text" in inf:
+                    entity_refs_value = inf.get("entity_refs")
+                    if entity_refs_value is None:
+                        # Fallback: old LLM response used "entities" key
+                        entity_refs_value = inf.get("entities", [])
+                        if entity_refs_value:
+                            logger.debug(
+                                "LLM response used deprecated 'entities' key; "
+                                "mapped to 'entity_refs' via fallback"
+                            )
                     validated.append(
                         {
                             "text": inf.get("text", ""),
                             "confidence": float(inf.get("confidence", 0.5)),
-                            "entity_refs": inf.get("entity_refs", inf.get("entities", [])),  # fallback for old LLM responses
+                            "entity_refs": entity_refs_value,
                         }
                     )
 

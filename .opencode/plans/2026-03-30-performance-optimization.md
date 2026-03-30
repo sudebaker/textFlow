@@ -419,7 +419,7 @@ if os.getenv("TORCH_COMPILE", "false").lower() == "true":
 
 **Steps:**
 
-- [ ] **Step 1: Implementar async polling** con `aiohttp` + `asyncio`:
+- [x] **Step 1: Implementar async polling** con `aiohttp` + `asyncio`:
 
 ```python
 async def _poll_docling_async(self, task_id: str, timeout: int) -> dict:
@@ -438,7 +438,7 @@ async def _poll_docling_async(self, task_id: str, timeout: int) -> dict:
     raise TimeoutError(f"Docling polling timeout after {timeout}s")
 ```
 
-- [ ] **Step 2: Integrar en extraction-worker main loop** — mantener compatibility con pika (BlockingConnection)
+- [x] **Step 2: Integrar en extraction-worker main loop** — reescrito completamente con aio_pika (async nativo), hasta EXTRACTION_CONCURRENCY jobs concurrentes
 
 **Impacto estimado:** 🟡 **Medio** — Reduce latency cuando Docling responde rápido (<30s), no bloquea worker
 
@@ -470,6 +470,12 @@ async def _poll_docling_async(self, task_id: str, timeout: int) -> dict:
 **Files:**
 - Modify: `pkg/worker_common/base.py`
 - Modify: `internal/broker/rabbitmq.go` (config DLX con delay)
+
+**Implementado:**
+- [x] `pkg/worker_common/base.py` — delayed retry con x-retry-count header, fallback a time.sleep si plugin ausente
+- [x] `internal/broker/rabbitmq.go` — declareDelayedExchange con manejo graceful de 406
+- [x] `pkg/tests/test_dlq_pattern.py` — 22 tests de cobertura
+- [x] `pkg/worker_common/rabbitmq_async.py` — helpers async para aio_pika
 
 **Impacto estimado:** 🟡 **Medio** — Throughput mejora porque worker no está bloqueado durante retries
 

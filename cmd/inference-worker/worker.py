@@ -355,34 +355,30 @@ class InferenceWorker:
             return []
 
         try:
-            # Build entity reference string for prompt context
-            entity_texts = [e.get("text", "") for e in entities]
-            entities_str = (
-                ", ".join(entity_texts) if entity_texts else "(no entities detected)"
-            )
-
             # KNOWN LIMITATION: chunk_text is interpolated directly into the prompt.
             # This is safe because all documents are from trusted internal sources
             # (notariado, catastro, etc). If accepting untrusted external documents,
             # implement prompt injection safeguards (e.g., text sanitization/truncation).
-            system_prompt = """You are a fact extraction specialist. Your task is to extract concrete, 
-verifiable facts from text. Each fact must reference at least one detected entity. 
-Respond ONLY with a valid JSON array containing objects with these exact fields:
-- "text": the factual statement
-- "confidence": a confidence score between 0.0 and 1.0
-- "entities": list of entity names mentioned in the fact
+            system_prompt = """You are a precise fact-extraction engine. Your task is to distill the key facts from a text passage into concise, self-contained statements.
 
-Do NOT include any explanation, thinking, or text outside the JSON array."""
+Rules:
+- Each fact MUST be a SYNTHESIZED, CONDENSED statement — never copy a literal sentence from the text.
+- Each fact must be independently understandable without reading the original text.
+- Mention specific values, names, dates, or amounts whenever they are in the text.
+- Do NOT include vague or generic statements (e.g. "the document describes...").
+- Respond ONLY with a valid JSON array. No explanation. No text outside the JSON.
 
-            user_prompt = f"""Extract facts from this text:
+Each object in the array must have exactly these fields:
+- "text": condensed factual statement (your own words, not copied)
+- "confidence": float between 0.0 and 1.0
+- "entity_refs": list of entity name strings referenced in the fact"""
 
-Text: {chunk_text}
+            user_prompt = f"""Extract up to {max_inferences} key facts from this text. Synthesize — do NOT copy sentences.
 
-Detected entities: {entities_str}
+Text:
+{chunk_text}
 
-Maximum facts to extract: {max_inferences}
-
-Respond with ONLY the JSON array (no other text):"""
+Respond with ONLY the JSON array:"""
 
             # Calculate max_tokens dynamically from discovered max_model_len
             # Estimate: overhead = system_prompt (150) + user_prompt (300) + margin (450)
@@ -459,7 +455,7 @@ Respond with ONLY the JSON array (no other text):"""
                         {
                             "text": inf.get("text", ""),
                             "confidence": float(inf.get("confidence", 0.5)),
-                            "entities": inf.get("entities", []),
+                            "entity_refs": inf.get("entity_refs", inf.get("entities", [])),  # fallback for old LLM responses
                         }
                     )
 

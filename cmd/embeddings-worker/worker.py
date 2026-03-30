@@ -22,6 +22,7 @@ import signal
 import time
 from typing import Dict, Optional, List, Any
 
+import msgpack
 import pika
 import redis
 import requests
@@ -176,7 +177,11 @@ class EmbeddingsWorker:
                 gpu_memory_gb.set(torch.cuda.memory_allocated() / 1024**3)
 
             embeddings_key = f"orchestrator:job:{job_id}:embeddings"
-            self.redis_client.set(embeddings_key, json.dumps(embeddings_dict))
+            # Use MessagePack binary serialization (~75% smaller than JSON for float32 vectors)
+            self.redis_client.set(
+                embeddings_key,
+                msgpack.packb(embeddings_dict, use_bin_type=True)
+            )
 
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "embeddings", "completed"

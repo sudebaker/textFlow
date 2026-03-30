@@ -38,7 +38,7 @@ func NewPipeline(b *broker.RabbitMQBroker, r *redisclient.RedisClient, cfg *conf
 // If any stage fails, its corresponding result field will be zero-valued (nil or empty),
 // and the error will be present in Errors.
 type PipelineResult struct {
-	EmbeddingsResult []float32
+	EmbeddingsResult map[string][]float32
 	EntitiesResult   []models.Entity
 	MetadataResult   map[string]interface{}
 	Errors           []error
@@ -66,7 +66,7 @@ func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text str
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	var embeddingsResult []float32
+	var embeddingsResult map[string][]float32
 	var entitiesResult []models.Entity
 	var metadataResult map[string]interface{}
 	var errors []error

@@ -22,7 +22,10 @@ make test-coverage         # With coverage HTML
 make test-python           # Run all Python tests
 make lint / lint-fix       # golangci-lint
 make format                # go fmt + black + isort
-make build                 # Build binaries
+make build                 # Build all binaries → bin/
+make build-orchestrator    # Build orchestrator only → bin/orchestrator
+make build-resource-manager # Build resource-manager → bin/resource-manager
+make build-client          # Build tools/client → bin/client
 ```
 
 ### Single Tests
@@ -150,3 +153,35 @@ Mount `-v ../../models:/models` with:
 
 ```bash
 docker run --network=none entities-worker
+```
+
+---
+
+## Go Binary Convention
+
+Todos los binarios Go se buildean en `bin/` en la raíz del proyecto. Nunca en el directorio del source.
+
+### Regla única
+
+```bash
+go build -o bin/<nombre> <package>   # correcto
+go build -o cmd/foo/foo ./cmd/foo    # INCORRECTO — nunca en el source
+```
+
+### Binarios del proyecto
+
+| Target Makefile | Salida |
+|-----------------|--------|
+| `make build-orchestrator` | `bin/orchestrator` |
+| `make build-resource-manager` | `bin/resource-manager` |
+| `make build-client` | `bin/client` |
+| `make build` | todos los anteriores |
+
+`bin/*` y `tools/client/client` están en `.gitignore` — **nunca commitear binarios compilados**.
+
+### Si un binario acaba trackeado en git por error
+
+```bash
+git rm --cached <ruta-del-binario>
+# Añadir la ruta a .gitignore si no está ya cubierta
+```

@@ -84,8 +84,20 @@ REGEX_ENTITY_EXTRACTOR_URL = os.getenv(
 )
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
-# GPU/CPU device selection
-ENTITIES_DEVICE = os.getenv("ENTITIES_DEVICE", "cpu")
+# GPU/CPU device selection — auto-detect CUDA if ENTITIES_DEVICE not set
+def _resolve_device() -> str:
+    """Auto-detect GPU availability. Fallback to CPU if not available."""
+    device_param = os.getenv("ENTITIES_DEVICE", "").strip().lower()
+    if device_param:
+        return device_param
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
+ENTITIES_DEVICE = _resolve_device()
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
 
 
@@ -219,6 +231,13 @@ class EntitiesWorker:
                 if self.device != "cpu":
                     logger.info(f"   Moving GLiNER to device: {self.device}")
                     self.model = self.model.to(self.device)
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            mem_gb = torch.cuda.memory_allocated() / 1e9
+                            logger.info(f"   GPU memory allocated: {mem_gb:.2f} GB")
+                    except Exception:
+                        pass
             except KeyboardInterrupt:
                 logger.error("   ❌ GLiNER loading was interrupted")
                 raise
@@ -588,97 +607,142 @@ class EntitiesWorker:
 
             all_entities = []
 
-            # Process each chunk
+            # Separate chunks needing sliding window from small chunks that can be batched.
+            # Batch processing sends multiple texts in a single model call (GLiNER supports it),
+            # reducing Python loop overhead and improving GPU utilization significantly.
+            GLINER_BATCH_SIZE = int(os.getenv("GLINER_BATCH_SIZE", "32"))
+            batch_chunks = []   # (chunk_id, chunk_text, chunk_offset)
+            large_chunks = []   # need sliding window
+
             for chunk in chunks:
                 chunk_id = chunk.get("chunk_id")
                 chunk_text = chunk.get("text", "")
-                # Get chunk offset from either field name (support both formats)
-                chunk_offset = chunk.get(
-                    "start_offset") or chunk.get("offset") or 0
-
+                chunk_offset = chunk.get("start_offset") or chunk.get("offset") or 0
                 if not chunk_text:
                     continue
+                if requires_sliding_window(chunk_text):
+                    large_chunks.append((chunk_id, chunk_text, chunk_offset))
+                else:
+                    batch_chunks.append((chunk_id, chunk_text, chunk_offset))
 
+            # --- Process large chunks individually with sliding window ---
+            for chunk_id, chunk_text, chunk_offset in large_chunks:
+                estimated_tokens = estimate_tokens(chunk_text)
+                logger.info(
+                    f"Chunk {chunk_id}: {estimated_tokens} tokens detected, "
+                    f"using sliding window approach"
+                )
                 try:
-                    # Use sliding window processor if chunk text is large
-                    estimated_tokens = estimate_tokens(chunk_text)
-
-                    if requires_sliding_window(chunk_text):
-                        logger.info(
-                            f"Chunk {chunk_id}: {estimated_tokens} tokens detected, "
-                            f"using sliding window approach"
+                    def predict_with_thresholds(text, entity_types, threshold=0.1):
+                        return self.model.predict_entities(
+                            text, entity_types, threshold=threshold
                         )
 
-                        # Define a wrapper function for predict_entities
-                        def predict_with_thresholds(text, entity_types, threshold=0.1):
-                            return self.model.predict_entities(
-                                text, entity_types, threshold=threshold
-                            )
-
-                        entities_items = process_with_sliding_window(
-                            chunk_text,
-                            predict_with_thresholds,
-                            entity_types,
-                            threshold=0.1,
-                        )
-                    else:
-                        logger.debug(
-                            f"Chunk {chunk_id}: {estimated_tokens} tokens, "
-                            f"processing directly (no sliding window needed)"
-                        )
-                        # Direct processing for small chunks
-                        entities = self.model.predict_entities(
-                            chunk_text,
-                            entity_types,
-                            threshold=0.1,  # Use low threshold, filter per-type below
-                        )
-
-                        if (
-                            entities
-                            and len(entities) > 0
-                            and isinstance(entities[0], list)
-                        ):
-                            entities_items = entities[0]
-                        elif entities and isinstance(entities, list):
-                            entities_items = entities
-                        else:
-                            entities_items = []
-
-                    # Filter by per-type threshold
+                    entities_items = process_with_sliding_window(
+                        chunk_text,
+                        predict_with_thresholds,
+                        entity_types,
+                        threshold=0.1,
+                    )
                     for e in entities_items:
                         label = e.get("label", "")
                         score = e.get("score", 0.0)
-
-                        # Get threshold for this entity type
-                        threshold = ENTITY_THRESHOLDS.get(label, 0.5)
-
-                        # Only include if confidence meets threshold
-                        if score >= threshold:
+                        threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
+                        if score >= threshold_val:
                             local_start = e.get("start", 0)
                             local_end = e.get("end", 0)
-                            global_start, global_end = self.calculate_global_position(
+                            g_start, g_end = self.calculate_global_position(
                                 chunk_offset, local_start, local_end
                             )
+                            all_entities.append({
+                                "text": e.get("text", ""),
+                                "label": label,
+                                "confidence": float(score),
+                                "start": g_start,
+                                "end": g_end,
+                                "chunk_id": chunk_id,
+                            })
+                except Exception as e:
+                    logger.warning(
+                        f"Error extracting entities from large chunk {chunk_id}: {e}"
+                    )
+                    logger.debug(__import__("traceback").format_exc())
 
-                            all_entities.append(
-                                {
+            # --- Process small chunks in batches ---
+            for batch_start in range(0, len(batch_chunks), GLINER_BATCH_SIZE):
+                batch = batch_chunks[batch_start: batch_start + GLINER_BATCH_SIZE]
+                texts = [c[1] for c in batch]
+                try:
+                    batch_predictions = self.model.predict_entities(
+                        texts,
+                        entity_types,
+                        threshold=0.1,  # filter per-type below
+                    )
+                    # batch_predictions is a list of lists (one per text)
+                    for (chunk_id, chunk_text, chunk_offset), entities_items in zip(batch, batch_predictions):
+                        # Normalise: GLiNER may return flat list for single text
+                        if entities_items and isinstance(entities_items[0], list):
+                            entities_items = entities_items[0]
+                        for e in entities_items:
+                            label = e.get("label", "")
+                            score = e.get("score", 0.0)
+                            threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
+                            if score >= threshold_val:
+                                local_start = e.get("start", 0)
+                                local_end = e.get("end", 0)
+                                g_start, g_end = self.calculate_global_position(
+                                    chunk_offset, local_start, local_end
+                                )
+                                all_entities.append({
                                     "text": e.get("text", ""),
                                     "label": label,
                                     "confidence": float(score),
-                                    "start": global_start,
-                                    "end": global_end,
+                                    "start": g_start,
+                                    "end": g_end,
                                     "chunk_id": chunk_id,
-                                }
-                            )
-
+                                })
                 except Exception as e:
                     logger.warning(
-                        f"Error extracting entities from chunk {chunk_id}: {e}"
+                        f"Batch prediction failed for chunks "
+                        f"{[c[0] for c in batch]}: {e}. Falling back to individual processing."
                     )
-                    import traceback
+                    logger.debug(__import__("traceback").format_exc())
+                    # Fallback: process each chunk individually
+                    for chunk_id, chunk_text, chunk_offset in batch:
+                        try:
+                            entities = self.model.predict_entities(
+                                chunk_text, entity_types, threshold=0.1
+                            )
+                            if entities and isinstance(entities[0], list):
+                                entities = entities[0]
+                            for e in entities:
+                                label = e.get("label", "")
+                                score = e.get("score", 0.0)
+                                threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
+                                if score >= threshold_val:
+                                    local_start = e.get("start", 0)
+                                    local_end = e.get("end", 0)
+                                    g_start, g_end = self.calculate_global_position(
+                                        chunk_offset, local_start, local_end
+                                    )
+                                    all_entities.append({
+                                        "text": e.get("text", ""),
+                                        "label": label,
+                                        "confidence": float(score),
+                                        "start": g_start,
+                                        "end": g_end,
+                                        "chunk_id": chunk_id,
+                                    })
+                        except Exception as inner_e:
+                            logger.warning(
+                                f"Error extracting entities from chunk {chunk_id}: {inner_e}"
+                            )
 
-                    logger.debug(traceback.format_exc())
-                    continue
+            logger.info(
+                f"Batch entity extraction complete: {len(batch_chunks)} small chunks "
+                f"(batched), {len(large_chunks)} large chunks (sliding window), "
+                f"{len(all_entities)} entities found"
+            )
 
             # Extract structured entities from regex patterns
             try:

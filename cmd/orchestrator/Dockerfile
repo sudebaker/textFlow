@@ -16,6 +16,12 @@ WORKDIR /app
 
 COPY --from=builder /app/orchestrator .
 
+# GC tuning: reduce GC frequency to lower CPU overhead from frequent collection.
+# GOGC=150 allows heap to grow 50% more before GC triggers (default=100).
+# GOMEMLIMIT acts as a soft cap, triggering GC before OOM.
+ENV GOGC=150
+ENV GOMEMLIMIT=800MiB
+
 EXPOSE 8080
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \

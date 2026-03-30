@@ -21,6 +21,11 @@ const (
 	InitialBackoff         = 2 * time.Second
 	MaxBackoff             = 60 * time.Second
 	ChannelMonitorInterval = 5 * time.Second
+
+	// DelayedExchangeName is the name of the rabbitmq_delayed_message_exchange
+	// used for non-blocking retry backoff in Python workers.
+	// Requires the rabbitmq_delayed_message_exchange plugin to be enabled.
+	DelayedExchangeName = "document_processor_delayed"
 )
 
 type RabbitMQBroker struct {
@@ -78,6 +83,15 @@ func New(cfg *config.Config) (*RabbitMQBroker, error) {
 		return nil, fmt.Errorf("failed to declare DLX: %w", err)
 	}
 
+	if err := broker.declareDelayedExchange(); err != nil {
+		// Non-fatal: log a warning but continue. Workers fall back to
+		// basic_nack(requeue=True) when the delayed exchange is absent.
+		broker.logger.Warn().Err(err).Msg(
+			"Failed to declare delayed exchange — plugin may not be enabled; " +
+				"workers will fall back to blocking retry",
+		)
+	}
+
 	if err := broker.declareQueues(); err != nil {
 		broker.Close()
 		return nil, err
@@ -129,6 +143,53 @@ func (b *RabbitMQBroker) declareDLX() error {
 		return fmt.Errorf("failed to bind DLQ to DLX: %w", err)
 	}
 	b.logger.Info().Msg("Dead Letter Queue bound to DLX")
+
+	return nil
+}
+
+// declareDelayedExchange declares the x-delayed-message exchange used by Python
+// workers for non-blocking retry backoff. Requires the
+// rabbitmq_delayed_message_exchange plugin. Returns an error if the plugin is
+// not installed; callers should treat this as non-fatal and fall back to
+// blocking retry.
+func (b *RabbitMQBroker) declareDelayedExchange() error {
+	// Declare the delayed exchange. The "x-delayed-message" type requires the
+	// rabbitmq_delayed_message_exchange plugin. The underlying routing type is
+	// "direct" so messages are routed by their routing key (queue name).
+	err := b.channel.ExchangeDeclare(
+		DelayedExchangeName, // name
+		"x-delayed-message", // type (plugin-specific)
+		true,                // durable
+		false,               // auto-delete
+		false,               // internal
+		false,               // no-wait
+		amqp.Table{
+			"x-delayed-type": "direct",
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare delayed exchange %q: %w", DelayedExchangeName, err)
+	}
+	b.logger.Info().Msgf("Delayed exchange declared: %s", DelayedExchangeName)
+
+	// Bind each work queue to the delayed exchange using the queue name as
+	// routing key. This allows Python workers to publish a retry message to
+	// the delayed exchange with routing_key=<original_queue> and have it
+	// delivered after x-delay milliseconds.
+	queues := []string{
+		b.config.ExtractQueue,
+		b.config.EmbeddingsQueue,
+		b.config.EntitiesQueue,
+		b.config.MetadataQueue,
+		b.config.InferencesQueue,
+	}
+
+	for _, q := range queues {
+		if err := b.channel.QueueBind(q, q, DelayedExchangeName, false, nil); err != nil {
+			return fmt.Errorf("failed to bind queue %q to delayed exchange: %w", q, err)
+		}
+		b.logger.Info().Msgf("Queue %s bound to delayed exchange", q)
+	}
 
 	return nil
 }
@@ -547,6 +608,12 @@ func (b *RabbitMQBroker) reconnect() {
 func (b *RabbitMQBroker) redeclareQueues() error {
 	if err := b.declareDLX(); err != nil {
 		return fmt.Errorf("failed to redeclare DLX: %w", err)
+	}
+	if err := b.declareDelayedExchange(); err != nil {
+		// Non-fatal on reconnect too
+		b.logger.Warn().Err(err).Msg(
+			"Failed to redeclare delayed exchange after reconnect — plugin may not be enabled",
+		)
 	}
 	if err := b.declareQueues(); err != nil {
 		return fmt.Errorf("failed to redeclare queues: %w", err)

@@ -113,7 +113,7 @@ class ExtractOptions(BaseModel):
 
 
 class ExtractRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str
     options: Optional[ExtractOptions] = None
 
 
@@ -485,6 +485,8 @@ async def add_metrics(request: Request, call_next):
     tags=["extract"],
 )
 async def extract_entities(payload: ExtractRequest):
+    if not payload.text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
     try:
         result = adapter.extract(payload.text, payload.options)
         return JSONResponse(status_code=200, content=result.model_dump())

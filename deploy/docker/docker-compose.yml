@@ -1,8 +1,10 @@
 version: '3.8'
 services:
   rabbitmq:
-    image: rabbitmq:3.12-management
+    image: rabbitmq:3.13-management
     container_name: ia-text-rabbitmq
+    command: >
+      sh -c "rabbitmq-plugins enable rabbitmq_delayed_message_exchange && rabbitmq-server"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}

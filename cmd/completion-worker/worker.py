@@ -35,6 +35,7 @@ Pipeline variants:
 import os
 import sys
 import json
+import hashlib
 import logging
 import msgpack
 import time
@@ -227,8 +228,6 @@ class CompletionWorker:
         """
         if not entities:
             return {}
-
-        import hashlib
 
         result: dict = {}
         for ent in entities:
@@ -528,8 +527,7 @@ class CompletionWorker:
                 enriched = dict(chunk)  # shallow copy — preserve all existing fields
                 enriched["embeddings"] = embeddings_by_chunk.get(cid, [])
                 enriched["entity_ids"] = entity_ids_by_chunk.get(cid, [])
-                if cid in inferences_by_chunk:
-                    enriched["inferences"] = inferences_by_chunk[cid]
+                enriched["inferences"] = inferences_by_chunk.get(cid, [])
                 enriched_chunks.append(enriched)
 
             # --- Final result ---

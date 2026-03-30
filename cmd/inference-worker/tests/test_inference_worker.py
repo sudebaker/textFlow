@@ -97,7 +97,7 @@ class TestInferenceWorker:
                 mock_response.json.return_value = {
                     "choices": [{
                         "message": {
-                            "content": '[{"text": "Test fact", "confidence": 0.95, "entities": []}]'
+                            "content": '[{"text": "Test fact", "confidence": 0.95, "entity_refs": []}]'
                         }
                     }]
                 }

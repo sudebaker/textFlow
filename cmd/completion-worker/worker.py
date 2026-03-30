@@ -212,63 +212,43 @@ class CompletionWorker:
             logger.error(f"Failed to send webhook: {e}")
             return False
 
-    def deduplicate_entities(self, entities: list) -> list:
-        """Deduplicate entities using exact text match (no fuzzy matching).
-
-        Removes duplicate entities by exact (label, text) key match while
-        preserving all text variations. For exact duplicates, keeps the entity
-        with the highest confidence score.
-
-        Examples of preserved variations:
-            - "María Pérez" and "María Pérez" are kept as different
-            - "PER:John Smith" (confidence 0.95) replaces "PER:John Smith" (0.85)
+    def deduplicate_entities(self, entities: list) -> dict:
+        """Deduplicate entities by entity_id, keeping highest confidence.
 
         Args:
-            entities: List of entity dictionaries with keys:
-                - label: Entity type (e.g., "PER", "ORG", "LOC")
-                - text: Exact entity text
-                - confidence: Confidence score (0-1)
+            entities: List of entity dicts, each expected to have:
+                - entity_id: stable 12-char hex ID
+                - label, text, confidence, chunk_id (optional: start, end)
 
         Returns:
-            Deduplicated list of entities, preserving order of first occurrence.
-            Exact duplicates with lower confidence are removed and replaced
-            with higher-confidence versions.
-
-        Note:
-            This is called during finalize_job() to clean up entities collected
-            from multiple chunks. Uses grouping by (label, text) without fuzzy
-            matching to preserve intentional variations.
+            Dict keyed by entity_id → {label, text, confidence}.
+            Per-chunk fields (chunk_id, start, end) are stripped from dict values.
+            Falls back to generating entity_id from label:text if entity_id missing.
         """
         if not entities:
-            return entities
+            return {}
 
-        # Group by (label, exact text) - no fuzzy matching
-        seen = {}
-        result = []
-        index_map = {}  # Maps key to index in result list
+        import hashlib
 
-        for entity in entities:
-            key = f"{entity.get('label', '')}:{entity.get('text', '')}"
+        result: dict = {}
+        for ent in entities:
+            eid = ent.get("entity_id")
+            if not eid:
+                # Fallback: generate on the fly if entity_id is missing (old data)
+                key = f"{ent.get('label', '')}:{ent.get('text', '').lower().strip()}"
+                eid = hashlib.sha256(key.encode()).hexdigest()[:12]
 
-            if key not in seen:
-                # New unique entity
-                index_map[key] = len(result)
-                seen[key] = entity
-                result.append(entity)
-            else:
-                # Exact match found - keep highest confidence
-                existing = seen[key]
-                if entity.get("confidence", 0) > existing.get("confidence", 0):
-                    # Update in dictionary and result list
-                    idx = index_map[key]
-                    seen[key] = entity
-                    result[idx] = entity
+            existing = result.get(eid)
+            if existing is None or ent.get("confidence", 0) > existing.get("confidence", 0):
+                result[eid] = {
+                    "label": ent.get("label", ""),
+                    "text": ent.get("text", ""),
+                    "confidence": ent.get("confidence", 0.0),
+                }
 
         logger.info(
-            f"Deduplicated entities: {len(entities)} → {len(result)} "
-            f"(removed {len(entities) - len(result)} exact duplicates)"
+            f"Deduplicated entities: {len(entities)} raw → {len(result)} unique"
         )
-
         return result
 
     def get_job_creation_time(self, job_id: str) -> Optional[str]:
@@ -491,22 +471,34 @@ class CompletionWorker:
 
             chunks = json.loads(chunks_json) if chunks_json else []
 
-            embeddings_raw = msgpack.unpackb(embeddings_raw_bytes, raw=False) if embeddings_raw_bytes else {}
-            embeddings = {"model": "BAAI/bge-m3", "dimension": 1024, **embeddings_raw}
+            # --- Embeddings: {chunk_id: [float]} ---
+            embeddings_by_chunk: dict = {}
+            if embeddings_raw_bytes:
+                raw = msgpack.unpackb(embeddings_raw_bytes, raw=False)
+                # raw is {chunk_id: [float]} — filter out any non-list values
+                embeddings_by_chunk = {k: v for k, v in raw.items() if isinstance(v, list)}
 
-            # Read RAW entities from entities-worker (before dedup)
+            # --- Entities: deduplicate → global dict {entity_id: {label, text, confidence}} ---
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
-
-            # Apply deduplication at the end (now that we have all entities from all chunks)
-            entities = self.deduplicate_entities(entities_raw) if entities_raw else []
+            entities_dict = self.deduplicate_entities(entities_raw) if entities_raw else {}
 
             logger.info(
-                f"Entities: {len(entities_raw)} raw → {len(entities)} after dedup"
+                f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)"
             )
 
-            # Parse source classification and micro inferences if present
+            # --- Build per-chunk entity_ids index ---
+            entity_ids_by_chunk: dict = {}  # {chunk_id: [entity_id]}
+            for ent in entities_raw:
+                cid = ent.get("chunk_id")
+                eid = ent.get("entity_id")
+                if cid and eid:
+                    entity_ids_by_chunk.setdefault(cid, [])
+                    if eid not in entity_ids_by_chunk[cid]:
+                        entity_ids_by_chunk[cid].append(eid)
+
+            # --- Micro-inferences: parse and index by chunk_id ---
+            inferences_by_chunk: dict = {}  # {chunk_id: [inference]}
             source_classification = None
-            micro_inferences = None
 
             try:
                 if source_classification_json:
@@ -516,19 +508,31 @@ class CompletionWorker:
 
             try:
                 if micro_inferences_json:
-                    micro_inferences = json.loads(micro_inferences_json)
-                    # micro_inferences is now: [{chunk_id: "...", inferences: [...]}, ...]
-                    # Validate structure
-                    if not isinstance(micro_inferences, list):
+                    micro_inferences_list = json.loads(micro_inferences_json)
+                    if isinstance(micro_inferences_list, list):
+                        for item in micro_inferences_list:
+                            cid = item.get("chunk_id")
+                            if cid:
+                                inferences_by_chunk[cid] = item.get("inferences", [])
+                    else:
                         logger.warning(
-                            f"micro_inferences is not a list, got {type(micro_inferences)}"
+                            f"micro_inferences is not a list, got {type(micro_inferences_list)}"
                         )
-                        micro_inferences = None
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse micro_inferences JSON: {e}")
-                micro_inferences = None
 
-            # Build results dict with optional inference fields
+            # --- Enrich chunks: embed embeddings, entity_ids, inferences ---
+            enriched_chunks = []
+            for chunk in chunks:
+                cid = chunk.get("chunk_id", "")
+                enriched = dict(chunk)  # shallow copy — preserve all existing fields
+                enriched["embeddings"] = embeddings_by_chunk.get(cid, [])
+                enriched["entity_ids"] = entity_ids_by_chunk.get(cid, [])
+                if cid in inferences_by_chunk:
+                    enriched["inferences"] = inferences_by_chunk[cid]
+                enriched_chunks.append(enriched)
+
+            # --- Final result ---
             results = {
                 "job_id": job_id,
                 "status": "completed",
@@ -536,30 +540,21 @@ class CompletionWorker:
                 "completed_at": completed_at,
                 "document_metadata": document_metadata,
                 "text_metadata": text_metadata,
-                "chunks": chunks,
-                "embeddings": embeddings,
-                "entities": entities,
+                "chunks": enriched_chunks,
+                "entities": entities_dict,
             }
 
-            # Add optional inference fields if present
             if source_classification is not None:
                 results["source_classification"] = source_classification
-            if micro_inferences is not None:
-                results["micro_inferences"] = micro_inferences
 
             # Log completion stats
-            log_message = f"Job {job_id} finalized: chunks={len(chunks)}, entities={len(entities)}"
+            total_inferences = sum(len(c.get("inferences", [])) for c in enriched_chunks)
+            log_message = (
+                f"Job {job_id} finalized: chunks={len(enriched_chunks)}, "
+                f"entities={len(entities_dict)}, inferences={total_inferences}"
+            )
             if source_classification:
                 log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
-            if micro_inferences:
-                # micro_inferences is now a list of {chunk_id, inferences: [...]}
-                if isinstance(micro_inferences, list):
-                    total_inferences = sum(
-                        len(c.get("inferences", [])) for c in micro_inferences
-                    )
-                    log_message += f", micro_inferences={total_inferences} (from {len(micro_inferences)} chunks)"
-                else:
-                    log_message += f", micro_inferences=<invalid structure>"
             logger.info(log_message)
 
             self.redis_client.set(

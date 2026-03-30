@@ -44,15 +44,22 @@ import requests
 from datetime import datetime
 from typing import Dict, Any, Optional
 from prometheus_client import Counter, Histogram, start_http_server
+from rapidfuzz import fuzz
+from unidecode import unidecode
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, os.path.dirname(__file__))
 from pkg.events_python import EventBus
+from app.config.settings import Settings
+
+_settings = Settings()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
+FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -214,39 +221,79 @@ class CompletionWorker:
             return False
 
     def deduplicate_entities(self, entities: list) -> dict:
-        """Deduplicate entities by entity_id, keeping highest confidence.
+        """Deduplicate entities using fuzzy text matching, keeping highest confidence.
+
+        Two entities merge when they share the same label AND their normalized texts
+        are similar enough (fuzz.ratio >= FUZZY_MATCH_THRESHOLD).  Normalization uses
+        unidecode + lower + strip so accented variants ("Educación" / "Educacion")
+        are treated as identical.
+
+        The threshold is read from FUZZY_MATCH_THRESHOLD env var (default 0.85).
 
         Args:
             entities: List of entity dicts, each expected to have:
-                - entity_id: stable 12-char hex ID
-                - label, text, confidence, chunk_id (optional: start, end)
+                - entity_id (optional): stable 12-char hex ID
+                - label, text, confidence
 
         Returns:
             Dict keyed by entity_id → {label, text, confidence}.
-            Per-chunk fields (chunk_id, start, end) are stripped from dict values.
-            Falls back to generating entity_id from label:text if entity_id missing.
+            Per-chunk fields (chunk_id, start, end) are stripped from values.
+            Falls back to generating entity_id from label:text if field missing.
         """
         if not entities:
             return {}
 
-        result: dict = {}
-        for ent in entities:
-            eid = ent.get("entity_id")
-            if not eid:
-                # Fallback: generate on the fly if entity_id is missing (old data)
-                key = f"{ent.get('label', '')}:{ent.get('text', '').lower().strip()}"
-                eid = hashlib.sha256(key.encode()).hexdigest()[:12]
+        def _normalize(text: str) -> str:
+            return unidecode(text).lower().strip()
 
-            existing = result.get(eid)
-            if existing is None or ent.get("confidence", 0) > existing.get("confidence", 0):
+        def _generate_id(label: str, text: str) -> str:
+            key = f"{label}:{_normalize(text)}"
+            return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+        # result maps entity_id → {label, text, confidence}
+        result: dict = {}
+        # norm_index maps entity_id → normalized text (for similarity lookup)
+        norm_index: dict = {}
+
+        for ent in entities:
+            label = ent.get("label", "")
+            text = ent.get("text", "")
+            confidence = ent.get("confidence", 0.0)
+            norm_text = _normalize(text)
+
+            # Find an existing entry with same label and similar enough text
+            matched_id = None
+            for existing_id, existing_norm in norm_index.items():
+                if result[existing_id]["label"] != label:
+                    continue
+                similarity = fuzz.ratio(norm_text, existing_norm) / 100.0
+                if similarity >= FUZZY_MATCH_THRESHOLD:
+                    matched_id = existing_id
+                    break
+
+            if matched_id:
+                # Merge: keep highest confidence as representative
+                if confidence > result[matched_id].get("confidence", 0):
+                    result[matched_id] = {
+                        "label": label,
+                        "text": text,
+                        "confidence": confidence,
+                    }
+                    # Update norm_index to reflect the new canonical text
+                    norm_index[matched_id] = _normalize(text)
+            else:
+                # New unique entity — use provided entity_id or generate one
+                eid = ent.get("entity_id") or _generate_id(label, text)
                 result[eid] = {
-                    "label": ent.get("label", ""),
-                    "text": ent.get("text", ""),
-                    "confidence": ent.get("confidence", 0.0),
+                    "label": label,
+                    "text": text,
+                    "confidence": confidence,
                 }
+                norm_index[eid] = norm_text
 
         logger.info(
             f"Deduplicated entities: {len(entities)} raw → {len(result)} unique"
+            f" (threshold={FUZZY_MATCH_THRESHOLD})"
         )
         return result
 

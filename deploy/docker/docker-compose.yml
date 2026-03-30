@@ -376,6 +376,7 @@ services:
       context: ../../
       dockerfile: cmd/completion-worker/Dockerfile
     container_name: ia-text-completion-worker
+    env_file: .env
     environment:
     - REDIS_URL=redis://redis:6379
     - LOG_LEVEL=info

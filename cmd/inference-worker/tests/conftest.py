@@ -1,5 +1,5 @@
 """
-Conftest for entities-worker tests.
+Conftest for inference-worker tests.
 
 Sets sys.path so worker.py is imported from THIS worker directory, not from
 another worker that pytest may have loaded first (all conftest files load

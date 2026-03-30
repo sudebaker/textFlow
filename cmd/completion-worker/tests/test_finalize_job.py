@@ -1,13 +1,8 @@
 """Unit tests for the new finalize_job() output structure."""
 import json
-import sys
-import os
 import time
 import msgpack
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 
 from worker import CompletionWorker
 

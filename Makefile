@@ -115,16 +115,25 @@ format: ## Format Go and Python code
 
 build: ## Build all binaries
 	@echo -e "${YELLOW}Building all binaries...${NC}"
+	@mkdir -p bin
 	go build -o bin/orchestrator ./cmd/orchestrator
 	go build -o bin/resource-manager ./cmd/resource-manager
+	cd tools/client && go build -o ../../bin/client .
 
 build-orchestrator: ## Build orchestrator binary
 	@echo -e "${YELLOW}Building orchestrator...${NC}"
+	@mkdir -p bin
 	go build -o bin/orchestrator ./cmd/orchestrator
 
 build-resource-manager: ## Build resource-manager binary
 	@echo -e "${YELLOW}Building resource-manager...${NC}"
+	@mkdir -p bin
 	go build -o bin/resource-manager ./cmd/resource-manager
+
+build-client: ## Build tools/client binary
+	@echo -e "${YELLOW}Building client...${NC}"
+	@mkdir -p bin
+	cd tools/client && go build -o ../../bin/client .
 
 # =============================================================================
 # Dependencies

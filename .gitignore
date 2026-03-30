@@ -34,3 +34,5 @@ data/
 # Git worktrees
 .worktrees/
 bin/*
+tools/client/client
+tools/client/client_test_build

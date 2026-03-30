@@ -46,40 +46,45 @@ type GetJobResponse struct {
 }
 
 type JobResults struct {
-	JobID            string                 `json:"job_id"`
-	Status           string                 `json:"status"`
-	CreatedAt        string                 `json:"created_at"`
-	CompletedAt      string                 `json:"completed_at"`
-	Text             string                 `json:"text"`
-	Chunks           []Chunk                `json:"chunks,omitempty"`
-	Embeddings       map[string]interface{} `json:"embeddings,omitempty"`
-	Entities         []Entity               `json:"entities,omitempty"`
-	DocumentMetadata map[string]interface{} `json:"document_metadata,omitempty"`
-	TextMetadata     map[string]interface{} `json:"text_metadata,omitempty"`
-	MicroInferences  []ChunkInferences      `json:"micro_inferences,omitempty"`
+	JobID            string                   `json:"job_id"`
+	Status           string                   `json:"status"`
+	CreatedAt        string                   `json:"created_at"`
+	CompletedAt      string                   `json:"completed_at"`
+	Text             string                   `json:"text"`
+	Chunks           []Chunk                  `json:"chunks,omitempty"`
+	Entities         map[string]EntityMinimal `json:"entities,omitempty"`
+	DocumentMetadata map[string]interface{}   `json:"document_metadata,omitempty"`
+	TextMetadata     map[string]interface{}   `json:"text_metadata,omitempty"`
 }
 
 type Chunk struct {
-	ChunkID     string `json:"chunk_id"`
-	Text        string `json:"text"`
-	StartOffset int    `json:"start_offset"`
-	EndOffset   int    `json:"end_offset"`
-	TokenCount  int    `json:"token_count,omitempty"`
+	ChunkID     string          `json:"chunk_id"`
+	Text        string          `json:"text"`
+	StartOffset int             `json:"start_offset"`
+	EndOffset   int             `json:"end_offset"`
+	TokenCount  int             `json:"token_count,omitempty"`
+	Embeddings  []float32       `json:"embeddings,omitempty"`
+	EntityIDs   []string        `json:"entity_ids,omitempty"`
+	Inferences  []InferenceItem `json:"inferences,omitempty"`
 }
 
-type Entity struct {
-	Text       string  `json:"text"`
+type EntityMinimal struct {
 	Label      string  `json:"label"`
+	Text       string  `json:"text"`
 	Confidence float32 `json:"confidence"`
-	ChunkID    string  `json:"chunk_id,omitempty"`
-	Start      int     `json:"start"`
-	End        int     `json:"end"`
+}
+
+type InferenceItem struct {
+	Text       string   `json:"text"`
+	Confidence float32  `json:"confidence"`
+	EntityRefs []string `json:"entity_refs,omitempty"`
+	EntityID   string   `json:"entity_id,omitempty"`
 }
 
 type MicroInference struct {
 	Text       string   `json:"text"`
 	Confidence float32  `json:"confidence"`
-	Entities   []string `json:"entities,omitempty"`
+	EntityRefs []string `json:"entity_refs,omitempty"`
 }
 
 type ChunkInferences struct {
@@ -421,11 +426,15 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 		return err
 	}
 
-	// Display inference summary if present
-	if result.Results != nil && len(result.Results.MicroInferences) > 0 {
-		fmt.Printf("\nInferences generated for %d chunks:\n", len(result.Results.MicroInferences))
-		for _, ci := range result.Results.MicroInferences {
-			fmt.Printf("  Chunk %v: %d inferences\n", ci.ChunkID, len(ci.Inferences))
+	// Display inference summary if present (now inferences are per-chunk)
+	if result.Results != nil {
+		inferenceCount := 0
+		for _, chunk := range result.Results.Chunks {
+			inferenceCount += len(chunk.Inferences)
+		}
+		if inferenceCount > 0 {
+			fmt.Printf("\nInferences generated: %d total across %d chunks\n",
+				inferenceCount, len(result.Results.Chunks))
 		}
 	}
 

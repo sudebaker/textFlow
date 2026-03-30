@@ -52,11 +52,12 @@ type SourceClassificationResult struct {
 }
 
 // MicroInference represents a single fact or assertion extracted by the LLM from a chunk.
-// It includes the extracted text, confidence score, and any linked entities.
+// It includes the extracted text, confidence score, and entity references.
 type MicroInference struct {
 	Text       string   `json:"text"`
 	Confidence float32  `json:"confidence"`
-	Entities   []string `json:"entities,omitempty"`
+	EntityRefs []string `json:"entity_refs,omitempty"`
+	EntityID   string   `json:"entity_id,omitempty"`
 }
 
 // ChunkInferences represents a bundle of inferences extracted from a single text chunk.
@@ -66,9 +67,26 @@ type ChunkInferences struct {
 	Inferences []MicroInference `json:"inferences"`
 }
 
+// EntityMinimal represents a deduplicated named entity in the final job results.
+// It contains only the label, canonical text, and confidence — offsets are stripped.
+type EntityMinimal struct {
+	Label      string  `json:"label"`
+	Text       string  `json:"text"`
+	Confidence float32 `json:"confidence"`
+}
+
+// InferenceItem represents a single micro-inference embedded inside a chunk in the final results.
+type InferenceItem struct {
+	Text       string   `json:"text"`
+	Confidence float32  `json:"confidence"`
+	EntityRefs []string `json:"entity_refs,omitempty"`
+	EntityID   string   `json:"entity_id,omitempty"`
+}
+
 // JobResults represents the final aggregated results of a completed job.
-// It contains extracted text, chunks with metadata, embeddings, named entities, document metadata,
-// and optional inference results. All fields except JobID, Status, CreatedAt, and CompletedAt are optional,
+// It contains extracted text, chunks with per-chunk embeddings/entities/inferences,
+// a deduplicated entity map, document metadata, and source classification.
+// All fields except JobID, Status, CreatedAt, and CompletedAt are optional,
 // depending on which processing stages were executed.
 type JobResults struct {
 	JobID                string                      `json:"job_id"`
@@ -77,23 +95,25 @@ type JobResults struct {
 	CompletedAt          string                      `json:"completed_at"`
 	Text                 string                      `json:"text"`
 	Chunks               []Chunk                     `json:"chunks,omitempty"`
-	Embeddings           map[string]interface{}      `json:"embeddings,omitempty"`
-	Entities             []Entity                    `json:"entities,omitempty"`
+	Entities             map[string]EntityMinimal    `json:"entities,omitempty"`
 	DocumentMetadata     map[string]interface{}      `json:"document_metadata,omitempty"`
 	TextMetadata         map[string]interface{}      `json:"text_metadata,omitempty"`
 	SourceClassification *SourceClassificationResult `json:"source_classification,omitempty"`
-	MicroInferences      []ChunkInferences           `json:"micro_inferences,omitempty"`
 }
 
-// Chunk represents a segment of extracted text with token metadata.
-// Chunks are created by the text extraction phase and serve as units for embedding and entity recognition.
+// Chunk represents a segment of extracted text with token metadata, per-chunk embeddings,
+// entity references, and inferences. Chunks are created by the text extraction phase and serve
+// as units for embedding and entity recognition.
 // StartOffset and EndOffset refer to character positions in the original extracted text.
 type Chunk struct {
-	ChunkID     string `json:"chunk_id"`
-	Text        string `json:"text"`
-	StartOffset int    `json:"start_offset"`
-	EndOffset   int    `json:"end_offset"`
-	TokenCount  int    `json:"token_count,omitempty"`
+	ChunkID     string          `json:"chunk_id"`
+	Text        string          `json:"text"`
+	StartOffset int             `json:"start_offset"`
+	EndOffset   int             `json:"end_offset"`
+	TokenCount  int             `json:"token_count,omitempty"`
+	Embeddings  []float32       `json:"embeddings,omitempty"`
+	EntityIDs   []string        `json:"entity_ids,omitempty"`
+	Inferences  []InferenceItem `json:"inferences,omitempty"`
 }
 
 // DocumentMetadata represents PDF and document-level metadata extracted during processing.
@@ -109,9 +129,9 @@ type DocumentMetadata struct {
 	SHA256       string `json:"sha256,omitempty"`
 }
 
-// Entity represents a named entity recognized in the document text.
-// It includes the entity text, label (e.g., PERSON, ORGANIZATION), confidence score,
-// and character offsets (Start/End) indicating its position in the chunk.
+// Entity represents a named entity as stored by the entities-worker in the intermediate Redis key.
+// It includes character offsets (Start/End) for the entity's position in the chunk text.
+// For the final deduplicated entity map in JobResults, use EntityMinimal instead.
 type Entity struct {
 	Text       string  `json:"text"`
 	Label      string  `json:"label"`

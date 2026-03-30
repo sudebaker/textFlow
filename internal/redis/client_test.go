@@ -126,8 +126,8 @@ func TestRedisClient_SetAndGetJobResults(t *testing.T) {
 	jobID := "test-job-123"
 	results := &models.JobResults{
 		Text: "Sample text",
-		Embeddings: map[string]interface{}{
-			"chunk_0": []float32{0.1, 0.2, 0.3},
+		Chunks: []models.Chunk{
+			{ChunkID: "chunk_0", Text: "hello", Embeddings: []float32{0.1, 0.2, 0.3}},
 		},
 	}
 
@@ -137,7 +137,7 @@ func TestRedisClient_SetAndGetJobResults(t *testing.T) {
 	retrieved, err := client.GetJobResults(ctx, jobID)
 	require.NoError(t, err)
 	assert.Equal(t, results.Text, retrieved.Text)
-	assert.Equal(t, len(results.Embeddings), len(retrieved.Embeddings))
+	assert.Equal(t, len(results.Chunks), len(retrieved.Chunks))
 }
 
 func TestRedisClient_SetAndGetJobEmbeddings(t *testing.T) {
@@ -395,7 +395,7 @@ func TestRedisClient_TTLSetFailure_PropagatesError(t *testing.T) {
 	}
 }
 
-func TestGetJobResults_MicroInferences(t *testing.T) {
+func TestGetJobResults_ChunkInferences(t *testing.T) {
 	mr, client := setupTestRedis(t)
 	defer mr.Close()
 	defer client.Close()
@@ -403,26 +403,37 @@ func TestGetJobResults_MicroInferences(t *testing.T) {
 	ctx := context.Background()
 	jobID := "test-job-mi"
 
-	// Simulate what Python completion-worker writes to Redis
+	// Simulate what Python completion-worker writes to Redis (new schema)
 	pythonJSON := `{
         "job_id": "test-job-mi",
         "status": "completed",
         "created_at": "2026-01-01T00:00:00",
         "completed_at": "2026-01-01T00:01:00",
-        "chunks": [],
-        "entities": [],
-        "micro_inferences": [
+        "chunks": [
             {
-                "chunk_id": 0,
+                "chunk_id": "chunk_000",
+                "text": "sample text",
+                "start_offset": 0,
+                "end_offset": 11,
+                "embeddings": [0.1, 0.2, 0.3],
+                "entity_ids": ["abc000000001"],
                 "inferences": [
-                    {"text": "Property value is 500000 EUR", "confidence": 0.95, "entities": ["500000 EUR"]}
+                    {"text": "Property value is 500000 EUR", "confidence": 0.95, "entity_refs": ["500000 EUR"], "entity_id": "abc000000001"}
                 ]
             },
             {
-                "chunk_id": 1,
+                "chunk_id": "chunk_001",
+                "text": "other text",
+                "start_offset": 12,
+                "end_offset": 22,
+                "embeddings": [0.4, 0.5, 0.6],
+                "entity_ids": [],
                 "inferences": []
             }
-        ]
+        ],
+        "entities": {
+            "abc000000001": {"label": "ORG", "text": "500000 EUR", "confidence": 0.95}
+        }
     }`
 
 	key := client.key("job", jobID, "results")
@@ -433,10 +444,12 @@ func TestGetJobResults_MicroInferences(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, results)
 
-	assert.Equal(t, 2, len(results.MicroInferences))
-	assert.Equal(t, 1, len(results.MicroInferences[0].Inferences))
-	assert.Equal(t, "Property value is 500000 EUR", results.MicroInferences[0].Inferences[0].Text)
-	assert.InDelta(t, 0.95, results.MicroInferences[0].Inferences[0].Confidence, 0.001)
-	assert.Equal(t, []string{"500000 EUR"}, results.MicroInferences[0].Inferences[0].Entities)
-	assert.Equal(t, 0, len(results.MicroInferences[1].Inferences))
+	assert.Equal(t, 2, len(results.Chunks))
+	assert.Equal(t, 1, len(results.Chunks[0].Inferences))
+	assert.Equal(t, "Property value is 500000 EUR", results.Chunks[0].Inferences[0].Text)
+	assert.InDelta(t, 0.95, results.Chunks[0].Inferences[0].Confidence, 0.001)
+	assert.Equal(t, []string{"500000 EUR"}, results.Chunks[0].Inferences[0].EntityRefs)
+	assert.Equal(t, 0, len(results.Chunks[1].Inferences))
+	assert.Equal(t, 1, len(results.Entities))
+	assert.Equal(t, "ORG", results.Entities["abc000000001"].Label)
 }

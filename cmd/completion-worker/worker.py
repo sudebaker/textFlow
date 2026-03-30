@@ -36,6 +36,7 @@ import os
 import sys
 import json
 import logging
+import msgpack
 import time
 import redis
 import requests
@@ -98,6 +99,8 @@ class CompletionWorker:
             redis.ConnectionError: If Redis connection cannot be established.
         """
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        # Raw client (no decode_responses) for binary keys like MsgPack embeddings
+        self.redis_raw = redis.from_url(REDIS_URL, decode_responses=False)
         self.event_bus = EventBus(self.redis_client)
         # Default required steps for full pipeline
         self.default_required_steps = {
@@ -452,7 +455,6 @@ class CompletionWorker:
             pipe.get(f"orchestrator:job:{job_id}:metadata:document")
             pipe.get(f"orchestrator:job:{job_id}:metadata:text")
             pipe.get(f"orchestrator:job:{job_id}:chunks")
-            pipe.get(f"orchestrator:job:{job_id}:embeddings")
             pipe.get(f"orchestrator:job:{job_id}:entities_raw")
             pipe.get(f"orchestrator:job:{job_id}:source_classification")
             pipe.get(f"orchestrator:job:{job_id}:micro_inferences")
@@ -463,11 +465,13 @@ class CompletionWorker:
                 document_metadata_json,
                 text_metadata_json,
                 chunks_json,
-                embeddings_json,
                 entities_raw_json,
                 source_classification_json,
                 micro_inferences_json,
             ) = pipe.execute()
+
+            # Embeddings are stored as MsgPack binary — use raw client (no decode_responses)
+            embeddings_raw_bytes = self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings")
 
             created_at_timestamp = int(meta.get("created_at", time.time()))
             created_at = datetime.fromtimestamp(created_at_timestamp).isoformat()
@@ -487,7 +491,7 @@ class CompletionWorker:
 
             chunks = json.loads(chunks_json) if chunks_json else []
 
-            embeddings_raw = json.loads(embeddings_json) if embeddings_json else {}
+            embeddings_raw = msgpack.unpackb(embeddings_raw_bytes, raw=False) if embeddings_raw_bytes else {}
             embeddings = {"model": "BAAI/bge-m3", "dimension": 1024, **embeddings_raw}
 
             # Read RAW entities from entities-worker (before dedup)

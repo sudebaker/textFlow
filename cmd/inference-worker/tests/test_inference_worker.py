@@ -33,7 +33,7 @@ class TestInferenceWorker:
                 mock_response.json.return_value = {
                     "choices": [{
                         "message": {
-                            "content": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entities": ["500000 EUR"]}]'
+                            "content": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entity_refs": ["500000 EUR"]}]'
                         }
                     }]
                 }
@@ -48,7 +48,8 @@ class TestInferenceWorker:
                 assert len(inferences) == 1
                 assert inferences[0]["text"] == "Property value is 500000 EUR"
                 assert inferences[0]["confidence"] == 0.95
-                assert inferences[0]["entities"] == ["500000 EUR"]
+                assert inferences[0]["entity_refs"] == ["500000 EUR"]
+                assert "entities" not in inferences[0]
                 # Old fields must NOT be present
                 assert "fact" not in inferences[0]
                 assert "source" not in inferences[0]

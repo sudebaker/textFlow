@@ -1,9 +1,5 @@
-import sys
-import os
+import re
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import pytest
 from worker import entity_id  # module-level helper, not method
 
 
@@ -19,6 +15,9 @@ def test_entity_id_different_label():
 
 
 def test_entity_id_hex():
-    import re
-
     assert re.fullmatch(r"[0-9a-f]{12}", entity_id("LOC", "Zaragoza"))
+
+
+def test_entity_id_empty_strings():
+    eid = entity_id("", "")
+    assert re.fullmatch(r"[0-9a-f]{12}", eid)

@@ -56,6 +56,9 @@ var (
 	// Spreadsheet validation limits
 	maxSpreadsheetRows  int
 	maxSpreadsheetBytes int64
+
+	// pipelineOrder defines the canonical order of processing steps.
+	pipelineOrder = []string{"extraction", "embeddings", "entities", "metadata", "inferences"}
 )
 
 // main is the entry point for the IA Text Orchestrator service.
@@ -515,8 +518,9 @@ func createJobHandler(c *gin.Context) {
 }
 
 // calculateCurrentStep derives the active pipeline step from the steps map.
-// Order: extract → embeddings → entities → metadata → inferences.
-// Returns the step with value "processing", or the last completed step, or "" if the map is empty.
+// Order: extraction → embeddings → entities → metadata → inferences.
+// Returns the step currently "processing", or the last "completed" step in pipeline order;
+// returns "" if steps is empty.
 func calculateCurrentStep(steps map[string]string, order []string) string {
 	if len(steps) == 0 {
 		return ""
@@ -576,8 +580,7 @@ func getJobHandler(c *gin.Context) {
 	steps, _ := redis.GetJobSteps(ctx, jobID)
 
 	// Calculate current_step from the steps map.
-	// Pipeline order: extract → embeddings → entities → metadata → inferences
-	pipelineOrder := []string{"extract", "embeddings", "entities", "metadata", "inferences"}
+	// Pipeline order: extraction → embeddings → entities → metadata → inferences
 	currentStep := calculateCurrentStep(steps, pipelineOrder)
 
 	errorMsg, _ := redis.GetJobError(ctx, jobID)

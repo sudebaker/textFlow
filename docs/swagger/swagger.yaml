@@ -1,0 +1,289 @@
+definitions:
+  ia-text-orchestrator_internal_models.Chunk:
+    properties:
+      chunk_id:
+        type: string
+      embeddings:
+        items:
+          type: number
+        type: array
+      end_offset:
+        type: integer
+      entity_ids:
+        items:
+          type: string
+        type: array
+      inferences:
+        items:
+          $ref: '#/definitions/ia-text-orchestrator_internal_models.InferenceItem'
+        type: array
+      start_offset:
+        type: integer
+      text:
+        type: string
+      token_count:
+        type: integer
+    type: object
+  ia-text-orchestrator_internal_models.CreateJobRequest:
+    properties:
+      document_base64:
+        type: string
+      document_url:
+        type: string
+      features:
+        description: e.g. ["inferences"]
+        items:
+          type: string
+        type: array
+      filename:
+        type: string
+      webhook_secret:
+        type: string
+      webhook_url:
+        type: string
+    type: object
+  ia-text-orchestrator_internal_models.CreateJobResponse:
+    properties:
+      job_id:
+        type: string
+      status:
+        $ref: '#/definitions/ia-text-orchestrator_internal_models.JobStatus'
+      status_url:
+        type: string
+    type: object
+  ia-text-orchestrator_internal_models.EntityMinimal:
+    properties:
+      chunk_id:
+        type: string
+      confidence:
+        type: number
+      end_offset:
+        type: integer
+      label:
+        type: string
+      start_offset:
+        type: integer
+      text:
+        type: string
+    type: object
+  ia-text-orchestrator_internal_models.ErrorResponse:
+    properties:
+      detail:
+        type: string
+      error:
+        type: string
+    type: object
+  ia-text-orchestrator_internal_models.GetJobResponse:
+    properties:
+      created_at:
+        type: string
+      error:
+        type: string
+      job_id:
+        type: string
+      results:
+        $ref: '#/definitions/ia-text-orchestrator_internal_models.JobResults'
+      status:
+        $ref: '#/definitions/ia-text-orchestrator_internal_models.JobStatus'
+      steps:
+        additionalProperties:
+          type: string
+        type: object
+    type: object
+  ia-text-orchestrator_internal_models.InferenceItem:
+    properties:
+      confidence:
+        type: number
+      entity_id:
+        type: string
+      entity_refs:
+        items:
+          type: string
+        type: array
+      text:
+        type: string
+    type: object
+  ia-text-orchestrator_internal_models.JobResults:
+    properties:
+      chunks:
+        items:
+          $ref: '#/definitions/ia-text-orchestrator_internal_models.Chunk'
+        type: array
+      completed_at:
+        type: string
+      created_at:
+        type: string
+      document_metadata:
+        additionalProperties: true
+        type: object
+      entities:
+        additionalProperties:
+          $ref: '#/definitions/ia-text-orchestrator_internal_models.EntityMinimal'
+        type: object
+      job_id:
+        type: string
+      source_classification:
+        $ref: '#/definitions/ia-text-orchestrator_internal_models.SourceClassificationResult'
+      status:
+        type: string
+      text:
+        type: string
+      text_metadata:
+        additionalProperties: true
+        type: object
+    type: object
+  ia-text-orchestrator_internal_models.JobStatus:
+    enum:
+    - pending
+    - extracting
+    - processing
+    - embedding
+    - entities
+    - inferences
+    - completed
+    - failed
+    type: string
+    x-enum-varnames:
+    - StatusPending
+    - StatusExtracting
+    - StatusProcessing
+    - StatusEmbedding
+    - StatusEntities
+    - StatusInferences
+    - StatusCompleted
+    - StatusFailed
+  ia-text-orchestrator_internal_models.SourceClassificationResult:
+    properties:
+      classifier_version:
+        type: string
+      confidence:
+        type: number
+      document_type:
+        description: e.g. "notariado", "catastro", "bancario"
+        type: string
+    type: object
+info:
+  contact: {}
+paths:
+  /v1/documents/{id}:
+    delete:
+      description: Remove a completed or failed job and its associated data.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Delete a job
+    get:
+      description: Retrieve current status and results of a processing job.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.GetJobResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Get job status and results
+  /v1/documents/{id}/download:
+    get:
+      description: Download the full JSON results for a completed job.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Compression type (gzip)
+        in: query
+        name: compression
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.JobResults'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Download job results
+  /v1/documents/process:
+    post:
+      consumes:
+      - application/json
+      description: Submit a document for async processing. Returns job_id for polling.
+      parameters:
+      - description: Document processing request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Process a document
+  /v1/documents/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a document via multipart/form-data for async processing.
+      parameters:
+      - description: Document file
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: Filename
+        in: formData
+        name: filename
+        type: string
+      - description: Webhook URL for completion notification
+        in: formData
+        name: notify_webhook
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Upload a document
+swagger: "2.0"

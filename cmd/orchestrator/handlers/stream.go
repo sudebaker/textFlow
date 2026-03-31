@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"ia-text-orchestrator/internal/broker"
 	"ia-text-orchestrator/internal/events"
 	"ia-text-orchestrator/internal/models"
 	redisclient "ia-text-orchestrator/internal/redis"
@@ -23,11 +24,13 @@ const (
 var (
 	eventBus  *events.EventBus
 	redisInst *redisclient.RedisClient
+	mqBroker  *broker.RabbitMQBroker
 )
 
-func SetDependencies(eb *events.EventBus, r *redisclient.RedisClient) {
+func SetDependencies(eb *events.EventBus, r *redisclient.RedisClient, mq *broker.RabbitMQBroker) {
 	eventBus = eb
 	redisInst = r
+	mqBroker = mq
 }
 
 func StreamJobHandler(c *gin.Context) {

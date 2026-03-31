@@ -163,3 +163,117 @@ class TestInferenceWorker:
             chunks_total=3,
         )
         ch.basic_ack.assert_called_once()
+
+    def test_dynamic_max_short_chunk(self, worker):
+        """Chunk with < 200 tokens uses MAX_INFERENCES_SHORT"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        short_text = "Short text " * 10  # ~20 words → well below 200 tokens
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.MAX_INFERENCES_SHORT", 1):
+                with patch("worker.MAX_INFERENCES_MEDIUM", 2):
+                    with patch("worker.MAX_INFERENCES_LONG", 3):
+                        with patch("requests.post") as mock_post:
+                            mock_response = Mock()
+                            mock_response.raise_for_status = Mock()
+                            mock_response.json.return_value = {
+                                "choices": [{"message": {"content": '[{"text": "Fact A", "confidence": 0.9, "entity_refs": []}]'}}]
+                            }
+                            mock_post.return_value = mock_response
+
+                            worker.extract_inferences(chunk_text=short_text, entities=[], source_type="generico")
+
+                            call_kwargs = mock_post.call_args[1]
+                            prompt_sent = call_kwargs["json"]["messages"][1]["content"]
+                            assert "1 MOST IMPORTANT" in prompt_sent
+
+    def test_dynamic_max_medium_chunk(self, worker):
+        """Chunk with 200-499 tokens uses MAX_INFERENCES_MEDIUM"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        medium_text = "word " * 300  # ~300 words → medium range
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.MAX_INFERENCES_SHORT", 1):
+                with patch("worker.MAX_INFERENCES_MEDIUM", 2):
+                    with patch("worker.MAX_INFERENCES_LONG", 3):
+                        with patch("requests.post") as mock_post:
+                            mock_response = Mock()
+                            mock_response.raise_for_status = Mock()
+                            mock_response.json.return_value = {
+                                "choices": [{"message": {"content": '[{"text": "Fact B", "confidence": 0.9, "entity_refs": []}]'}}]
+                            }
+                            mock_post.return_value = mock_response
+
+                            worker.extract_inferences(chunk_text=medium_text, entities=[], source_type="generico")
+
+                            call_kwargs = mock_post.call_args[1]
+                            prompt_sent = call_kwargs["json"]["messages"][1]["content"]
+                            assert "2 MOST IMPORTANT" in prompt_sent
+
+    def test_dynamic_max_long_chunk(self, worker):
+        """Chunk with >= 500 tokens uses MAX_INFERENCES_LONG"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        long_text = "word " * 600  # ~600 words → long range
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.MAX_INFERENCES_SHORT", 1):
+                with patch("worker.MAX_INFERENCES_MEDIUM", 2):
+                    with patch("worker.MAX_INFERENCES_LONG", 3):
+                        with patch("requests.post") as mock_post:
+                            mock_response = Mock()
+                            mock_response.raise_for_status = Mock()
+                            mock_response.json.return_value = {
+                                "choices": [{"message": {"content": '[{"text": "Fact C", "confidence": 0.9, "entity_refs": []}]'}}]
+                            }
+                            mock_post.return_value = mock_response
+
+                            worker.extract_inferences(chunk_text=long_text, entities=[], source_type="generico")
+
+                            call_kwargs = mock_post.call_args[1]
+                            prompt_sent = call_kwargs["json"]["messages"][1]["content"]
+                            assert "3 MOST IMPORTANT" in prompt_sent
+
+    def test_confidence_filter_removes_low_confidence(self, worker):
+        """Inferences below MIN_CONFIDENCE_THRESHOLD are silently removed"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        text = "word " * 50
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
+                with patch("requests.post") as mock_post:
+                    mock_response = Mock()
+                    mock_response.raise_for_status = Mock()
+                    mock_response.json.return_value = {
+                        "choices": [{"message": {"content": '[{"text": "Low confidence fact", "confidence": 0.5, "entity_refs": []}, {"text": "High confidence fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                    }
+                    mock_post.return_value = mock_response
+
+                    result = worker.extract_inferences(chunk_text=text, entities=[], source_type="generico")
+
+                    assert len(result) == 1
+                    assert result[0]["text"] == "High confidence fact"
+
+    def test_confidence_filter_keeps_threshold_exact(self, worker):
+        """Inferences at exactly MIN_CONFIDENCE_THRESHOLD are kept"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        text = "word " * 50
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
+                with patch("requests.post") as mock_post:
+                    mock_response = Mock()
+                    mock_response.raise_for_status = Mock()
+                    mock_response.json.return_value = {
+                        "choices": [{"message": {"content": '[{"text": "Exact threshold fact", "confidence": 0.7, "entity_refs": []}]'}}]
+                    }
+                    mock_post.return_value = mock_response
+
+                    result = worker.extract_inferences(chunk_text=text, entities=[], source_type="generico")
+
+                    assert len(result) == 1
+                    assert result[0]["text"] == "Exact threshold fact"

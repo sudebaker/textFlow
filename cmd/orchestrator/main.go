@@ -27,6 +27,7 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
+	"ia-text-orchestrator/cmd/orchestrator/handlers"
 	"ia-text-orchestrator/internal/broker"
 	"ia-text-orchestrator/internal/config"
 	"ia-text-orchestrator/internal/events"
@@ -98,6 +99,9 @@ func main() {
 
 	// Initialize EventBus with Redis client
 	eventBus = events.NewEventBus(redis.GetClient())
+
+	// Initialize handlers with dependencies
+	handlers.SetDependencies(eventBus, redis)
 
 	// Initialize comprehensive health checker
 	healthChecker = health.NewHealthChecker(redis, mqBroker, cfg)
@@ -273,6 +277,7 @@ func setupRouter() *gin.Engine {
 		v1.POST("/documents/upload", uploadHandler)
 		v1.GET("/documents/:id", getJobHandler)
 		v1.GET("/documents/:id/download", downloadHandler)
+		v1.GET("/documents/:id/stream", handlers.StreamJobHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
 	}
 

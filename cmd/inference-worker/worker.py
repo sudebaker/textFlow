@@ -82,6 +82,10 @@ QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
 LLM_URL = os.getenv("LLM_URL", "")  # Base URL without /v1 path
 LLM_MODEL = os.getenv("LLM_MODEL", "")  # Will be auto-discovered, left empty by default
+MAX_INFERENCES_SHORT = int(os.getenv("MAX_INFERENCES_SHORT", "1"))  # chunks < 200 tokens
+MAX_INFERENCES_MEDIUM = int(os.getenv("MAX_INFERENCES_MEDIUM", "2"))  # chunks 200-500 tokens
+MAX_INFERENCES_LONG = int(os.getenv("MAX_INFERENCES_LONG", "3"))  # chunks > 500 tokens
+MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
@@ -270,7 +274,7 @@ class InferenceWorker:
         chunk_text: str,
         entities: List[Dict[str, Any]],
         source_type: str,
-        max_inferences: int = 8,
+        max_inferences: int = MAX_INFERENCES_LONG,
     ) -> List[Dict[str, Any]]:
         """
         Extract micro-inferences (facts) from chunk text using an external LLM.
@@ -287,7 +291,7 @@ class InferenceWorker:
 
         LLM Prompt Structure:
             - System prompt: Instructs LLM to synthesize condensed facts (not copy text)
-            - User prompt: Provides only chunk text and max inference count
+            - User prompt: Provides only chunk text and dynamic_max inference count
             - Temperature: 0.1 (low randomness, deterministic)
             - Thinking disabled: enable_thinking=False to avoid <think> tags
 
@@ -297,6 +301,7 @@ class InferenceWorker:
             3. Extracts outermost JSON array using bracket counting
             4. Parses JSON and validates each item has "text" field
             5. Normalizes fields: text (string), confidence (float), entity_refs (list)
+            6. Filters out inferences below MIN_CONFIDENCE_THRESHOLD (silent filter)
 
         vLLM API Contract:
             - Endpoint: POST {LLM_URL}/v1/chat/completions
@@ -313,9 +318,14 @@ class InferenceWorker:
                                              RabbitMQ message schema but NOT used in
                                              the LLM prompt.
             source_type (str): Document source type (e.g., "notariado", "catastro", "bancario").
-                              Used for context but not currently interpolated in prompt.
-            max_inferences (int): Maximum number of inferences to extract (default: 8).
-                                 Passed to LLM in prompt to guide response length.
+                               Used for context but not currently interpolated in prompt.
+            max_inferences (int): Fallback default for inference count (default: MAX_INFERENCES_LONG).
+                                 The actual count used in the prompt is determined dynamically
+                                 by dynamic_max, computed from the chunk's token estimate:
+                                 - < 200 tokens → MAX_INFERENCES_SHORT
+                                 - 200-499 tokens → MAX_INFERENCES_MEDIUM
+                                 - >= 500 tokens → MAX_INFERENCES_LONG
+                                 This parameter is kept for backward compatibility.
 
         Returns:
             List[Dict[str, Any]]: List of extracted inferences, each with structure:
@@ -324,6 +334,7 @@ class InferenceWorker:
                     "confidence": float,      # Confidence score 0.0-1.0
                     "entity_refs": List[str]  # Names of entities referenced in the fact
                 }
+            Only inferences with confidence >= MIN_CONFIDENCE_THRESHOLD are returned.
             Returns empty list [] if:
                 - No LLM configured (LLM_URL empty or not set)
                 - Model discovery failed and no LLM_MODEL fallback (llm_model_id is None)
@@ -356,6 +367,15 @@ class InferenceWorker:
             )
             return []
 
+        # Dynamic max inferences based on chunk size (token estimate via word count)
+        token_estimate = len(chunk_text.split())
+        if token_estimate < 200:
+            dynamic_max = MAX_INFERENCES_SHORT
+        elif token_estimate < 500:
+            dynamic_max = MAX_INFERENCES_MEDIUM
+        else:
+            dynamic_max = MAX_INFERENCES_LONG
+
         try:
             # KNOWN LIMITATION: chunk_text is interpolated directly into the prompt.
             # This is safe because all documents are from trusted internal sources
@@ -375,7 +395,7 @@ Each object in the array must have exactly these fields:
 - "confidence": float between 0.0 and 1.0
 - "entity_refs": list of entity name strings referenced in the fact"""
 
-            user_prompt = f"""Extract up to {max_inferences} key facts from this text. Synthesize — do NOT copy sentences.
+            user_prompt = f"""Extract the {dynamic_max} MOST IMPORTANT facts from this text. Quality over quantity — only include facts with high confidence. Synthesize — do NOT copy sentences.
 
 Text:
 {chunk_text}
@@ -469,6 +489,8 @@ Respond with ONLY the JSON array:"""
                             "entity_refs": entity_refs_value,
                         }
                     )
+
+            validated = [inf for inf in validated if inf["confidence"] >= MIN_CONFIDENCE_THRESHOLD]
 
             logger.info(f"Extracted {len(validated)} inferences from chunk")
             return validated

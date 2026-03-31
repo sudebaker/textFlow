@@ -165,11 +165,14 @@ type UploadRequest struct {
 // CreateJobRequest represents the HTTP request body for the create job endpoint.
 // Either DocumentBase64 or DocumentURL must be provided (enforced by binding tags).
 // Filename is optional for user-provided context, and Features allows selective activation of pipeline stages.
+// WebhookURL and WebhookSecret allow per-request webhook configuration with HMAC signature support.
 type CreateJobRequest struct {
 	DocumentBase64 string   `json:"document_base64" binding:"required_without=DocumentURL"`
 	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
+	WebhookURL     string   `json:"webhook_url,omitempty"`
+	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }
 
 // CreateJobResponse represents the HTTP response body for the create job endpoint.

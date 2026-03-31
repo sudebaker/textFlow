@@ -17,21 +17,12 @@ Currently, the API does not require authentication. All endpoints are publicly a
 
 ## Common Response Formats
 
-### Success Response (200, 201, 202)
+### Success Response (200, 202)
 ```json
 {
   "job_id": "job_abc123xyz",
-  "status": "pending|extracting|processing|embedding|entities|completed",
-  "results": {
-    "text": "extracted text...",
-    "chunks": [...],
-    "embeddings": {...},
-    "entities": [...],
-    "document_metadata": {...},
-    "text_metadata": {...}
-  },
-  "created_at": "2025-03-16T10:30:00Z",
-  "completed_at": "2025-03-16T10:35:00Z"
+  "status": "pending|extracting|processing|embedding|entities|inferences|completed",
+  "created_at": "2025-03-16T10:30:00Z"
 }
 ```
 
@@ -56,9 +47,20 @@ Currently, the API does not require authentication. All endpoints are publicly a
 **Response:** 
 ```json
 {
-  "status": "ok"
+  "status": "healthy",
+  "timestamp": "2025-03-16T10:30:00Z",
+  "service": "ia-text-orchestrator",
+  "version": "1.0.0",
+  "uptime": "2h30m",
+  "memory_usage": "Check /metrics for detailed memory metrics",
+  "checks": {
+    "redis": { "status": "healthy", "latency_ms": 1 },
+    "rabbitmq": { "status": "healthy", "latency_ms": 3 }
+  }
 }
 ```
+
+Status values: `healthy`, `degraded`, `down`. HTTP 200 for healthy/degraded, 503 for down.
 
 **Example:**
 ```bash
@@ -78,7 +80,10 @@ curl http://localhost:8080/health
 {
   "document_base64": "JVBERi0xLjQKJeLj...",  // Either this
   "document_url": "https://example.com/doc.pdf",  // Or this (mutually exclusive)
-  "filename": "document.pdf"  // Optional
+  "filename": "document.pdf",  // Optional
+  "features": ["inferences"],  // Optional: enable extra pipeline stages
+  "webhook_url": "https://myapp.com/webhook",  // Optional
+  "webhook_secret": "my-secret"  // Optional
 }
 ```
 
@@ -86,6 +91,9 @@ curl http://localhost:8080/health
 - `document_base64` (string, conditional): Base64-encoded document. Required if `document_url` is not provided.
 - `document_url` (string, conditional): URL to the document. Required if `document_base64` is not provided. Must be a valid HTTP/HTTPS URL.
 - `filename` (string, optional): Original filename for metadata tracking.
+- `features` (array, optional): Extra pipeline stages to enable. Currently supported: `"inferences"` (requires vLLM/inference-worker).
+- `webhook_url` (string, optional): URL to notify when job completes.
+- `webhook_secret` (string, optional): Secret for `X-Signature-256` HMAC verification.
 
 **Response (202 Accepted):**
 ```json
@@ -100,7 +108,7 @@ curl http://localhost:8080/health
 - `400 Bad Request`: Missing required fields or invalid JSON
 - `400 Bad Request`: Both `document_base64` and `document_url` provided
 - `400 Bad Request`: Invalid URL or SSRF attempt detected
-- `413 Payload Too Large`: Document exceeds 10MB limit
+- `400 Bad Request`: Document exceeds 10MB limit
 - `500 Internal Server Error`: Failed to queue job
 
 **Example:**
@@ -171,7 +179,7 @@ https://example.com/webhook
 **Error Examples:**
 - `400 Bad Request`: No file provided or file parse error
 - `400 Bad Request`: Invalid file type
-- `413 Payload Too Large`: File exceeds size limit
+- `400 Bad Request`: File exceeds size limit (`file_too_large`)
 - `400 Bad Request`: CSV/Excel exceeds row limit
 - `500 Internal Server Error`: Failed to save or queue job
 
@@ -214,7 +222,12 @@ curl -X POST http://localhost:8080/v1/documents/upload \
   "status": "completed",
   "current_step": "completed",
   "created_at": "2025-03-16T10:30:00Z",
-  "completed_at": "2025-03-16T10:35:00Z"
+  "steps": {
+    "extraction": "completed",
+    "embeddings": "completed",
+    "entities": "completed",
+    "metadata": "completed"
+  }
 }
 ```
 
@@ -236,7 +249,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 | `status` | string | Overall job status (see lifecycle below) |
 | `current_step` | string | The pipeline step currently executing or last executed |
 | `created_at` | string | ISO 8601 timestamp of job creation |
-| `completed_at` | string | ISO 8601 timestamp of completion (only when `status=completed`) |
+| `steps` | object | Per-stage status map (`processing` or `completed`). Only present while processing or on completion. |
 | `error` | string | Error code (only when `status=failed`) |
 
 **Error Examples:**
@@ -247,10 +260,11 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 1. `pending` — Job created, waiting for extraction
 2. `extracting` — Document extraction in progress
 3. `processing` — Text processing
-4. `embedding` — Generating embeddings (if applicable)
+4. `embedding` — Generating embeddings
 5. `entities` — Extracting entities
-6. `completed` — All processing complete, results available via `/download`
-7. `failed` — Job failed at some stage
+6. `inferences` — Generating micro-inferences (only when `features: ["inferences"]` was set)
+7. `completed` — All processing complete, results available via `/download`
+8. `failed` — Job failed at some stage
 
 **Example:**
 ```bash
@@ -271,7 +285,7 @@ curl http://localhost:8080/v1/documents/job_xyz789abc
 - `job_id` (string, required): The job ID returned from job creation.
 
 **Query Parameters:**
-- `raw` (string, optional): Set to `true` to disable gzip compression and receive plain JSON.
+- `compression` (string, optional): Set to `raw` to disable gzip compression and receive plain JSON.
 
 **Response Headers (compressed, default):**
 ```
@@ -435,6 +449,7 @@ Environment variables (set in `docker-compose.yml` or `.env`):
 | `ENTITY_TYPES` | PERSON,ORGANIZATION,LOCATION | Default entity types to extract |
 | `MAX_SPREADSHEET_ROWS` | 2000 | Max rows allowed in CSV/Excel |
 | `MAX_SPREADSHEET_SIZE_MB` | 5 | Max size for spreadsheet files |
+| `MAX_DOCUMENT_SIZE_MB` | 10 | Max document size for base64 and file upload (MB) |
 | `UPLOAD_PATH` | /app/data/uploads | Where to store uploaded files |
 | `RESULTS_PATH` | /app/data/results | Where to store result files |
 

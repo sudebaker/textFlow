@@ -76,22 +76,28 @@ func (eb *EventBus) Subscribe(ctx context.Context, channel string) *redis.PubSub
 	return pubsub
 }
 
-// PublishJobCreated broadcasts a job creation event to the "job:events" channel.
+// PublishJobCreated broadcasts a job creation event to both the broadcast "job:events"
+// channel and the job-specific "job:{jobID}:events" channel.
 // Called by the orchestrator when a new job is created and stored in Redis.
 // Signals to subscribers that a job with the given jobID is now pending.
 //
 // Returns an error if publishing fails.
 func (eb *EventBus) PublishJobCreated(ctx context.Context, jobID string) error {
-	return eb.Publish(ctx, "job:events", &JobEvent{
+	event := &JobEvent{
 		EventType: EventJobCreated,
 		JobID:     jobID,
 		Timestamp: time.Now(),
 		Progress:  0,
 		Status:    "pending",
-	})
+	}
+	if err := eb.Publish(ctx, "job:events", event); err != nil {
+		return err
+	}
+	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
 }
 
-// PublishJobProgress broadcasts a job progress event to the "job:events" channel.
+// PublishJobProgress broadcasts a job progress event to both the broadcast "job:events"
+// channel and the job-specific "job:{jobID}:events" channel.
 // Called by workers (embeddings, entities, extraction, metadata, completion) during
 // processing to report incremental progress and status updates.
 //
@@ -102,16 +108,21 @@ func (eb *EventBus) PublishJobCreated(ctx context.Context, jobID string) error {
 //
 // Returns an error if publishing fails.
 func (eb *EventBus) PublishJobProgress(ctx context.Context, jobID string, progress int, status string) error {
-	return eb.Publish(ctx, "job:events", &JobEvent{
+	event := &JobEvent{
 		EventType: EventJobProgress,
 		JobID:     jobID,
 		Timestamp: time.Now(),
 		Progress:  progress,
 		Status:    status,
-	})
+	}
+	if err := eb.Publish(ctx, "job:events", event); err != nil {
+		return err
+	}
+	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
 }
 
-// PublishJobCompleted broadcasts a job completion event to the "job:events" channel.
+// PublishJobCompleted broadcasts a job completion event to both the broadcast "job:events"
+// channel and the job-specific "job:{jobID}:events" channel.
 // Called by the orchestrator when all processing is finished and results are stored.
 // Signals to subscribers that the job has finished successfully.
 //
@@ -125,17 +136,22 @@ func (eb *EventBus) PublishJobProgress(ctx context.Context, jobID string, progre
 //
 // Returns an error if publishing fails.
 func (eb *EventBus) PublishJobCompleted(ctx context.Context, jobID string, metadata map[string]interface{}) error {
-	return eb.Publish(ctx, "job:events", &JobEvent{
+	event := &JobEvent{
 		EventType: EventJobCompleted,
 		JobID:     jobID,
 		Timestamp: time.Now(),
 		Progress:  100,
 		Status:    "completed",
 		Metadata:  metadata,
-	})
+	}
+	if err := eb.Publish(ctx, "job:events", event); err != nil {
+		return err
+	}
+	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
 }
 
-// PublishJobFailed broadcasts a job failure event to the "job:events" channel.
+// PublishJobFailed broadcasts a job failure event to both the broadcast "job:events"
+// channel and the job-specific "job:{jobID}:events" channel.
 // Called by the orchestrator or workers when processing fails (e.g., unstructured API
 // error, worker crash, invalid input).
 // Signals to subscribers that the job has terminated with an error.
@@ -149,13 +165,17 @@ func (eb *EventBus) PublishJobCompleted(ctx context.Context, jobID string, metad
 //
 // Returns an error if publishing fails.
 func (eb *EventBus) PublishJobFailed(ctx context.Context, jobID string, errMsg string) error {
-	return eb.Publish(ctx, "job:events", &JobEvent{
+	event := &JobEvent{
 		EventType: EventJobFailed,
 		JobID:     jobID,
 		Timestamp: time.Now(),
 		Status:    "failed",
 		Error:     errMsg,
-	})
+	}
+	if err := eb.Publish(ctx, "job:events", event); err != nil {
+		return err
+	}
+	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
 }
 
 // PublishJobEvent publishes a generic JobEvent to a job-specific channel.

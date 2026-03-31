@@ -252,6 +252,85 @@ class CompletionWorker:
             logger.error(f"Failed to send webhook: {e}")
             return False
 
+    def _check_and_notify_batch(self, job_id: str, status: str):
+        """Check if job is part of a batch and notify when batch completes."""
+        batch_id = self.redis_client.hget(
+            f"orchestrator:job:{job_id}:meta", "batch_id"
+        )
+        if not batch_id:
+            return
+
+        batch_id = batch_id.decode() if isinstance(batch_id, bytes) else batch_id
+        batch_done_key = f"orchestrator:batch:{batch_id}:done_count"
+
+        done = self.redis_client.incr(batch_done_key)
+        if done == 1:
+            self.redis_client.expire(batch_done_key, 24 * 60 * 60)
+
+        total = int(self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "total"))
+
+        if done >= total:
+            webhook_url = self.redis_client.hget(
+                f"orchestrator:batch:{batch_id}:meta", "webhook_url"
+            )
+            webhook_secret = self.redis_client.hget(
+                f"orchestrator:batch:{batch_id}:meta", "webhook_secret"
+            )
+            if webhook_url:
+                webhook_url = webhook_url.decode() if isinstance(webhook_url, bytes) else webhook_url
+                webhook_secret = webhook_secret.decode() if isinstance(webhook_secret, bytes) else webhook_secret
+                self._send_batch_webhook(batch_id, status, webhook_url, webhook_secret)
+
+    def _send_batch_webhook(self, batch_id: str, final_status: str, webhook_url: str, webhook_secret: Optional[str] = None):
+        """Send batch completion webhook."""
+        try:
+            jobs = self.redis_client.smembers(f"orchestrator:batch:{batch_id}:jobs")
+            job_statuses = []
+            completed = failed = 0
+
+            for job_id in jobs:
+                job_id = job_id.decode() if isinstance(job_id, bytes) else job_id
+                if not job_id:
+                    continue
+                status, _ = self.redis_client.get(f"orchestrator:job:{job_id}:status")
+                status = status.decode() if isinstance(status, bytes) else status
+                job_statuses.append({"id": job_id, "status": status})
+                if status == "completed":
+                    completed += 1
+                else:
+                    failed += 1
+
+            if failed == len(jobs):
+                batch_status = "failed"
+            elif failed > 0:
+                batch_status = "partial"
+            else:
+                batch_status = "completed"
+
+            payload = {
+                "batch_id": batch_id,
+                "status": batch_status,
+                "total": len(jobs),
+                "completed": completed,
+                "failed": failed,
+                "jobs": job_statuses,
+            }
+
+            headers = {"Content-Type": "application/json"}
+            if webhook_secret:
+                signature = hmac.new(
+                    webhook_secret.encode(),
+                    json.dumps(payload).encode(),
+                    hashlib.sha256
+                ).hexdigest()
+                headers["X-Webhook-Signature"] = f"sha256={signature}"
+
+            response = requests.post(webhook_url, json=payload, timeout=10, headers=headers)
+            response.raise_for_status()
+            logger.info(f"Batch webhook sent for {batch_id}")
+        except Exception as e:
+            logger.error(f"Failed to send batch webhook: {e}")
+
     def deduplicate_entities(self, entities: list) -> dict:
         """Deduplicate entities using fuzzy text matching, keeping highest confidence.
 
@@ -653,6 +732,7 @@ class CompletionWorker:
 
             self.save_results_to_file(job_id, results)
             self.send_webhook(job_id, "completed", None)
+            self._check_and_notify_batch(job_id, "completed")
 
             self.event_bus.publish_job_completed(job_id)
 

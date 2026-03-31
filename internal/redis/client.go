@@ -112,6 +112,27 @@ func (c *RedisClient) key(parts ...string) string {
 	return strings.Join(allParts, ":")
 }
 
+var defaultNamespace = "orchestrator"
+
+func Key(parts ...string) string {
+	namespace := os.Getenv("REDIS_NAMESPACE")
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+	allParts := append([]string{namespace}, parts...)
+	return strings.Join(allParts, ":")
+}
+
+func GetClient() *redis.Client {
+	return redisClient.client
+}
+
+var redisClient *RedisClient
+
+func SetClient(c *RedisClient) {
+	redisClient = c
+}
+
 // SetJobStatus stores the job status in Redis with automatic TTL expiration.
 // Redis key: {namespace}:job:{jobID}:status (hash with field "status")
 // TTL: jobTTL (typically 24 hours), refreshed on each write.

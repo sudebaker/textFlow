@@ -36,6 +36,7 @@ import os
 import sys
 import json
 import hashlib
+import hmac
 import logging
 import msgpack
 import time

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/csv"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -1070,6 +1072,7 @@ func uploadHandler(c *gin.Context) {
 // @Router /v1/documents/{id}/download [get]
 func downloadHandler(c *gin.Context) {
 	jobID := c.Param("id")
+	compression := c.Query("compression")
 
 	// Validate jobID format
 	if !validateJobID(jobID) {
@@ -1131,6 +1134,49 @@ func downloadHandler(c *gin.Context) {
 
 	results.JobID = jobID
 	results.Status = string(status)
+
+	if compression == "gzip" {
+		c.Header("Content-Encoding", "gzip")
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json.gz", jobID))
+		c.Header("Content-Type", "application/json")
+
+		chunks := make([]map[string]interface{}, len(results.Chunks))
+		for i, chunk := range results.Chunks {
+			chunkData := map[string]interface{}{
+				"chunk_id":     chunk.ChunkID,
+				"text":         chunk.Text,
+				"start_offset": chunk.StartOffset,
+				"end_offset":   chunk.EndOffset,
+			}
+
+			if len(chunk.Embeddings) > 0 {
+				buf := new(bytes.Buffer)
+				for _, f := range chunk.Embeddings {
+					bits := math.Float32bits(f)
+					buf.WriteByte(byte(bits))
+					buf.WriteByte(byte(bits >> 8))
+					buf.WriteByte(byte(bits >> 16))
+					buf.WriteByte(byte(bits >> 24))
+				}
+
+				var compressed bytes.Buffer
+				w := gzip.NewWriter(&compressed)
+				w.Write(buf.Bytes())
+				w.Close()
+
+				chunkData["embedding_compressed"] = base64.StdEncoding.EncodeToString(compressed.Bytes())
+			}
+
+			chunks[i] = chunkData
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"job_id":      jobID,
+			"compression": "gzip",
+			"chunks":      chunks,
+		})
+		return
+	}
 
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json", jobID))
 	c.Header("Content-Type", "application/json")

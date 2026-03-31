@@ -514,6 +514,29 @@ func createJobHandler(c *gin.Context) {
 	})
 }
 
+// calculateCurrentStep derives the active pipeline step from the steps map.
+// Order: extract → embeddings → entities → metadata → inferences.
+// Returns the step with value "processing", or the last completed step, or "" if the map is empty.
+func calculateCurrentStep(steps map[string]string, order []string) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	lastCompleted := ""
+	for _, step := range order {
+		val, ok := steps[step]
+		if !ok {
+			continue
+		}
+		if val == "processing" {
+			return step
+		}
+		if val == "completed" {
+			lastCompleted = step
+		}
+	}
+	return lastCompleted
+}
+
 // getJobHandler handles GET /v1/documents/{id} requests and returns the current status and results of a job.
 // This is a polling endpoint (non-blocking) - clients must retry to check for completion.
 //
@@ -552,20 +575,10 @@ func getJobHandler(c *gin.Context) {
 	// Get step progress (available at all stages, not just completed)
 	steps, _ := redis.GetJobSteps(ctx, jobID)
 
-	// Get aggregated results (if completed)
-	var results *models.JobResults
-	var resultsErr error
-	if status == models.StatusCompleted {
-		results, resultsErr = redis.GetJobResults(ctx, jobID)
-		if resultsErr != nil {
-			logger.Error().Err(resultsErr).Msgf("Failed to get job results: %s", jobID)
-		} else if results == nil {
-			logger.Warn().Msgf("GetJobResults returned nil for job: %s", jobID)
-		} else {
-			logger.Info().Msgf("Got results: job_id=%s, chunks=%d",
-				results.JobID, len(results.Chunks))
-		}
-	}
+	// Calculate current_step from the steps map.
+	// Pipeline order: extract → embeddings → entities → metadata → inferences
+	pipelineOrder := []string{"extract", "embeddings", "entities", "metadata", "inferences"}
+	currentStep := calculateCurrentStep(steps, pipelineOrder)
 
 	errorMsg, _ := redis.GetJobError(ctx, jobID)
 
@@ -573,12 +586,12 @@ func getJobHandler(c *gin.Context) {
 	createdAt, _ := redis.GetJobCreated(ctx, jobID)
 
 	c.JSON(http.StatusOK, models.GetJobResponse{
-		JobID:     jobID,
-		Status:    status,
-		Steps:     steps,
-		Results:   results,
-		Error:     errorMsg,
-		CreatedAt: createdAt,
+		JobID:       jobID,
+		Status:      status,
+		Steps:       steps,
+		CurrentStep: currentStep,
+		Error:       errorMsg,
+		CreatedAt:   createdAt,
 	})
 }
 
@@ -1135,7 +1148,7 @@ func downloadHandler(c *gin.Context) {
 	results.JobID = jobID
 	results.Status = string(status)
 
-	if compression == "gzip" {
+	if compression != "raw" {
 		c.Header("Content-Encoding", "gzip")
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json.gz", jobID))
 		c.Header("Content-Type", "application/json")

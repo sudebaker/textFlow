@@ -167,6 +167,7 @@ func main() {
 		useBatch          bool
 		batchFile         string
 		timeoutStr        string
+		resumeJobID       string
 	)
 
 	args := os.Args[1:]
@@ -232,6 +233,14 @@ func main() {
 			}
 			timeoutStr = args[i+1]
 			i++
+		case "--job-id":
+			if i+1 >= len(args) {
+				fmt.Println("Error: --job-id requires a value")
+				printUsage()
+				os.Exit(1)
+			}
+			resumeJobID = args[i+1]
+			i++
 		default:
 			fmt.Printf("Unknown argument: %s\n", args[i])
 			printUsage()
@@ -260,6 +269,12 @@ func main() {
 		}
 		if outputFile == "" {
 			fmt.Println("Error: Batch mode requires -o/--output")
+			printUsage()
+			os.Exit(1)
+		}
+	} else if resumeJobID != "" {
+		if outputFile == "" {
+			fmt.Println("Error: --job-id requires -o/--output")
 			printUsage()
 			os.Exit(1)
 		}
@@ -302,6 +317,42 @@ func main() {
 			fmt.Printf("Error in batch mode: %v\n", err)
 			os.Exit(1)
 		}
+	} else if resumeJobID != "" {
+		fmt.Printf("Resuming job: %s\n", resumeJobID)
+
+		// Check current status first
+		status, _, err := getJobStatus(ctx, apiURL, resumeJobID)
+		if err != nil {
+			fmt.Printf("Error checking job status: %v\n", err)
+			os.Exit(1)
+		}
+
+		// If still processing, monitor until done
+		if status == "processing" || status == "pending" {
+			fmt.Printf("Job is still %s, waiting for completion...\n", status)
+			if useSSE {
+				status, err = monitorJobSSE(ctx, apiURL, resumeJobID)
+			} else {
+				status, err = monitorJob(ctx, apiURL, resumeJobID)
+			}
+			if err != nil {
+				fmt.Printf("Error monitoring job: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		if status != "completed" {
+			fmt.Printf("Job failed with status: %s\n", status)
+			os.Exit(1)
+		}
+
+		err = downloadResults(ctx, apiURL, resumeJobID, outputFile)
+		if err != nil {
+			fmt.Printf("Error downloading results: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("\nResults saved to: %s\n", outputFile)
 	} else {
 		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, webhookURL, webhookSecret)
 		if err != nil {
@@ -351,6 +402,7 @@ func printUsage() {
 	fmt.Println("  --sse                      Use SSE streaming instead of polling")
 	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 10m)")
 	fmt.Println("  -b, --batch [file]         Batch processing mode (reads JSON file with documents)")
+	fmt.Println("  --job-id <id>              Resume or download results for an existing job ID")
 	fmt.Println("  -h, --help                 Show this help message")
 	fmt.Println("")
 	fmt.Println("Single Job Mode:")
@@ -358,6 +410,9 @@ func printUsage() {
 	fmt.Println("  client -i https://example.com/file.pdf -o output.json -w https://myapp.com/webhook")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json --sse")
 	fmt.Println("  client -i /path/to/large.pdf -o output.json --timeout 1h")
+	fmt.Println("")
+	fmt.Println("Resume Mode:")
+	fmt.Println("  client --job-id <id> -o output.json")
 	fmt.Println("")
 	fmt.Println("Batch Mode:")
 	fmt.Println("  client -b documents.json -o results.json")

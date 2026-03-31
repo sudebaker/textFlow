@@ -229,3 +229,34 @@ def test_deduplicate_entities_fuzzy_different_label_no_merge():
     ]
     result = worker.deduplicate_entities(entities)
     assert len(result) == 2, "same text but different label → must NOT merge"
+
+
+def test_entity_offsets_preserved():
+    """Offsets from highest confidence entity must be preserved after deduplication."""
+    worker = _make_worker()
+    entities = [
+        {
+            "label": "PER",
+            "text": "María",
+            "confidence": 0.7,
+            "entity_id": "eee000000001",
+            "start": 10,
+            "end": 15,
+            "chunk_id": "chunk_001",
+        },
+        {
+            "label": "PER",
+            "text": "María",
+            "confidence": 0.9,
+            "entity_id": "eee000000002",
+            "start": 100,
+            "end": 105,
+            "chunk_id": "chunk_002",
+        },
+    ]
+    result = worker.deduplicate_entities(entities)
+    assert len(result) == 1
+    eid = list(result.keys())[0]
+    assert result[eid]["start_offset"] == 100
+    assert result[eid]["end_offset"] == 105
+    assert result[eid]["chunk_id"] == "chunk_002"

@@ -67,12 +67,13 @@ type ChunkInferences struct {
 	Inferences []MicroInference `json:"inferences"`
 }
 
-// EntityMinimal represents a deduplicated named entity in the final job results.
-// It contains only the label, canonical text, and confidence — offsets are stripped.
 type EntityMinimal struct {
-	Label      string  `json:"label"`
-	Text       string  `json:"text"`
-	Confidence float32 `json:"confidence"`
+	Label       string  `json:"label"`
+	Text        string  `json:"text"`
+	Confidence  float32 `json:"confidence"`
+	StartOffset int     `json:"start_offset"`
+	EndOffset   int     `json:"end_offset"`
+	ChunkID     string  `json:"chunk_id,omitempty"`
 }
 
 // InferenceItem represents a single micro-inference embedded inside a chunk in the final results.

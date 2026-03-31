@@ -277,9 +277,10 @@ func setupRouter() *gin.Engine {
 		v1.POST("/documents/upload", uploadHandler)
 		v1.GET("/documents/:id", getJobHandler)
 		v1.GET("/documents/:id/download", downloadHandler)
-		v1.GET("/documents/:id/stream", handlers.StreamJobHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
 	}
+
+	v1.GET("/jobs/:id/stream", handlers.StreamJobHandler)
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 

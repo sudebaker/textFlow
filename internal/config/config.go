@@ -32,6 +32,7 @@ type Config struct {
 	UploadPath         string        `env:"UPLOAD_PATH" default:"/app/data/uploads"`
 	ResultsPath        string        `env:"RESULTS_PATH" default:"/app/data/results"`
 	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
+	MaxDocumentSizeMB  int           `env:"MAX_DOCUMENT_SIZE_MB" default:"10"`
 }
 
 func (c *Config) Validate() error {

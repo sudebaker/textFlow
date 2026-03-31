@@ -169,6 +169,7 @@ services:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: ia-text-embeddings-worker
+    runtime: nvidia
     volumes:
     - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}:/models
     environment:
@@ -181,8 +182,9 @@ services:
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=20
-    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
+    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cuda}
     - CUDA_VISIBLE_DEVICES=0
+    - NVIDIA_VISIBLE_DEVICES=0
     depends_on:
       redis:
         condition: service_healthy
@@ -206,15 +208,12 @@ services:
         reservations:
           cpus: '1'
           memory: 1G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
   entities-worker:
     build:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: ia-text-entities-worker
+    runtime: nvidia
     volumes:
     - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}:/models
     - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}/huggingface_cache:/home/app/.cache/huggingface
@@ -238,8 +237,9 @@ services:
     - GLINER_DATE_THRESHOLD=0.45
     - GLINER_MONEY_THRESHOLD=0.55
     - DEDUPLICATION_ENABLED=false
-    - ENTITIES_DEVICE=${ENTITIES_DEVICE:-}
+    - ENTITIES_DEVICE=${ENTITIES_DEVICE:-cuda}
     - CUDA_VISIBLE_DEVICES=0
+    - NVIDIA_VISIBLE_DEVICES=0
     - ENTITY_TYPES=PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL
     - REGEX_ENTITY_EXTRACTOR_URL=http://regex-entity-extractor:8081
     - INFERENCES_QUEUE=inferences
@@ -268,10 +268,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 2G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
   inference-worker:
     build:
       context: ../../
@@ -381,6 +377,9 @@ services:
     - REDIS_URL=redis://redis:6379
     - LOG_LEVEL=info
     - METRICS_PORT=8005
+    - RESULTS_PATH=/app/data/results
+    volumes:
+    - results-data:/app/data/results
     depends_on:
       redis:
         condition: service_healthy
@@ -421,27 +420,25 @@ services:
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: ia-text-docling
+    runtime: nvidia
     ports:
     - 8000:5001
     volumes:
     - ${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and set it}/docling:/models/docling
     environment:
-    - DOCLING_DEVICE=${DOCLING_DEVICE:-cpu}
+    - DOCLING_DEVICE=${DOCLING_DEVICE:-cuda}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
     - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=info
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
+    - NVIDIA_VISIBLE_DEVICES=0
     deploy:
       resources:
         limits:
           memory: 16G
         reservations:
           memory: 4G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test:
       - CMD

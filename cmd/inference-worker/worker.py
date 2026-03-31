@@ -82,9 +82,9 @@ QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
 LLM_URL = os.getenv("LLM_URL", "")  # Base URL without /v1 path
 LLM_MODEL = os.getenv("LLM_MODEL", "")  # Will be auto-discovered, left empty by default
-MAX_INFERENCES_SHORT = int(os.getenv("MAX_INFERENCES_SHORT", "1"))  # chunks < 200 tokens
-MAX_INFERENCES_MEDIUM = int(os.getenv("MAX_INFERENCES_MEDIUM", "2"))  # chunks 200-500 tokens
-MAX_INFERENCES_LONG = int(os.getenv("MAX_INFERENCES_LONG", "3"))  # chunks > 500 tokens
+MAX_INFERENCES_SHORT   = int(os.getenv("MAX_INFERENCES_SHORT",   "1"))  # chunks < 200 words
+MAX_INFERENCES_MEDIUM  = int(os.getenv("MAX_INFERENCES_MEDIUM",  "2"))  # chunks 200-499 words
+MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks >= 500 words
 MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
 
 # Prometheus metrics
@@ -274,7 +274,6 @@ class InferenceWorker:
         chunk_text: str,
         entities: List[Dict[str, Any]],
         source_type: str,
-        max_inferences: int = MAX_INFERENCES_LONG,
     ) -> List[Dict[str, Any]]:
         """
         Extract micro-inferences (facts) from chunk text using an external LLM.
@@ -291,7 +290,7 @@ class InferenceWorker:
 
         LLM Prompt Structure:
             - System prompt: Instructs LLM to synthesize condensed facts (not copy text)
-            - User prompt: Provides only chunk text and dynamic_max inference count
+            - User prompt: Provides chunk text and dynamic_max inference count
             - Temperature: 0.1 (low randomness, deterministic)
             - Thinking disabled: enable_thinking=False to avoid <think> tags
 
@@ -319,13 +318,11 @@ class InferenceWorker:
                                              the LLM prompt.
             source_type (str): Document source type (e.g., "notariado", "catastro", "bancario").
                                Used for context but not currently interpolated in prompt.
-            max_inferences (int): Fallback default for inference count (default: MAX_INFERENCES_LONG).
-                                 The actual count used in the prompt is determined dynamically
-                                 by dynamic_max, computed from the chunk's token estimate:
-                                 - < 200 tokens → MAX_INFERENCES_SHORT
-                                 - 200-499 tokens → MAX_INFERENCES_MEDIUM
-                                 - >= 500 tokens → MAX_INFERENCES_LONG
-                                 This parameter is kept for backward compatibility.
+            max_inferences is no longer a parameter — the inference count is determined
+            dynamically by word_count (len(chunk_text.split())):
+                - < 200 words  → MAX_INFERENCES_SHORT
+                - 200-499 words → MAX_INFERENCES_MEDIUM
+                - >= 500 words  → MAX_INFERENCES_LONG
 
         Returns:
             List[Dict[str, Any]]: List of extracted inferences, each with structure:
@@ -367,11 +364,11 @@ class InferenceWorker:
             )
             return []
 
-        # Dynamic max inferences based on chunk size (token estimate via word count)
-        token_estimate = len(chunk_text.split())
-        if token_estimate < 200:
+        # Dynamic max inferences based on chunk size (word count as proxy for length)
+        word_count = len(chunk_text.split())
+        if word_count < 200:
             dynamic_max = MAX_INFERENCES_SHORT
-        elif token_estimate < 500:
+        elif word_count < 500:
             dynamic_max = MAX_INFERENCES_MEDIUM
         else:
             dynamic_max = MAX_INFERENCES_LONG
@@ -459,7 +456,7 @@ Respond with ONLY the JSON array:"""
 
             try:
                 inferences = json.loads(json_str)
-                logger.info(
+                logger.debug(
                     f"Successfully parsed {len(inferences)} inferences from LLM response"
                 )
             except json.JSONDecodeError as e:

@@ -11,6 +11,7 @@ import (
 	"ia-text-orchestrator/internal/events"
 	"ia-text-orchestrator/internal/models"
 	redisclient "ia-text-orchestrator/internal/redis"
+	"ia-text-orchestrator/pkg/logging"
 )
 
 const (
@@ -54,17 +55,21 @@ func StreamJobHandler(c *gin.Context) {
 		if status == models.StatusFailed {
 			eventType = "job_failed"
 		}
-		eventData, _ := json.Marshal(map[string]interface{}{
+		eventData, err := json.Marshal(map[string]interface{}{
 			"job_id":    jobID,
 			"status":    string(status),
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
+		if err != nil {
+			logging.Warn().Err(err).Msg("failed to marshal event")
+			return
+		}
 		c.SSEvent(eventType, string(eventData))
 		c.Writer.Flush()
 		return
 	}
 
-	pubsub := eventBus.Subscribe(ctx, fmt.Sprintf("job:%s:events", jobID))
+	pubsub := eventBus.Subscribe(c.Request.Context(), fmt.Sprintf("job:%s:events", jobID))
 	defer pubsub.Close()
 
 	done := make(chan struct{})
@@ -97,13 +102,17 @@ func StreamJobHandler(c *gin.Context) {
 			}
 
 			eventType := string(jobEvent.EventType)
-			eventData, _ := json.Marshal(map[string]interface{}{
+			eventData, err := json.Marshal(map[string]interface{}{
 				"job_id":    jobEvent.JobID,
 				"status":    jobEvent.Status,
 				"progress":  jobEvent.Progress,
 				"timestamp": jobEvent.Timestamp.Format(time.RFC3339),
 				"error":     jobEvent.Error,
 			})
+			if err != nil {
+				logging.Warn().Err(err).Msg("failed to marshal event")
+				continue
+			}
 
 			c.SSEvent(eventType, string(eventData))
 			c.Writer.Flush()

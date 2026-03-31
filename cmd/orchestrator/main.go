@@ -695,7 +695,7 @@ func validateJobID(jobID string) bool {
 // It enforces size limits, URL format restrictions, and blocks dangerous network destinations.
 //
 // Size Limits:
-//   - DocumentBase64: Decoded size must not exceed 10MB
+//   - DocumentBase64: Decoded size must not exceed MAX_DOCUMENT_SIZE_MB (default 10MB)
 //   - DocumentURL: URL length must not exceed 2048 characters
 //
 // URL Validation (when DocumentURL is provided):
@@ -722,10 +722,8 @@ func validateJobID(jobID string) bool {
 // Returns nil if valid, or an error describing validation failure.
 // Errors are suitable for returning to client as 400/422 Bad Request responses.
 func validateDocumentInput(req *models.CreateJobRequest, cfg *config.Config) error {
-	const (
-		MaxDocumentSize = 10 * 1024 * 1024 // 10MB
-		MaxURLLength    = 2048
-	)
+	const MaxURLLength = 2048
+	maxDocumentSize := cfg.MaxDocumentSizeMB * 1024 * 1024
 
 	// Validate DocumentBase64 size
 	if req.DocumentBase64 != "" {
@@ -735,8 +733,8 @@ func validateDocumentInput(req *models.CreateJobRequest, cfg *config.Config) err
 			return fmt.Errorf("invalid base64 encoding")
 		}
 
-		if len(decoded) > MaxDocumentSize {
-			return fmt.Errorf("document too large: %d bytes (max %d bytes)", len(decoded), MaxDocumentSize)
+		if len(decoded) > maxDocumentSize {
+			return fmt.Errorf("document too large: %d bytes (max %d bytes)", len(decoded), maxDocumentSize)
 		}
 	}
 
@@ -857,10 +855,10 @@ func uploadHandler(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if header.Size > 10*1024*1024 {
+	if header.Size > int64(cfg.MaxDocumentSizeMB*1024*1024) {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error:  "file_too_large",
-			Detail: "maximum file size is 10MB",
+			Detail: fmt.Sprintf("maximum file size is %dMB", cfg.MaxDocumentSizeMB),
 		})
 		return
 	}

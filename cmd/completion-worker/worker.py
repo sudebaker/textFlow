@@ -292,7 +292,7 @@ class CompletionWorker:
                 job_id = job_id.decode() if isinstance(job_id, bytes) else job_id
                 if not job_id:
                     continue
-                status, _ = self.redis_client.get(f"orchestrator:job:{job_id}:status")
+                status = self.redis_client.hget(f"orchestrator:job:{job_id}:status", "status")
                 status = status.decode() if isinstance(status, bytes) else status
                 job_statuses.append({"id": job_id, "status": status})
                 if status == "completed":

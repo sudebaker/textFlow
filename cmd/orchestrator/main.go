@@ -101,7 +101,8 @@ func main() {
 	eventBus = events.NewEventBus(redis.GetClient())
 
 	// Initialize handlers with dependencies
-	handlers.SetDependencies(eventBus, redis)
+	handlers.SetDependencies(eventBus, redis, mqBroker)
+	redisclient.SetClient(redis)
 
 	// Initialize comprehensive health checker
 	healthChecker = health.NewHealthChecker(redis, mqBroker, cfg)
@@ -275,9 +276,11 @@ func setupRouter() *gin.Engine {
 	{
 		v1.POST("/documents/process", createJobHandler)
 		v1.POST("/documents/upload", uploadHandler)
+		v1.POST("/documents/batch", handlers.CreateBatchHandler)
 		v1.GET("/documents/:id", getJobHandler)
 		v1.GET("/documents/:id/download", downloadHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
+		v1.GET("/batches/:id/status", handlers.GetBatchStatusHandler)
 	}
 
 	v1.GET("/jobs/:id/stream", handlers.StreamJobHandler)

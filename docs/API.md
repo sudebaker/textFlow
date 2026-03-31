@@ -184,11 +184,13 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 
 ---
 
-### 4. Get Job Status & Results
+### 4. Get Job Status (Polling)
 
 **Endpoint:** `GET /v1/documents/{job_id}`
 
-**Description:** Poll the status of a document processing job and retrieve results once completed.
+**Description:** Poll the status of a document processing job. Returns the current pipeline step and status only. **Does not return results** — use the `/download` endpoint once the job is `completed`.
+
+> **Note:** This endpoint is designed for lightweight polling. It will never include text, chunks, embeddings, or entities in its response. For results, use [`GET /v1/documents/{job_id}/download`](#5-download-job-results).
 
 **Path Parameters:**
 - `job_id` (string, required): The job ID returned from job creation.
@@ -200,6 +202,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 {
   "job_id": "job_xyz789abc",
   "status": "processing",
+  "current_step": "embedding",
   "created_at": "2025-03-16T10:30:00Z"
 }
 ```
@@ -209,57 +212,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 {
   "job_id": "job_xyz789abc",
   "status": "completed",
-  "results": {
-    "job_id": "job_xyz789abc",
-    "status": "completed",
-    "created_at": "2025-03-16T10:30:00Z",
-    "completed_at": "2025-03-16T10:35:00Z",
-    "text": "extracted text content...",
-    "chunks": [
-      {
-        "chunk_id": "chunk_0",
-        "text": "First paragraph...",
-        "start_offset": 0,
-        "end_offset": 128,
-        "token_count": 25
-      }
-    ],
-    "embeddings": {
-      "chunk_0": [0.123, 0.456, ...]
-    },
-    "entities": [
-      {
-        "text": "John Doe",
-        "label": "PERSON",
-        "confidence": 0.95,
-        "chunk_id": "chunk_0",
-        "start": 10,
-        "end": 18
-      },
-      {
-        "text": "john@example.com",
-        "label": "EMAIL",
-        "confidence": 1.0,
-        "chunk_id": "chunk_0",
-        "start": 50,
-        "end": 65
-      }
-    ],
-    "document_metadata": {
-      "mime_type": "application/pdf",
-      "size_bytes": 1024000,
-      "pages": 10,
-      "filename": "report.pdf",
-      "author": "Jane Smith",
-      "title": "Q1 Report",
-      "creation_date": "2025-01-15",
-      "sha256": "abc123def456..."
-    },
-    "text_metadata": {
-      "language": "en",
-      "word_count": 5432
-    }
-  },
+  "current_step": "completed",
   "created_at": "2025-03-16T10:30:00Z",
   "completed_at": "2025-03-16T10:35:00Z"
 }
@@ -270,10 +223,21 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 {
   "job_id": "job_xyz789abc",
   "status": "failed",
+  "current_step": "extracting",
   "error": "extraction_error",
   "created_at": "2025-03-16T10:30:00Z"
 }
 ```
+
+**Response Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | string | The job identifier |
+| `status` | string | Overall job status (see lifecycle below) |
+| `current_step` | string | The pipeline step currently executing or last executed |
+| `created_at` | string | ISO 8601 timestamp of job creation |
+| `completed_at` | string | ISO 8601 timestamp of completion (only when `status=completed`) |
+| `error` | string | Error code (only when `status=failed`) |
 
 **Error Examples:**
 - `404 Not Found`: Job ID does not exist
@@ -285,12 +249,97 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 3. `processing` — Text processing
 4. `embedding` — Generating embeddings (if applicable)
 5. `entities` — Extracting entities
-6. `completed` — All processing complete
+6. `completed` — All processing complete, results available via `/download`
 7. `failed` — Job failed at some stage
 
 **Example:**
 ```bash
 curl http://localhost:8080/v1/documents/job_xyz789abc
+```
+
+---
+
+### 5. Download Job Results
+
+**Endpoint:** `GET /v1/documents/{job_id}/download`
+
+**Description:** Download the full processing results for a completed job. Returns gzip-compressed JSON containing text, chunks, embeddings, entities, and metadata. **Only available when job status is `completed`.**
+
+> **Note:** This endpoint reads results from the filesystem. Always check job status via `GET /v1/documents/{job_id}` before calling this endpoint.
+
+**Path Parameters:**
+- `job_id` (string, required): The job ID returned from job creation.
+
+**Query Parameters:**
+- `raw` (string, optional): Set to `true` to disable gzip compression and receive plain JSON.
+
+**Response Headers (compressed, default):**
+```
+Content-Encoding: gzip
+Content-Disposition: attachment; filename=results_job_xyz789abc.json.gz
+Content-Type: application/json
+```
+
+**Response Body (JSON — after decompression):**
+```json
+{
+  "job_id": "job_xyz789abc",
+  "status": "completed",
+  "created_at": "2025-03-16T10:30:00Z",
+  "completed_at": "2025-03-16T10:35:00Z",
+  "text": "extracted text content...",
+  "chunks": [
+    {
+      "chunk_id": "chunk_0",
+      "text": "First paragraph...",
+      "start_offset": 0,
+      "end_offset": 128,
+      "token_count": 25
+    }
+  ],
+  "embeddings": {
+    "chunk_0": [0.123, 0.456, "..."]
+  },
+  "entities": [
+    {
+      "text": "John Doe",
+      "label": "PERSON",
+      "confidence": 0.95,
+      "chunk_id": "chunk_0",
+      "start": 10,
+      "end": 18
+    }
+  ],
+  "document_metadata": {
+    "mime_type": "application/pdf",
+    "size_bytes": 1024000,
+    "pages": 10,
+    "filename": "report.pdf",
+    "author": "Jane Smith",
+    "title": "Q1 Report",
+    "creation_date": "2025-01-15",
+    "sha256": "abc123def456..."
+  },
+  "text_metadata": {
+    "language": "en",
+    "word_count": 5432
+  }
+}
+```
+
+**Error Examples:**
+- `404 Not Found`: Job ID does not exist or results file not found
+- `425 Too Early` / `400 Bad Request`: Job is not yet completed
+- `500 Internal Server Error`: Failed to read results file
+
+**Example:**
+```bash
+# Download compressed results (default)
+curl -o results.json.gz http://localhost:8080/v1/documents/job_xyz789abc/download
+gunzip results.json.gz
+
+# Download uncompressed
+curl http://localhost:8080/v1/documents/job_xyz789abc/download?raw=true
 ```
 
 ---
@@ -449,22 +498,24 @@ JOB=$(curl -s -X POST http://localhost:8080/v1/documents/process \
 
 echo "Job ID: $JOB"
 
-# 2. Poll for completion
+# 2. Poll for completion (status only — no results here)
 while true; do
-  STATUS=$(curl -s http://localhost:8080/v1/documents/$JOB | jq -r '.status')
+  RESPONSE=$(curl -s http://localhost:8080/v1/documents/$JOB)
+  STATUS=$(echo $RESPONSE | jq -r '.status')
+  STEP=$(echo $RESPONSE | jq -r '.current_step')
   if [ "$STATUS" = "completed" ]; then
     echo "Job completed!"
     break
   elif [ "$STATUS" = "failed" ]; then
-    echo "Job failed!"
+    echo "Job failed at step: $STEP"
     break
   fi
-  echo "Status: $STATUS"
+  echo "Status: $STATUS, current step: $STEP"
   sleep 5
 done
 
-# 3. Retrieve results
-curl -s http://localhost:8080/v1/documents/$JOB | jq '.results'
+# 3. Download results (only after status=completed)
+curl -s http://localhost:8080/v1/documents/$JOB/download | jq '.entities'
 ```
 
 ### Workflow 2: Upload File with Results
@@ -479,12 +530,13 @@ JOB=$(echo $RESPONSE | jq -r '.job_id')
 
 # Poll until done (max 90 seconds for spreadsheets)
 for i in {1..45}; do
-  RESULT=$(curl -s http://localhost:8080/v1/documents/$JOB)
-  STATUS=$(echo $RESULT | jq -r '.status')
+  STATUS_RESP=$(curl -s http://localhost:8080/v1/documents/$JOB)
+  STATUS=$(echo $STATUS_RESP | jq -r '.status')
   
   if [ "$STATUS" = "completed" ]; then
     echo "Extraction complete!"
-    echo $RESULT | jq '.results.entities'
+    # Download full results from /download endpoint
+    curl -s http://localhost:8080/v1/documents/$JOB/download | jq '.entities'
     exit 0
   fi
   
@@ -514,6 +566,272 @@ Common metrics:
 - `jobs_in_progress` — Currently processing jobs
 - `job_duration_seconds` — Job processing time
 - `queue_publish_total{queue}` — Messages published to queue
+
+---
+
+## Batch Processing
+
+### Create Batch
+
+**Endpoint:** `POST /v1/documents/batch`
+
+**Description:** Create a batch job to process multiple documents in parallel.
+
+**Request Body:**
+```json
+{
+  "documents": [
+    {
+      "text": "Texto del primer documento",
+      "filename": "doc1.txt",
+      "metadata": {"author": "user1"}
+    },
+    {
+      "text": "Texto del segundo documento",
+      "filename": "doc2.txt",
+      "metadata": {"author": "user2"}
+    }
+  ],
+  "max_concurrency": 10,
+  "webhook_url": "https://example.com/webhook",
+  "webhook_secret": "my-secret"
+}
+```
+
+**Parameters:**
+- `documents` (array, required): List of documents to process (max 100)
+- `documents[].text` (string, required): Text content of the document
+- `documents[].filename` (string, optional): Original filename
+- `documents[].metadata` (object, optional): Custom metadata
+- `max_concurrency` (int, optional): Max parallel jobs (1-50, default: 10)
+- `webhook_url` (string, optional): Webhook URL for batch completion
+- `webhook_secret` (string, optional): Secret for webhook signature
+
+**Response (202 Accepted):**
+```json
+{
+  "batch_id": "batch_abc123",
+  "total": 2,
+  "jobs": [
+    {"id": "job_001", "filename": "doc1.txt", "status": "pending"},
+    {"id": "job_002", "filename": "doc2.txt", "status": "pending"}
+  ],
+  "status_url": "/v1/batches/batch_abc123/status",
+  "created_at": "2025-03-16T10:30:00Z"
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/v1/documents/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [
+      {"text": "First document text", "filename": "doc1.txt"},
+      {"text": "Second document text", "filename": "doc2.txt"}
+    ],
+    "webhook_url": "https://myapp.com/batch-webhook"
+  }'
+```
+
+---
+
+### Get Batch Status
+
+**Endpoint:** `GET /v1/batches/{batch_id}/status`
+
+**Description:** Get the status of a batch job.
+
+**Path Parameters:**
+- `batch_id` (string, required): The batch ID returned from batch creation.
+
+**Response (200 OK):**
+```json
+{
+  "batch_id": "batch_abc123",
+  "status": "completed",
+  "total": 2,
+  "completed": 2,
+  "failed": 0,
+  "pending": 0,
+  "jobs": [
+    {"id": "job_001", "status": "completed"},
+    {"id": "job_002", "status": "completed"}
+  ],
+  "created_at": "2025-03-16T10:30:00Z"
+}
+```
+
+**Batch Status Values:**
+- `running`: Batch is still processing
+- `completed`: All jobs completed successfully
+- `partial`: Some jobs failed
+- `failed`: All jobs failed
+
+**Example:**
+```bash
+curl http://localhost:8080/v1/batches/batch_abc123/status
+```
+
+---
+
+## Streaming (SSE)
+
+### Stream Job Events
+
+**Endpoint:** `GET /v1/jobs/{job_id}/stream`
+
+**Description:** Subscribe to real-time job status updates via Server-Sent Events (SSE).
+
+**Path Parameters:**
+- `job_id` (string, required): The job ID to stream.
+
+**Response (200 OK):**
+```
+Content-Type: text/event-stream
+
+event: job_pending
+data: {"job_id":"job_abc","status":"pending","timestamp":"2025-03-16T10:30:00Z"}
+
+event: job_extracting
+data: {"job_id":"job_abc","status":"extracting","progress":0.5,"timestamp":"2025-03-16T10:30:05Z"}
+
+event: job_completed
+data: {"job_id":"job_abc","status":"completed","timestamp":"2025-03-16T10:35:00Z"}
+```
+
+**Event Types:**
+- `job_pending`: Job created, waiting for processing
+- `job_extracting`: Text extraction in progress
+- `job_processing`: Processing (embeddings, entities)
+- `job_completed`: Job completed successfully
+- `job_failed`: Job failed with error
+
+**Heartbeat:**
+The server sends periodic heartbeat comments (`: heartbeat\n\n`) every 30 seconds to keep the connection alive.
+
+**Example:**
+```bash
+curl -N http://localhost:8080/v1/jobs/job_abc123/stream
+```
+
+---
+
+## Webhooks
+
+### Per-Request Webhooks
+
+When creating a job, you can specify a webhook URL to receive notifications when the job completes:
+
+**Request:**
+```bash
+curl -X POST http://localhost:8080/v1/documents/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "document_base64": "...",
+    "webhook_url": "https://myapp.com/webhook",
+    "webhook_secret": "my-secret"
+  }'
+```
+
+**Webhook Payload:**
+```json
+{
+  "job_id": "job_abc123",
+  "status": "completed",
+  "completed_at": "2025-03-16T10:35:00Z",
+  "results": {
+    "text": "...",
+    "chunks": [...],
+    "entities": {...}
+  }
+}
+```
+
+**Signature Verification:**
+If `webhook_secret` is provided, the webhook includes an `X-Signature-256` header:
+```
+X-Signature-256: sha256=<hmac-hex>
+```
+
+Verify with:
+```python
+import hmac
+import hashlib
+
+def verify_signature(payload: bytes, secret: str, signature: str) -> bool:
+    expected = 'sha256=' + hmac.new(
+        secret.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+```
+
+### Batch Webhooks
+
+Batch jobs support webhooks that fire when all jobs in the batch complete:
+
+```bash
+curl -X POST http://localhost:8080/v1/documents/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [...],
+    "webhook_url": "https://myapp.com/batch-webhook",
+    "webhook_secret": "batch-secret"
+  }'
+```
+
+---
+
+## Compression
+
+### Gzip-Compressed Downloads (Default)
+
+The `/v1/documents/{job_id}/download` endpoint **compresses embeddings by default** using gzip.
+
+**Request (default - compressed):**
+```bash
+curl http://localhost:8080/v1/documents/job_abc123/download
+```
+
+**Request (raw/uncompressed - opt-out):**
+```bash
+curl http://localhost:8080/v1/documents/job_abc123/download?raw=true
+```
+
+**Response Headers (compressed):**
+```
+Content-Encoding: gzip
+Content-Disposition: attachment; filename=results_job_abc123.json.gz
+```
+
+**Response Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `embedding_compressed` | string | Base64-encoded gzip-compressed float32 array (little-endian) |
+| `compression` | string | Always `"gzip"` when compressed |
+
+**Decompression Example (Python):**
+```python
+import base64, gzip, struct, json
+
+def decompress_embeddings(embedded: str) -> list[float]:
+    compressed = base64.b64decode(embedded)
+    raw_bytes = gzip.decompress(compressed)
+    count = len(raw_bytes) // 4
+    return struct.unpack(f'<{count}f', raw_bytes)
+
+results = requests.get(f'{API}/v1/documents/{job_id}/download').json()
+for chunk in results['chunks']:
+    if 'embedding_compressed' in chunk:
+        chunk['embeddings'] = decompress_embeddings(chunk['embedding_compressed'])
+```
+
+**Benefits:**
+- 70-90% reduction in transfer size for large embeddings
+- Faster download times
+- Reduced bandwidth costs
 
 ---
 

@@ -256,8 +256,8 @@ func main() {
 //   - GET /metrics: Prometheus metrics endpoint
 //   - POST /v1/documents/process: Submit document for processing (async)
 //   - POST /v1/documents/upload: Upload file via multipart form and submit for processing
-//   - GET /v1/documents/{id}: Poll for job status and results
-//   - GET /v1/documents/{id}/download: Download job results as JSON
+//   - GET /v1/documents/{id}: Poll for job status and current_step (no results)
+//   - GET /v1/documents/{id}/download: Download gzip-compressed JSON results (requires status=completed)
 //   - DELETE /v1/documents/{id}: Delete job data from Redis (only for completed/failed jobs)
 //
 // Returns a fully configured *gin.Engine ready to handle requests.
@@ -541,14 +541,15 @@ func calculateCurrentStep(steps map[string]string, order []string) string {
 	return lastCompleted
 }
 
-// getJobHandler handles GET /v1/documents/{id} requests and returns the current status and results of a job.
+// getJobHandler handles GET /v1/documents/{id} requests and returns the current status of a job.
 // This is a polling endpoint (non-blocking) - clients must retry to check for completion.
+// Results are NOT returned here; use /download once status is completed.
 //
-// @Summary Get job status and results
-// @Description Retrieve current status and results of a processing job.
+// @Summary Get job status
+// @Description Returns job status and current pipeline step. Does not include results — use /download for results.
 // @Produce json
 // @Param id path string true "Job ID"
-// @Success 200 {object} models.GetJobResponse
+// @Success 200 {object} models.GetJobResponse "Job status with current_step field"
 // @Failure 404 {object} models.ErrorResponse
 // @Router /v1/documents/{id} [get]
 func getJobHandler(c *gin.Context) {
@@ -1077,13 +1078,14 @@ func uploadHandler(c *gin.Context) {
 
 // downloadHandler handles GET /v1/documents/{id}/download requests and returns job results as a JSON file.
 // This endpoint allows clients to download completed job results with proper HTTP headers for file attachment.
+// Only available when job status is completed; returns gzip-compressed JSON by default.
 //
 // @Summary Download job results
-// @Description Download the full JSON results for a completed job.
+// @Description Returns gzip-compressed JSON results from filesystem. Only available when job status is completed.
 // @Produce json
 // @Param id path string true "Job ID"
 // @Param compression query string false "Compression type (gzip)"
-// @Success 200 {object} models.JobResults
+// @Success 200 {object} models.JobResults "Gzip-compressed JSON (Content-Encoding: gzip)"
 // @Failure 404 {object} models.ErrorResponse
 // @Router /v1/documents/{id}/download [get]
 func downloadHandler(c *gin.Context) {

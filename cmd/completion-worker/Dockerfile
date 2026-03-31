@@ -8,13 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1
 COPY cmd/completion-worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create non-root user
-RUN adduser --disabled-password --gecos "" app && \
-    chown -R app:app /app
+# Create non-root user matching orchestrator UID/GID (100/101) for shared volume access
+RUN addgroup --gid 101 appgroup && \
+    adduser --disabled-password --gecos "" --uid 100 --ingroup appgroup appuser && \
+    chown -R appuser:appgroup /app
 
 COPY pkg/ ./pkg/
 COPY cmd/completion-worker/ ./cmd/completion-worker/
 
-USER app
+USER appuser
 
 CMD ["python", "cmd/completion-worker/worker.py"]

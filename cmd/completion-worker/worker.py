@@ -163,13 +163,22 @@ class CompletionWorker:
 
         Posts a notification to the configured WEBHOOK_URL with job completion
         or failure details. The webhook is only sent if WEBHOOK_URL environment
-        variable is set; if not configured, this method returns False silently.
+        variable is set or per-job webhook is configured; if not configured,
+        this method returns False silently.
+
+        Per-job webhooks are read from Redis :meta hash (webhook_url, webhook_secret).
+        Falls back to global WEBHOOK_URL if no per-job webhook is set.
+
+        When webhook_secret is present, computes HMAC-SHA256 signature using:
+            signature = hmac.new(secret.encode(), json.dumps(payload).encode(), hashlib.sha256).hexdigest()
+        Adds headers X-Webhook-Signature and X-Webhook-Timestamp.
 
         Webhook payload structure:
             {
                 "job_id": str,
                 "status": "completed" | "failed",
                 "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+                "completed_at": str (ISO 8601 format),
                 "error": str (only if status="failed")
             }
 
@@ -192,9 +201,18 @@ class CompletionWorker:
         Note:
             - Webhook timeout is 10 seconds
             - HTTP errors are logged at ERROR level
-            - Optional WEBHOOK_URL env var determines if webhooks are enabled
+            - Optional WEBHOOK_URL env var or per-job webhook determines if webhooks are enabled
         """
         webhook_url = WEBHOOK_URL
+        webhook_secret = ""
+
+        if job_id:
+            meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
+            job_webhook_url = meta.get("webhook_url", "")
+            if job_webhook_url:
+                webhook_url = job_webhook_url
+                webhook_secret = meta.get("webhook_secret", "")
+
         if not webhook_url:
             return False
 
@@ -203,15 +221,28 @@ class CompletionWorker:
                 "job_id": job_id,
                 "status": status,
                 "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+                "completed_at": datetime.utcnow().isoformat() + "Z",
             }
             if error:
                 payload["error"] = error
+
+            headers = {"Content-Type": "application/json"}
+            if webhook_secret:
+                timestamp = str(int(time.time()))
+                payload_json = json.dumps(payload, sort_keys=True)
+                signature = hmac.new(
+                    webhook_secret.encode(),
+                    payload_json.encode(),
+                    hashlib.sha256
+                ).hexdigest()
+                headers["X-Webhook-Signature"] = signature
+                headers["X-Webhook-Timestamp"] = timestamp
 
             response = requests.post(
                 webhook_url,
                 json=payload,
                 timeout=10,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
             response.raise_for_status()
             logger.info(f"Webhook sent successfully for job {job_id}")

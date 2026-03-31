@@ -412,6 +412,27 @@ func (c *RedisClient) SetJobCreated(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// SetJobWebhook stores per-request webhook configuration in the job's meta hash.
+// Redis key: {namespace}:job:{jobID}:meta (hash with fields "webhook_url" and "webhook_secret")
+// TTL: jobTTL (typically 24 hours).
+// Both webhookURL and webhookSecret are stored as-is; empty values are allowed but not required.
+// Returns error if Redis operation fails.
+func (c *RedisClient) SetJobWebhook(ctx context.Context, jobID, webhookURL, webhookSecret string) error {
+	key := c.key("job", jobID, "meta")
+	err := c.client.HSet(ctx, key, map[string]interface{}{
+		"webhook_url":    webhookURL,
+		"webhook_secret": webhookSecret,
+	}).Err()
+	if err != nil {
+		return fmt.Errorf("failed to set job webhook: %w", err)
+	}
+	if err := c.client.Expire(ctx, key, c.jobTTL).Err(); err != nil {
+		c.logger.Error().Err(err).Str("key", key).Msg("Failed to set TTL on job meta key")
+		return fmt.Errorf("failed to set TTL for key %s: %w", key, err)
+	}
+	return nil
+}
+
 // GetJobCreated retrieves the job creation timestamp.
 // Redis key: {namespace}:job:{jobID}:meta
 // Returns time.Time converted from stored Unix seconds.

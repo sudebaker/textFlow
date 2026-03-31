@@ -272,22 +272,25 @@ class CompletionWorker:
                     break
 
             if matched_id:
-                # Merge: keep highest confidence as representative
                 if confidence > result[matched_id].get("confidence", 0):
                     result[matched_id] = {
                         "label": label,
                         "text": text,
                         "confidence": confidence,
+                        "start_offset": ent.get("start", 0),
+                        "end_offset": ent.get("end", 0),
+                        "chunk_id": ent.get("chunk_id", ""),
                     }
-                    # Update norm_index to reflect the new canonical text
                     norm_index[matched_id] = _normalize(text)
             else:
-                # New unique entity — use provided entity_id or generate one
                 eid = ent.get("entity_id") or _generate_id(label, text)
                 result[eid] = {
                     "label": label,
                     "text": text,
                     "confidence": confidence,
+                    "start_offset": ent.get("start", 0),
+                    "end_offset": ent.get("end", 0),
+                    "chunk_id": ent.get("chunk_id", ""),
                 }
                 norm_index[eid] = norm_text
 

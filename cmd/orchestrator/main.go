@@ -468,6 +468,15 @@ func createJobHandler(c *gin.Context) {
 		logger.Info().Msgf("Job %s: No features requested", jobID)
 	}
 
+	// Store webhook config if provided
+	if req.WebhookURL != "" {
+		if err := redis.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret); err != nil {
+			logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to store webhook config")
+		} else {
+			logger.Info().Str("job_id", jobID).Msg("Webhook config stored")
+		}
+	}
+
 	// Increment jobs in progress
 	metrics.JobsInProgress.Inc()
 	metrics.JobsTotal.WithLabelValues("created", "document").Inc()

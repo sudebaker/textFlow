@@ -1,10 +1,12 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,45 @@ import (
 	redisclient "ia-text-orchestrator/internal/redis"
 )
 
+func validateWebhookURL(webhookURL string) error {
+	u, err := url.Parse(webhookURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("URL scheme not allowed: %s (only http and https permitted)", u.Scheme)
+	}
+
+	hostname := u.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("URL must have a valid hostname")
+	}
+
+	if ip := net.ParseIP(hostname); ip != nil {
+		if ip.IsLoopback() {
+			return fmt.Errorf("loopback IP addresses not allowed in webhook URL")
+		}
+		if ip.IsPrivate() {
+			return fmt.Errorf("private IP addresses not allowed in webhook URL")
+		}
+	}
+
+	blockedHosts := []string{
+		"169.254.169.254",
+		"metadata.google.internal",
+		"metadata",
+	}
+	for _, blocked := range blockedHosts {
+		if hostname == blocked || strings.HasSuffix(hostname, "."+blocked) {
+			return fmt.Errorf("access to metadata services not allowed")
+		}
+	}
+
+	return nil
+}
+
 func CreateBatchHandler(c *gin.Context) {
 	var req BatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -22,6 +63,16 @@ func CreateBatchHandler(c *gin.Context) {
 			Detail: err.Error(),
 		})
 		return
+	}
+
+	if req.WebhookURL != "" {
+		if err := validateWebhookURL(req.WebhookURL); err != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{
+				Error:  "invalid_webhook_url",
+				Detail: err.Error(),
+			})
+			return
+		}
 	}
 
 	if len(req.Documents) > 100 {
@@ -62,11 +113,11 @@ func CreateBatchHandler(c *gin.Context) {
 	redisclient.GetClient().Expire(ctx, batchMetaKey, 24*time.Hour)
 
 	batchJobsKey := redisclient.Key("batch", batchID, "jobs")
-	redisclient.GetClient().SAdd(ctx, batchJobsKey, "")
 
 	semaphore := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	jobs := make([]BatchJobRef, len(req.Documents))
+	var mu sync.Mutex
 
 	for i, doc := range req.Documents {
 		wg.Add(1)
@@ -77,18 +128,15 @@ func CreateBatchHandler(c *gin.Context) {
 
 			jobID := uuid.New().String()
 
-			jobCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
+			redisInst.SetJobStatus(ctx, jobID, models.StatusPending)
+			redisInst.SetJobCreated(ctx, jobID)
 
-			redisInst.SetJobStatus(jobCtx, jobID, models.StatusPending)
-			redisInst.SetJobCreated(jobCtx, jobID)
-
-			redisclient.GetClient().HSet(jobCtx, redisclient.Key("job", jobID, "meta"), "batch_id", batchID)
-			redisclient.GetClient().SAdd(jobCtx, batchJobsKey, jobID)
-			redisclient.GetClient().Expire(jobCtx, batchJobsKey, 24*time.Hour)
+			redisclient.GetClient().HSet(ctx, redisclient.Key("job", jobID, "meta"), "batch_id", batchID)
+			redisclient.GetClient().SAdd(ctx, batchJobsKey, jobID)
+			redisclient.GetClient().Expire(ctx, batchJobsKey, 24*time.Hour)
 
 			if req.WebhookURL != "" {
-				redisInst.SetJobWebhook(jobCtx, jobID, req.WebhookURL, req.WebhookSecret)
+				redisInst.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret)
 			}
 
 			jobMsg := &models.JobMessage{
@@ -96,13 +144,15 @@ func CreateBatchHandler(c *gin.Context) {
 				Filename: doc.Filename,
 			}
 
-			mqBroker.PublishJobMessage(jobCtx, jobMsg)
+			mqBroker.PublishJobMessage(ctx, jobMsg)
 
+			mu.Lock()
 			jobs[i] = BatchJobRef{
 				ID:       jobID,
 				Filename: doc.Filename,
 				Status:   "pending",
 			}
+			mu.Unlock()
 		}(i, doc)
 	}
 

@@ -267,7 +267,7 @@ class CompletionWorker:
         if done == 1:
             self.redis_client.expire(batch_done_key, 24 * 60 * 60)
 
-        total = int(self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "total"))
+        total = int(self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "total") or 0)
 
         if done >= total:
             webhook_url = self.redis_client.hget(

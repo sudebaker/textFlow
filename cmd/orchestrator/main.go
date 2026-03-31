@@ -1152,6 +1152,8 @@ func downloadHandler(c *gin.Context) {
 			if len(chunk.Embeddings) > 0 {
 				buf := new(bytes.Buffer)
 				for _, f := range chunk.Embeddings {
+					// NOTE: Serialization uses little-endian byte order.
+					// Clients must deserialize using little-endian.
 					bits := math.Float32bits(f)
 					buf.WriteByte(byte(bits))
 					buf.WriteByte(byte(bits >> 8))
@@ -1161,8 +1163,13 @@ func downloadHandler(c *gin.Context) {
 
 				var compressed bytes.Buffer
 				w := gzip.NewWriter(&compressed)
-				w.Write(buf.Bytes())
-				w.Close()
+				defer w.Close()
+				if _, err := w.Write(buf.Bytes()); err != nil {
+					logger.Warn().Err(err).Msg("gzip write warning")
+				}
+				if err := w.Close(); err != nil {
+					logger.Warn().Err(err).Msg("gzip close warning")
+				}
 
 				chunkData["embedding_compressed"] = base64.StdEncoding.EncodeToString(compressed.Bytes())
 			}

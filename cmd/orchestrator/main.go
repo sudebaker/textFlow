@@ -36,6 +36,10 @@ import (
 	redisclient "ia-text-orchestrator/internal/redis"
 	"ia-text-orchestrator/pkg/logging"
 	"ia-text-orchestrator/pkg/metrics"
+
+	"github.com/swaggo/files"
+	"github.com/swaggo/gin-swagger"
+	_ "ia-text-orchestrator/docs/swagger"
 )
 
 var (
@@ -272,6 +276,8 @@ func setupRouter() *gin.Engine {
 		v1.DELETE("/documents/:id", deleteJobHandler)
 	}
 
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
 	return r
 }
 
@@ -366,41 +372,15 @@ func healthHandler(c *gin.Context) {
 // createJobHandler handles POST /v1/documents/process requests and submits a document for processing.
 // It is the primary REST API endpoint for document ingestion.
 //
-// Input (CreateJobRequest):
-//   - document_base64: Base64-encoded document file (mutually exclusive with document_url)
-//   - document_url: URL to document file (mutually exclusive with document_base64, subject to SSRF validation)
-//   - filename: Optional filename for logging/tracking
-//   - features: Optional array of requested features (e.g., ["embeddings", "entities", "metadata"])
-//   - notify_webhook: Optional webhook URL for completion notification
-//
-// Validation:
-//   - Exactly one of document_base64 or document_url is required
-//   - Document size must not exceed 10MB (checked via base64 decoding or URL resolution)
-//   - SSRF prevention: URLs must be public (no localhost, private IPs, cloud metadata endpoints)
-//   - URL schemes limited to http/https
-//
-// Processing:
-//  1. Generates unique UUID v4 job ID
-//  2. Creates Redis job record with status=pending
-//  3. Publishes JobMessage to RabbitMQ extraction queue
-//  4. Returns 202 Accepted immediately (async processing)
-//  5. Client must poll GET /v1/documents/{id} to check status
-//
-// Output (CreateJobResponse):
-//   - job_id: UUID v4 string
-//   - status: "pending"
-//   - status_url: Polling URL for client to check job progress
-//
-// Errors:
-//   - 400 Bad Request: Missing field, invalid base64, URL validation failure
-//   - 422 Unprocessable Entity: SSRF detected, private IP, metadata endpoint
-//   - 500 Internal Server Error: Redis or RabbitMQ failure
-//
-// Side effects:
-//   - Creates Redis key: orchestrator:job:{id}:status = "pending"
-//   - Creates Redis key: orchestrator:job:{id}:created = timestamp
-//   - Publishes to RabbitMQ exchange for extraction worker consumption
-//   - Increments metrics: JobsInProgress, JobsTotal
+// @Summary Process a document
+// @Description Submit a document for async processing. Returns job_id for polling.
+// @Accept json
+// @Produce json
+// @Param request body models.CreateJobRequest true "Document processing request"
+// @Success 202 {object} models.CreateJobResponse
+// @Failure 400 {object} models.ErrorResponse
+// @Failure 500 {object} models.ErrorResponse
+// @Router /v1/documents/process [post]
 func createJobHandler(c *gin.Context) {
 	start := time.Now()
 
@@ -526,32 +506,13 @@ func createJobHandler(c *gin.Context) {
 // getJobHandler handles GET /v1/documents/{id} requests and returns the current status and results of a job.
 // This is a polling endpoint (non-blocking) - clients must retry to check for completion.
 //
-// Input:
-//   - id: Job ID path parameter (UUID v4 format validation required)
-//
-// Output (GetJobResponse):
-//   - job_id: The requested job ID
-//   - status: Current job status (pending, processing, completed, failed)
-//   - results: Aggregated job results (populated only if status=completed)
-//     Includes chunks, embeddings, entities, metadata extracted from the document
-//   - error: Error message if status=failed
-//   - steps: Map of processing step names to their current completion status
-//   - created_at: RFC3339 timestamp when job was created
-//
-// Behavior:
-//   - Does NOT block or wait for job completion
-//   - Returns immediately with current state from Redis
-//   - Results field is nil if job is still processing
-//   - Error field is populated if job failed
-//   - Clients must implement exponential backoff retry logic
-//
-// Errors:
-//   - 400 Bad Request: Invalid job ID format
-//   - 404 Not Found: Job does not exist in Redis
-//   - 500 Internal Server Error: Redis connection failure
-//
-// Side effects:
-//   - None (read-only operation)
+// @Summary Get job status and results
+// @Description Retrieve current status and results of a processing job.
+// @Produce json
+// @Param id path string true "Job ID"
+// @Success 200 {object} models.GetJobResponse
+// @Failure 404 {object} models.ErrorResponse
+// @Router /v1/documents/{id} [get]
 func getJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
@@ -613,30 +574,12 @@ func getJobHandler(c *gin.Context) {
 // deleteJobHandler handles DELETE /v1/documents/{id} requests and removes a job's data from Redis.
 // This endpoint is idempotent: repeated requests for the same job always return 204.
 //
-// Input:
-//   - id: Job ID path parameter (UUID v4 format validation required)
-//
-// Output:
-//   - 204 No Content: Job deleted successfully (or never existed - idempotent)
-//   - No response body
-//
-// Behavior:
-//   - Only deletes jobs with status "completed" or "failed"
-//   - In-progress jobs (pending/processing) cannot be deleted
-//   - Returns 409 Conflict if attempting to delete an in-progress job
-//   - Hard-deletes all Redis keys associated with the job:
-//     orchestrator:job:{id}:status, :text, :chunks, :embeddings, :entities, :metadata, etc.
-//   - Non-existent jobs return 404 Not Found
-//
-// Idempotency:
-//   - Repeated calls to delete the same completed/failed job all return 204
-//   - Safe to retry without side effects
-//
-// Errors:
-//   - 400 Bad Request: Invalid job ID format
-//   - 404 Not Found: Job does not exist
-//   - 409 Conflict: Job is still processing (pending/processing status)
-//   - 500 Internal Server Error: Redis deletion failure
+// @Summary Delete a job
+// @Description Remove a completed or failed job and its associated data.
+// @Param id path string true "Job ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} models.ErrorResponse
+// @Router /v1/documents/{id} [delete]
 func deleteJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
@@ -865,46 +808,16 @@ func validateDocumentInput(req *models.CreateJobRequest, cfg *config.Config) err
 // uploadHandler handles POST /v1/documents/upload requests for file uploads via multipart/form-data.
 // This is an alternative to the REST API for document submission when base64 encoding is inconvenient.
 //
-// Input (multipart/form-data):
-//   - file: Required. Single file upload field. Must be <= 10MB for regular documents.
-//   - notify_webhook: Optional. Webhook URL to notify when job completes (defaults to config.WebhookURL)
-//
-// Supported File Types:
-//   - Documents: .pdf, .txt, .doc, .docx, .ppt, .pptx
-//   - Spreadsheets: .csv, .xls, .xlsx (subject to additional row/size limits)
-//   - Data: .json
-//   - Images: .jpg, .jpeg, .png
-//
-// Size Limits:
-//   - Regular files: 10MB max
-//   - Spreadsheets (.csv, .xls, .xlsx): MAX_SPREADSHEET_SIZE_MB (default 5MB)
-//   - CSV rows: MAX_SPREADSHEET_ROWS (default 2000)
-//
-// Processing:
-//  1. Validates multipart form and file presence
-//  2. Checks file extension against whitelist
-//  3. For spreadsheets: validates size and row count
-//  4. Performs path traversal security checks
-//  5. Saves file to cfg.UploadPath with jobID prefix
-//  6. Creates Redis job record (status=pending)
-//  7. Publishes JobMessage to RabbitMQ extraction queue
-//  8. Returns 202 Accepted immediately (async processing)
-//
-// Output (CreateJobResponse):
-//   - job_id: UUID v4 string
-//   - status: "pending"
-//   - status_url: Polling URL for client to check job progress
-//
-// Errors:
-//   - 400 Bad Request: Missing file, invalid extension, malformed CSV, path traversal attempt
-//   - 413 Payload Too Large: File exceeds size limits
-//   - 500 Internal Server Error: File I/O or Redis failure
-//
-// Side effects:
-//   - Saves file to disk: {cfg.UploadPath}/{jobID}_{filename}
-//   - Creates Redis key: orchestrator:job:{id}:status = "pending"
-//   - Publishes to RabbitMQ extraction queue
-//   - Increments metrics: JobsInProgress, JobsTotal
+// @Summary Upload a document
+// @Description Upload a document via multipart/form-data for async processing.
+// @Accept multipart/form-data
+// @Produce json
+// @Param file formData file true "Document file"
+// @Param filename formData string false "Filename"
+// @Param notify_webhook formData string false "Webhook URL for completion notification"
+// @Success 202 {object} models.CreateJobResponse
+// @Failure 400 {object} models.ErrorResponse
+// @Router /v1/documents/upload [post]
 func uploadHandler(c *gin.Context) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -1138,44 +1051,14 @@ func uploadHandler(c *gin.Context) {
 // downloadHandler handles GET /v1/documents/{id}/download requests and returns job results as a JSON file.
 // This endpoint allows clients to download completed job results with proper HTTP headers for file attachment.
 //
-// Input:
-//   - id: Job ID path parameter (UUID v4 format validation required)
-//
-// Processing:
-//  1. Validates job ID format
-//  2. Checks job status from Redis
-//  3. Validates job is completed or failed (not pending/processing)
-//  4. Reads results JSON file from disk: {cfg.ResultsPath}/{jobID}.json
-//  5. Unmarshals JSON into JobResults struct
-//  6. Sets HTTP headers for file download
-//  7. Returns results as JSON with Content-Disposition: attachment header
-//
-// Output:
-//   - HTTP 200 OK with JSON body
-//   - Content-Type: application/json
-//   - Content-Disposition: attachment; filename=results_{jobID}.json
-//   - Response body: JobResults struct
-//   - job_id: The requested job ID
-//   - status: Final status (completed or failed)
-//   - chunks: Text chunks extracted from document
-//   - embeddings: Vector embeddings for chunks (if embedding feature requested)
-//   - entities: Named entities extracted (if entity feature requested)
-//   - metadata: Document metadata (if metadata feature requested)
-//
-// Errors:
-//   - 400 Bad Request: Invalid job ID format
-//   - 400 Bad Request: Job is still processing (not yet completed/failed)
-//   - 404 Not Found: Job does not exist or results file missing
-//   - 500 Internal Server Error: Disk I/O failure or JSON parse error
-//
-// Side effects:
-//   - None (read-only operation)
-//
-// Client Usage:
-//  1. Submit document via POST /v1/documents/process or /v1/documents/upload
-//  2. Poll GET /v1/documents/{id} until status is "completed" or "failed"
-//  3. Call GET /v1/documents/{id}/download to retrieve final results
-//  4. Browser will download file as results_{jobID}.json
+// @Summary Download job results
+// @Description Download the full JSON results for a completed job.
+// @Produce json
+// @Param id path string true "Job ID"
+// @Param compression query string false "Compression type (gzip)"
+// @Success 200 {object} models.JobResults
+// @Failure 404 {object} models.ErrorResponse
+// @Router /v1/documents/{id}/download [get]
 func downloadHandler(c *gin.Context) {
 	jobID := c.Param("id")
 

@@ -24,7 +24,7 @@ ENV GOMEMLIMIT=800MiB
 
 EXPOSE 8080
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+RUN addgroup -g 101 -S appgroup && adduser -u 100 -S appuser -G appgroup && \
     mkdir -p /app/data/uploads /app/data/results && \
     chown -R appuser:appgroup /app
 USER appuser

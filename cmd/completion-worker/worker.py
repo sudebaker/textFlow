@@ -237,7 +237,8 @@ class CompletionWorker:
 
         Returns:
             Dict keyed by entity_id → {label, text, confidence}.
-            Per-chunk fields (chunk_id, start, end) are stripped from values.
+            Per-chunk fields (chunk_id, start, end) are preserved as start_offset,
+            end_offset, chunk_id in the merged entity.
             Falls back to generating entity_id from label:text if field missing.
         """
         if not entities:

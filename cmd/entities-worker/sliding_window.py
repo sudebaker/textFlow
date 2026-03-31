@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 GLINER_MAX_WORDS = 384  # GLiNER max length in words
 WORDS_PER_TOKEN_RATIO = 1.33  # Approximately 384 words ≈ 512 tokens
 GLINER_MAX_TOKENS = int(
-    GLINER_MAX_WORDS / WORDS_PER_TOKEN_RATIO
-)  # ~288 tokens as safe estimate
+    GLINER_MAX_WORDS * WORDS_PER_TOKEN_RATIO
+)  # ~511 tokens: only trigger sliding window above 384 words
 
 # For actual chunks (512 tokens), we use sliding window
 CHUNK_TOKEN_SIZE = 512

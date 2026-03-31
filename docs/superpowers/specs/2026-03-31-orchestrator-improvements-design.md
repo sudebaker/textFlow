@@ -58,24 +58,33 @@ type EntityMinimal struct {
 - Mapear campos del worker (`start`, `end`) a nombres del response (`start_offset`, `end_offset`)
 
 **Respuesta final:**
+
+El mapa `entities` en `JobResults` está keyed por `entity_id` (UUID), no por label. La estructura actual es `map[string]EntityMinimal`. Solo se agregan campos al valor — la clave no cambia:
+
 ```json
 {
   "entities": {
-    "PERSON": [
-      {
-        "text": "Juan García",
-        "label": "PERSON",
-        "confidence": 0.95,
-        "start_offset": 0,
-        "end_offset": 11,
-        "chunk_id": "chunk_001"
-      }
-    ]
+    "abc123-uuid": {
+      "text": "Juan García",
+      "label": "PERSON",
+      "confidence": 0.95,
+      "start_offset": 0,
+      "end_offset": 11,
+      "chunk_id": "chunk_001"
+    },
+    "def456-uuid": {
+      "text": "Madrid",
+      "label": "LOCATION",
+      "confidence": 0.89,
+      "start_offset": 45,
+      "end_offset": 51,
+      "chunk_id": "chunk_001"
+    }
   }
 }
 ```
 
-**Compatibilidad:** Backwards compatible (campos adicionales en JSON).
+**Compatibilidad:** Backwards compatible (campos adicionales en JSON no rompen clientes existentes).
 
 ---
 
@@ -86,17 +95,21 @@ type EntityMinimal struct {
 **Solución:** Aceptar `webhook_url` y `webhook_secret` opcionales en el body de cada request.
 
 **Cambio en request (`internal/models/job.go`):**
+
+Extender el tipo existente `CreateJobRequest` (no crear uno nuevo):
 ```go
-type ProcessRequest struct {
+type CreateJobRequest struct {
     // campos existentes...
     WebhookURL    string `json:"webhook_url,omitempty"`
     WebhookSecret string `json:"webhook_secret,omitempty"`
 }
 ```
 
-**Almacenamiento:** Guardar en Redis como parte de los metadatos del job:
-- `orchestrator:job:{id}:webhook_url`
-- `orchestrator:job:{id}:webhook_secret`
+**Almacenamiento:** Guardar en el hash `:meta` existente del job (patrón establecido en el proyecto, consistente con `DeleteJob` en `redis/client.go` que borra `:meta` como una sola clave):
+- `HSet orchestrator:job:{id}:meta webhook_url <url>`
+- `HSet orchestrator:job:{id}:meta webhook_secret <secret>`
+
+No se crean claves Redis separadas para no romper el `DeleteJob` existente.
 
 **Firma HMAC:** Si se proporciona `webhook_secret`, el completion-worker incluirá:
 ```
@@ -104,7 +117,7 @@ X-Webhook-Signature: sha256=<hmac-sha256(secret, body)>
 X-Webhook-Timestamp: <unix-timestamp>
 ```
 
-**Payload de notificación:**
+**Payload de notificación** (`completed_at` ya existe en `JobResults` — se incluye en el payload):
 ```json
 {
   "job_id": "uuid",
@@ -283,19 +296,23 @@ GET /v1/batches/:batch_id/status
 - `orchestrator:batch:{id}:jobs` → set de job IDs
 - `orchestrator:batch:{id}:status` → estado actual
 
-**Webhook de batch:** Se dispara cuando el último job (éxito o falla) completa:
-```json
-{
-  "batch_id": "batch-uuid",
-  "status": "completed|partial|failed",
-  "total": 2,
-  "completed": 2,
-  "failed": 0,
-  "jobs": [...]
-}
+**Webhook de batch:** Lo dispara el **completion-worker Python**, que ya escucha eventos de cada job. Al completar un job, el completion-worker verifica si pertenece a un batch (leyendo `orchestrator:job:{id}:meta` campo `batch_id`). Si pertenece, incrementa un contador atómico en Redis (`INCR orchestrator:batch:{id}:done_count`). Cuando `done_count == total`, dispara el webhook de batch.
+
+```python
+# En completion-worker/worker.py - lógica a agregar
+batch_id = self.redis.hget(f"orchestrator:job:{job_id}:meta", "batch_id")
+if batch_id:
+    done = self.redis.incr(f"orchestrator:batch:{batch_id}:done_count")
+    total = int(self.redis.hget(f"orchestrator:batch:{batch_id}:meta", "total"))
+    if done >= total:
+        self.send_batch_webhook(batch_id)
 ```
 
-**max_concurrency:** Limita cuántos jobs se crean simultáneamente (default: 10, max: 50).
+**TTL de claves batch:** Mismo TTL que los jobs individuales (24 horas por defecto, configurable con `REDIS_JOB_TTL`), establecido al crear el batch en el handler Go.
+
+**max_concurrency:** Limita cuántos jobs se despachan al pipeline en paralelo. Implementado con un semáforo (`make(chan struct{}, maxConcurrency)`) en el handler Go al crear los jobs del batch. Default: 10, max: 50. Si el cliente no lo especifica, se usa el default.
+
+**Reconexión SSE (Fuera de Alcance):** El endpoint SSE no implementará soporte para `Last-Event-ID` ni replay de eventos perdidos. Si un cliente se desconecta, recibirá solo eventos nuevos al reconectarse. El estado completo siempre puede obtenerse vía `GET /v1/documents/:id`.
 
 ---
 

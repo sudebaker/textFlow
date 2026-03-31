@@ -184,15 +184,15 @@ type CreateJobResponse struct {
 }
 
 // GetJobResponse represents the HTTP response body for the get job status endpoint.
-// It includes the job ID, current status, and optional results (when job is complete or failed).
-// The Steps field provides per-stage timing information for monitoring and debugging.
+// It includes the job ID, current status, and per-stage step progress.
+// The CurrentStep field indicates the active or last-completed pipeline stage.
 type GetJobResponse struct {
-	JobID     string            `json:"job_id"`
-	Status    JobStatus         `json:"status"`
-	Results   *JobResults       `json:"results,omitempty"`
-	Error     string            `json:"error,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	Steps     map[string]string `json:"steps,omitempty"`
+	JobID       string            `json:"job_id"`
+	Status      JobStatus         `json:"status"`
+	Error       string            `json:"error,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	Steps       map[string]string `json:"steps,omitempty"`
+	CurrentStep string            `json:"current_step,omitempty"`
 }
 
 // ErrorResponse represents a standardized error envelope for HTTP error responses.

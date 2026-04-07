@@ -38,10 +38,20 @@ run-entities-worker: ## Run entities worker locally
 	@echo -e "${YELLOW}Running entities worker...${NC}"
 	cd cmd/entities-worker && python worker.py
 
+run-audio-worker: ## Run audio worker locally
+	@echo -e "${YELLOW}Running audio worker...${NC}"
+	cd cmd/audio-worker && python worker.py
+
+run-image-worker: ## Run image worker locally
+	@echo -e "${YELLOW}Running image worker...${NC}"
+	cd cmd/image-worker && python worker.py
+
 run-workers: ## Run all workers locally
 	@echo -e "${YELLOW}Running all workers...${NC}"
 	@$(MAKE) run-embeddings-worker &
 	@$(MAKE) run-entities-worker &
+	@$(MAKE) run-audio-worker &
+	@$(MAKE) run-image-worker &
 
 run-all: ## Run all services locally (requires docker-compose infrastructure)
 	@echo -e "${YELLOW}Running all services...${NC}"

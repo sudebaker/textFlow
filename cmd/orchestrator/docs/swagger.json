@@ -1,0 +1,438 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "contact": {}
+    },
+    "paths": {
+        "/v1/documents/process": {
+            "post": {
+                "description": "Submit a document for async processing. Returns job_id for polling.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Process a document",
+                "parameters": [
+                    {
+                        "description": "Document processing request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateJobRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateJobResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/documents/upload": {
+            "post": {
+                "description": "Upload a document via multipart/form-data for async processing.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Upload a document",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "Document file",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filename",
+                        "name": "filename",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Webhook URL for completion notification",
+                        "name": "notify_webhook",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateJobResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/documents/{id}": {
+            "get": {
+                "description": "Returns job status and current pipeline step. Does not include results — use /download for results.",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Get job status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Job status with current_step field",
+                        "schema": {
+                            "$ref": "#/definitions/models.GetJobResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Remove a completed or failed job and its associated data.",
+                "summary": "Delete a job",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/documents/{id}/download": {
+            "get": {
+                "description": "Returns gzip-compressed JSON results from filesystem. Only available when job status is completed.",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Download job results",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Compression type (gzip)",
+                        "name": "compression",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Gzip-compressed JSON (Content-Encoding: gzip)",
+                        "schema": {
+                            "$ref": "#/definitions/models.JobResults"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "models.Chunk": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {
+                    "type": "string"
+                },
+                "embeddings": {
+                    "type": "array",
+                    "items": {
+                        "type": "number"
+                    }
+                },
+                "end_offset": {
+                    "type": "integer"
+                },
+                "entity_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "inferences": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.InferenceItem"
+                    }
+                },
+                "start_offset": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "token_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.CreateJobRequest": {
+            "type": "object",
+            "properties": {
+                "document_base64": {
+                    "type": "string"
+                },
+                "document_url": {
+                    "type": "string"
+                },
+                "features": {
+                    "description": "e.g. [\"inferences\"]",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "filename": {
+                    "type": "string"
+                },
+                "webhook_secret": {
+                    "type": "string"
+                },
+                "webhook_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateJobResponse": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.JobStatus"
+                },
+                "status_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.EntityMinimal": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "end_offset": {
+                    "type": "integer"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "start_offset": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.GetJobResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "current_step": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "job_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.JobStatus"
+                },
+                "steps": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "models.InferenceItem": {
+            "type": "object",
+            "properties": {
+                "confidence": {
+                    "type": "number"
+                },
+                "entity_id": {
+                    "type": "string"
+                },
+                "entity_refs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.JobResults": {
+            "type": "object",
+            "properties": {
+                "chunks": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Chunk"
+                    }
+                },
+                "completed_at": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "document_metadata": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "entities": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/models.EntityMinimal"
+                    }
+                },
+                "job_id": {
+                    "type": "string"
+                },
+                "source_classification": {
+                    "$ref": "#/definitions/models.SourceClassificationResult"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "text_metadata": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
+        },
+        "models.JobStatus": {
+            "type": "string",
+            "enum": [
+                "pending",
+                "extracting",
+                "processing",
+                "embedding",
+                "entities",
+                "inferences",
+                "transcribing",
+                "analyzing_image",
+                "completed",
+                "failed"
+            ],
+            "x-enum-varnames": [
+                "StatusPending",
+                "StatusExtracting",
+                "StatusProcessing",
+                "StatusEmbedding",
+                "StatusEntities",
+                "StatusInferences",
+                "StatusTranscribing",
+                "StatusAnalyzingImage",
+                "StatusCompleted",
+                "StatusFailed"
+            ]
+        },
+        "models.SourceClassificationResult": {
+            "type": "object",
+            "properties": {
+                "classifier_version": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "document_type": {
+                    "description": "e.g. \"notariado\", \"catastro\", \"bancario\"",
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

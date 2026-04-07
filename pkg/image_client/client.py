@@ -24,6 +24,7 @@ class MultimodalLLMClientPool:
         self._lock = threading.Lock()
         self._timeout = int(os.getenv("MULTIMODAL_LLM_TIMEOUT", "120"))
         self._max_retries = int(os.getenv("MULTIMODAL_LLM_MAX_RETRIES", "3"))
+        self._verify_ssl = os.getenv("MULTIMODAL_LLM_VERIFY_SSL", "true").lower() == "true"
 
     def _next_url(self) -> str:
         with self._lock:
@@ -92,6 +93,7 @@ class MultimodalLLMClientPool:
             files=files,
             data=data,
             timeout=self._timeout,
+            verify=self._verify_ssl,
         )
         
         if response.status_code >= 500:

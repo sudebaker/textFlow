@@ -470,6 +470,12 @@ services:
       - AUDIO_CHUNK_MAX_CHARS=${AUDIO_CHUNK_MAX_CHARS:-1500}
       - MAX_AUDIO_SIZE_MB=${MAX_AUDIO_SIZE_MB:-500}
       - METRICS_PORT=8005
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     depends_on:
       - rabbitmq
@@ -490,6 +496,12 @@ services:
       - MULTIMODAL_LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
       - IMAGE_QUEUE=image
       - METRICS_PORT=8006
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     depends_on:
       - rabbitmq

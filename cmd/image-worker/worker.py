@@ -20,9 +20,21 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
 QUEUE_NAME = os.getenv("IMAGE_QUEUE", "image")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
 PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "2"))
+UPLOAD_PATH = os.getenv("UPLOAD_PATH", "/app/data/uploads")
 
 IMAGE_JOBS_TOTAL = Counter("image_jobs_total", "Total image processing jobs", ["status"])
 IMAGE_PROCESSING_TIME = Histogram("image_processing_seconds", "Image processing time")
+
+
+def validate_upload_path(file_path: str, allowed_dir: str) -> str:
+    """Validate that file path is within allowed directory to prevent path traversal."""
+    abs_allowed = os.path.abspath(allowed_dir)
+    abs_file = os.path.abspath(file_path)
+    
+    if not abs_file.startswith(abs_allowed + os.sep) and abs_file != abs_allowed:
+        raise ValueError(f"Invalid file path: {file_path} is not within {allowed_dir}")
+    
+    return abs_file
 
 
 def chunk_text(text: str, max_chars: int = 1500) -> list[dict]:
@@ -75,7 +87,8 @@ class ImageWorker:
                     f"orchestrator:job:{job_id}:status", "status", "analyzing_image"
                 )
 
-                with open(body["document_path"], "rb") as f:
+                document_path = validate_upload_path(body["document_path"], UPLOAD_PATH)
+                with open(document_path, "rb") as f:
                     image_bytes = f.read()
 
                 loop = asyncio.get_event_loop()

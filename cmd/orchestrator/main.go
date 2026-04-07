@@ -1079,7 +1079,8 @@ func uploadHandler(c *gin.Context) {
 
 	if ext == ".mp3" || ext == ".wav" || ext == ".m4a" || ext == ".ogg" {
 		jobMsg.ContentType = models.ContentTypeAudio
-		jobMsg.Diarize = c.PostForm("diarize") == "true"
+		diarizeVal := c.PostForm("diarize")
+		jobMsg.Diarize = strings.ToLower(diarizeVal) == "true" || strings.ToLower(diarizeVal) == "1" || strings.ToLower(diarizeVal) == "yes"
 		targetQueue = cfg.AudioQueue
 	} else if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
 		jobMsg.ContentType = models.ContentTypeImage

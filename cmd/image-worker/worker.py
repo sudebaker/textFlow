@@ -22,7 +22,9 @@ METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
 PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "2"))
 UPLOAD_PATH = os.getenv("UPLOAD_PATH", "/app/data/uploads")
 
-IMAGE_JOBS_TOTAL = Counter("image_jobs_total", "Total image processing jobs", ["status"])
+IMAGE_JOBS_TOTAL = Counter(
+    "image_jobs_total", "Total image processing jobs", ["status"]
+)
 IMAGE_PROCESSING_TIME = Histogram("image_processing_seconds", "Image processing time")
 
 
@@ -33,13 +35,15 @@ def chunk_text(text: str, max_chars: int = 1500) -> list[dict]:
     chunk_num = 0
     while start < len(text):
         end = min(start + max_chars, len(text))
-        chunks.append({
-            "chunk_id": f"chunk_{chunk_num:03d}",
-            "text": text[start:end],
-            "start_offset": start,
-            "end_offset": end,
-            "token_count": (end - start) // 4,
-        })
+        chunks.append(
+            {
+                "chunk_id": f"chunk_{chunk_num:03d}",
+                "text": text[start:end],
+                "start_offset": start,
+                "end_offset": end,
+                "token_count": (end - start) // 4,
+            }
+        )
         if end >= len(text):
             break
         start = end
@@ -60,11 +64,11 @@ class ImageWorker:
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
         self.llm_pool = MultimodalLLMClientPool()
+        self._channel = None
 
     async def _process_message_async(
         self,
         message: aio_pika.abc.AbstractIncomingMessage,
-        channel: aio_pika.abc.AbstractChannel,
     ) -> None:
         job_id = None
         async with message.process(requeue=False):
@@ -123,7 +127,7 @@ class ImageWorker:
 
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in ["embeddings", "entities", "metadata"]:
-                    await channel.default_exchange.publish(
+                    await self._channel.default_exchange.publish(
                         aio_pika.Message(
                             body=job_message_json,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
@@ -147,10 +151,10 @@ class ImageWorker:
 
     async def connect(self) -> aio_pika.abc.AbstractConnection:
         connection = await aio_pika.connect_robust(RABBITMQ_URL)
-        channel = await connection.channel()
-        await channel.set_qos(prefetch_count=PREFETCH_COUNT)
+        self._channel = await connection.channel()
+        await self._channel.set_qos(prefetch_count=PREFETCH_COUNT)
 
-        queue = await channel.declare_queue(QUEUE_NAME, durable=True)
+        queue = await self._channel.declare_queue(QUEUE_NAME, durable=True)
         await queue.consume(self._process_message_async)
 
         return connection
@@ -164,7 +168,9 @@ async def main():
     register_signal_handlers(connection)
 
     start_http_server(METRICS_PORT)
-    logger.info(f"Image worker started on queue {QUEUE_NAME}, metrics on port {METRICS_PORT}")
+    logger.info(
+        f"Image worker started on queue {QUEUE_NAME}, metrics on port {METRICS_PORT}"
+    )
 
     await asyncio.Future()
 

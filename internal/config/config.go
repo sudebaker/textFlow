@@ -68,6 +68,12 @@ func Load() (*Config, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse configuration: %w", err)
 	}
+	if cfg.AudioQueue == "" {
+		cfg.AudioQueue = "audio"
+	}
+	if cfg.ImageQueue == "" {
+		cfg.ImageQueue = "image"
+	}
 	return cfg, nil
 }
 

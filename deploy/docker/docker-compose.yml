@@ -64,7 +64,7 @@ services:
     - DOCLING_URL=http://docling:5001
     - RESOURCE_MANAGER_URL=http://resource-manager:9090
     - HTTP_PORT=8080
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - JOB_TTL=24h
     - MAX_RETRIES=3
     - RETRY_DELAY=1s
@@ -102,15 +102,15 @@ services:
           cpus: '0.5'
           memory: 512M
     volumes:
-    - uploads-data:/app/data/uploads
-    - results-data:/app/data/results
+    - /tmp/ia-text-uploads:/app/data/uploads
+    - /tmp/ia-text-results:/app/data/results
   resource-manager:
     build:
       context: ../../
       dockerfile: cmd/resource-manager/Dockerfile
     container_name: ia-text-resource-manager
     environment:
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - HTTP_PORT=9090
     networks:
     - backend
@@ -137,7 +137,7 @@ services:
     - DOCLING_URL=http://docling:5001
     - QUEUE_NAME=extract_text
     - PREFETCH_COUNT=10
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - METRICS_PORT=8004
     - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
     depends_on:
@@ -163,7 +163,7 @@ services:
           cpus: '1'
           memory: 1G
     volumes:
-    - uploads-data:/app/data/uploads:ro
+    - /tmp/ia-text-uploads:/app/data/uploads:ro
     - /tmp/tiktoken_cache:/tmp/tiktoken_cache
   embeddings-worker:
     build:
@@ -179,7 +179,7 @@ services:
     - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=20
@@ -224,7 +224,7 @@ services:
     - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - QUEUE_NAME=entities
     - METRICS_PORT=8002
     - PREFETCH_COUNT=15
@@ -277,7 +277,7 @@ services:
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - QUEUE_NAME=inferences
     - METRICS_PORT=8006
     - PREFETCH_COUNT=3
@@ -313,7 +313,7 @@ services:
       dockerfile: cmd/regex-entity-extractor/Dockerfile
     container_name: ia-text-regex-entity-extractor
     environment:
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - HTTP_PORT=8081
     ports:
     - 8081:8081
@@ -344,7 +344,7 @@ services:
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - QUEUE_NAME=metadata
     - METRICS_PORT=8003
     - PREFETCH_COUNT=10
@@ -376,7 +376,7 @@ services:
     env_file: .env
     environment:
     - REDIS_URL=redis://redis:6379
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
     volumes:
@@ -430,7 +430,7 @@ services:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-cuda}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
     - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
-    - LOG_LEVEL=info
+    - LOG_LEVEL=debug
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
     - NVIDIA_VISIBLE_DEVICES=0
@@ -460,10 +460,14 @@ services:
     networks:
       - backend
       - datastore
+    volumes:
+      - /tmp/ia-text-uploads:/app/data/uploads:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - RABBITMQ_URL=${RABBITMQ_URL}
       - REDIS_URL=${REDIS_URL}
-      - WHISPER_URLS=${WHISPER_URLS:-http://whisper:9000}
+      - WHISPER_URLS=${WHISPER_URLS:-http://host.docker.internal:9001}
       - WHISPER_TIMEOUT=${WHISPER_TIMEOUT:-300}
       - WHISPER_MAX_RETRIES=${WHISPER_MAX_RETRIES:-3}
       - AUDIO_QUEUE=audio
@@ -488,10 +492,14 @@ services:
     networks:
       - backend
       - datastore
+    volumes:
+      - /tmp/ia-text-uploads:/app/data/uploads:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - RABBITMQ_URL=${RABBITMQ_URL}
       - REDIS_URL=${REDIS_URL}
-      - MULTIMODAL_LLM_URLS=${MULTIMODAL_LLM_URLS:-http://multimodal-llm:8000}
+      - MULTIMODAL_LLM_URLS=${MULTIMODAL_LLM_URLS:-http://vllm-service:8000}
       - MULTIMODAL_LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-120}
       - MULTIMODAL_LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
       - IMAGE_QUEUE=image

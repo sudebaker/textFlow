@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +27,14 @@ const (
 	defaultTimeout  = 10 * time.Minute
 	defaultAPIURL   = "http://localhost:8080"
 )
+
+var audioExtensions = map[string]bool{
+	".mp3": true, ".wav": true, ".m4a": true, ".ogg": true,
+}
+
+var imageExtensions = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true,
+}
 
 type CreateJobRequest struct {
 	DocumentBase64 string   `json:"document_base64,omitempty"`
@@ -168,6 +177,7 @@ func main() {
 		batchFile         string
 		timeoutStr        string
 		resumeJobID       string
+		diarizeEnabled    bool
 	)
 
 	args := os.Args[1:]
@@ -241,6 +251,8 @@ func main() {
 			}
 			resumeJobID = args[i+1]
 			i++
+		case "--diarize":
+			diarizeEnabled = true
 		default:
 			fmt.Printf("Unknown argument: %s\n", args[i])
 			printUsage()
@@ -354,7 +366,7 @@ func main() {
 
 		fmt.Printf("\nResults saved to: %s\n", outputFile)
 	} else {
-		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, webhookURL, webhookSecret)
+		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, webhookURL, webhookSecret, diarizeEnabled)
 		if err != nil {
 			fmt.Printf("Error uploading document: %v\n", err)
 			os.Exit(1)
@@ -393,12 +405,13 @@ func printUsage() {
 	fmt.Println("Usage: client [options]")
 	fmt.Println("")
 	fmt.Println("Options:")
-	fmt.Println("  -i, --input <file>          Path to document file or URL (required for single mode)")
+	fmt.Println("  -i, --input <file>          Path to document, audio, or image file (required for single mode)")
 	fmt.Println("  -o, --output <file>         Path to save results JSON (required)")
 	fmt.Println("  -u, --url <url>             API base URL (default: http://localhost:8080)")
 	fmt.Println("  -f, --inferences            Enable inference generation (requires vLLM)")
 	fmt.Println("  -w, --webhook <url>         Webhook URL for job completion notification")
 	fmt.Println("  --webhook-secret <secret>   Secret for webhook signature verification")
+	fmt.Println("  --diarize                  Enable speaker diarization for audio files (Whisper)")
 	fmt.Println("  --sse                      Use SSE streaming instead of polling")
 	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 10m)")
 	fmt.Println("  -b, --batch [file]         Batch processing mode (reads JSON file with documents)")
@@ -411,6 +424,14 @@ func printUsage() {
 	fmt.Println("  client -i /path/to/file.pdf -o output.json --sse")
 	fmt.Println("  client -i /path/to/large.pdf -o output.json --timeout 1h")
 	fmt.Println("")
+	fmt.Println("Audio Files (MP3, WAV, M4A, OGG):")
+	fmt.Println("  client -i /path/to/audio.mp3 -o output.json")
+	fmt.Println("  client -i /path/to/audio.wav -o output.json --diarize")
+	fmt.Println("")
+	fmt.Println("Image Files (JPG, JPEG, PNG):")
+	fmt.Println("  client -i /path/to/image.jpg -o output.json")
+	fmt.Println("  client -i /path/to/photo.png -o output.json")
+	fmt.Println("")
 	fmt.Println("Resume Mode:")
 	fmt.Println("  client --job-id <id> -o output.json")
 	fmt.Println("")
@@ -419,7 +440,21 @@ func printUsage() {
 	fmt.Println("  client -b documents.json -o results.json -w https://myapp.com/webhook")
 }
 
-func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, webhookURL, webhookSecret string) (string, error) {
+func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool) (string, error) {
+	if strings.HasPrefix(inputFile, "http://") || strings.HasPrefix(inputFile, "https://") {
+		ext := strings.ToLower(filepath.Ext(inputFile))
+		if audioExtensions[ext] || imageExtensions[ext] {
+			return "", fmt.Errorf("audio/image URLs are not supported: use a local file path")
+		}
+	}
+
+	if !strings.HasPrefix(inputFile, "http://") && !strings.HasPrefix(inputFile, "https://") {
+		ext := strings.ToLower(filepath.Ext(inputFile))
+		if audioExtensions[ext] || imageExtensions[ext] {
+			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL)
+		}
+	}
+
 	fmt.Println("Preparing document upload...")
 
 	var (
@@ -534,6 +569,96 @@ func downloadAndEncode(ctx context.Context, fileURL string) (string, string, err
 	return encoded, filename, nil
 }
 
+func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string) (string, error) {
+	fmt.Printf("Uploading %s file via multipart: %s\n", strings.TrimPrefix(ext, "."), filePath)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	if err != nil {
+		return "", fmt.Errorf("failed to create form file: %w", err)
+	}
+
+	fileData, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer fileData.Close()
+
+	if _, err := io.Copy(part, fileData); err != nil {
+		return "", fmt.Errorf("failed to copy file data: %w", err)
+	}
+
+	if audioExtensions[ext] && diarizeEnabled {
+		if err := writer.WriteField("diarize", "true"); err != nil {
+			return "", fmt.Errorf("failed to write diarize field: %w", err)
+		}
+	}
+
+	if webhookURL != "" {
+		if err := writer.WriteField("notify_webhook", webhookURL); err != nil {
+			return "", fmt.Errorf("failed to write webhook field: %w", err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/upload", body)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result CreateJobResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	fmt.Printf("Job created: %s\n", result.JobID)
+
+	return result.JobID, nil
+}
+
+func statusLabel(status, step string) string {
+	switch status {
+	case "transcribing":
+		return "Transcribing audio (Whisper)..."
+	case "analyzing_image":
+		return "Analyzing image (LLM)..."
+	case "processing":
+		if step != "" {
+			return fmt.Sprintf("processing | step: %s", step)
+		}
+		return "processing"
+	default:
+		return status
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	return status == "completed" || status == "failed"
+}
+
+func isActiveStatus(status string) bool {
+	return status == "pending" || status == "processing" || status == "transcribing" || status == "analyzing_image"
+}
+
 func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error) {
 	fmt.Println("Monitoring job progress...")
 	fmt.Printf("Status: pending")
@@ -555,13 +680,9 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 				continue
 			}
 
-			if currentStatus == "processing" && currentStep != "" {
-				fmt.Printf("\r%s %-40s", spinner[spinnerIndex], fmt.Sprintf("%s | step: %s", currentStatus, currentStep))
-			} else {
-				fmt.Printf("\r%s %-40s", spinner[spinnerIndex], currentStatus)
-			}
+			fmt.Printf("\r%s %-40s", spinner[spinnerIndex], statusLabel(currentStatus, currentStep))
 
-			if currentStatus == "completed" || currentStatus == "failed" {
+			if isTerminalStatus(currentStatus) {
 				fmt.Println()
 				return currentStatus, nil
 			}
@@ -784,9 +905,9 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 				spinnerIndex = (spinnerIndex + 1) % len(spinner)
 				lastStatus = event.Status
 
-				fmt.Printf("\r%s Status: %-20s", spinner[spinnerIndex], lastStatus)
+				fmt.Printf("\r%s Status: %-20s", spinner[spinnerIndex], statusLabel(lastStatus, ""))
 
-				if event.Status == "completed" || event.Status == "failed" {
+				if isTerminalStatus(event.Status) {
 					fmt.Println()
 					return event.Status, nil
 				}

@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 
 import aio_pika
 import redis
@@ -11,6 +10,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 from pkg.events_python import EventBus
 from pkg.image_client.client import MultimodalLLMClientPool
 from pkg.logging_python import setup_logging
+from pkg.worker_common.security import register_signal_handlers, validate_upload_path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,17 +24,6 @@ UPLOAD_PATH = os.getenv("UPLOAD_PATH", "/app/data/uploads")
 
 IMAGE_JOBS_TOTAL = Counter("image_jobs_total", "Total image processing jobs", ["status"])
 IMAGE_PROCESSING_TIME = Histogram("image_processing_seconds", "Image processing time")
-
-
-def validate_upload_path(file_path: str, allowed_dir: str) -> str:
-    """Validate that file path is within allowed directory to prevent path traversal."""
-    abs_allowed = os.path.abspath(allowed_dir)
-    abs_file = os.path.abspath(file_path)
-    
-    if not abs_file.startswith(abs_allowed + os.sep) and abs_file != abs_allowed:
-        raise ValueError(f"Invalid file path: {file_path} is not within {allowed_dir}")
-    
-    return abs_file
 
 
 def chunk_text(text: str, max_chars: int = 1500) -> list[dict]:
@@ -172,13 +161,7 @@ async def main():
 
     worker = ImageWorker()
     connection = await worker.connect()
-
-    def signal_handler(sig, frame):
-        logger.info(f"Received signal {sig}, shutting down...")
-        connection.close_loop()
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    register_signal_handlers(connection)
 
     start_http_server(METRICS_PORT)
     logger.info(f"Image worker started on queue {QUEUE_NAME}, metrics on port {METRICS_PORT}")

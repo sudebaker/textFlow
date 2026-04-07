@@ -24,9 +24,21 @@ QUEUE_NAME = os.getenv("AUDIO_QUEUE", "audio")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
 MAX_AUDIO_SIZE_MB = int(os.getenv("MAX_AUDIO_SIZE_MB", "500"))
 PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "2"))
+UPLOAD_PATH = os.getenv("UPLOAD_PATH", "/app/data/uploads")
 
 AUDIO_JOBS_TOTAL = Counter("audio_jobs_total", "Total audio processing jobs", ["status"])
 AUDIO_PROCESSING_TIME = Histogram("audio_processing_seconds", "Audio processing time")
+
+
+def validate_upload_path(file_path: str, allowed_dir: str) -> str:
+    """Validate that file path is within allowed directory to prevent path traversal."""
+    abs_allowed = os.path.abspath(allowed_dir)
+    abs_file = os.path.abspath(file_path)
+    
+    if not abs_file.startswith(abs_allowed + os.sep) and abs_file != abs_allowed:
+        raise ValueError(f"Invalid file path: {file_path} is not within {allowed_dir}")
+    
+    return abs_file
 
 
 class AudioWorker:
@@ -61,6 +73,7 @@ class AudioWorker:
                 )
 
                 document_path = body["document_path"]
+                document_path = validate_upload_path(document_path, UPLOAD_PATH)
                 with open(document_path, "rb") as f:
                     audio_bytes = f.read()
 

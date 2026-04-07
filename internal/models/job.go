@@ -36,6 +36,10 @@ const (
 	StatusEntities JobStatus = "entities"
 	// StatusInferences indicates the job is generating micro-inferences from extracted facts.
 	StatusInferences JobStatus = "inferences"
+	// StatusTranscribing indicates the job is being transcribed by the audio-worker.
+	StatusTranscribing JobStatus = "transcribing"
+	// StatusAnalyzingImage indicates the job is being analyzed by the image-worker.
+	StatusAnalyzingImage JobStatus = "analyzing_image"
 	// StatusCompleted indicates the job has finished successfully and results are ready.
 	StatusCompleted JobStatus = "completed"
 	// StatusFailed indicates the job encountered an error during processing.
@@ -147,13 +151,47 @@ type Entity struct {
 // with the document provided either as base64-encoded content or as a path/URL reference.
 // The NotifyWebhook field is optional for asynchronous completion notifications.
 type JobMessage struct {
-	JobID          string `json:"job_id"`
-	DocumentPath   string `json:"document_path,omitempty"`
-	DocumentBase64 string `json:"document_base64,omitempty"`
-	DocumentURL    string `json:"document_url,omitempty"`
-	Filename       string `json:"filename,omitempty"`
-	MIMEType       string `json:"mime_type,omitempty"`
-	NotifyWebhook  string `json:"notify_webhook,omitempty"`
+	JobID          string      `json:"job_id"`
+	DocumentPath   string      `json:"document_path,omitempty"`
+	DocumentBase64 string      `json:"document_base64,omitempty"`
+	DocumentURL    string      `json:"document_url,omitempty"`
+	Filename       string      `json:"filename,omitempty"`
+	MIMEType       string      `json:"mime_type,omitempty"`
+	NotifyWebhook  string      `json:"notify_webhook,omitempty"`
+	ContentType    ContentType `json:"content_type,omitempty"`
+	Diarize        bool        `json:"diarize,omitempty"`
+}
+
+// ContentType identifies the type of uploaded content.
+type ContentType string
+
+const (
+	ContentTypeDocument ContentType = "document"
+	ContentTypeAudio    ContentType = "audio"
+	ContentTypeImage    ContentType = "image"
+)
+
+// AudioSegment represents a single timed segment with optional speaker label.
+type AudioSegment struct {
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
+	Speaker string  `json:"speaker,omitempty"`
+}
+
+// AudioMetadata holds transcription-specific metadata stored in Redis.
+type AudioMetadata struct {
+	Language        string  `json:"language,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds,omitempty"`
+	HasDiarization  bool    `json:"has_diarization"`
+	SegmentCount    int     `json:"segment_count,omitempty"`
+}
+
+// ImageMetadata holds image analysis metadata stored in Redis.
+type ImageMetadata struct {
+	Language    string  `json:"language,omitempty"`
+	Description string  `json:"description,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
 }
 
 // UploadRequest represents the HTTP request body for document upload endpoints.

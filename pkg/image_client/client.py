@@ -1,3 +1,4 @@
+import mimetypes
 import os
 import threading
 import time
@@ -11,7 +12,7 @@ from .models import ImageAnalysisResult
 
 class MultimodalLLMClientPool:
     """HTTP client pool for multimodal LLM image analysis service.
-    
+
     Reads MULTIMODAL_LLM_URLS env var (comma-separated).
     Thread-safe round-robin selection with automatic failover to next URL on error.
     Retries up to MAX_RETRIES=3 with exponential backoff before failing.
@@ -24,7 +25,9 @@ class MultimodalLLMClientPool:
         self._lock = threading.Lock()
         self._timeout = int(os.getenv("MULTIMODAL_LLM_TIMEOUT", "120"))
         self._max_retries = int(os.getenv("MULTIMODAL_LLM_MAX_RETRIES", "3"))
-        self._verify_ssl = os.getenv("MULTIMODAL_LLM_VERIFY_SSL", "true").lower() == "true"
+        self._verify_ssl = (
+            os.getenv("MULTIMODAL_LLM_VERIFY_SSL", "true").lower() == "true"
+        )
 
     def _next_url(self) -> str:
         with self._lock:
@@ -39,15 +42,15 @@ class MultimodalLLMClientPool:
         prompt: Optional[str] = None,
     ) -> ImageAnalysisResult:
         """Analyze image via multimodal LLM service.
-        
+
         Args:
             image_bytes: Raw image file bytes
             filename: Original filename
             prompt: Optional custom prompt
-            
+
         Returns:
             ImageAnalysisResult with extracted_text, description, language, confidence
-            
+
         Raises:
             MultimodalLLMServiceError: If all URLs fail after max retries
         """
@@ -56,7 +59,7 @@ class MultimodalLLMClientPool:
             try:
                 return self._analyze_single(url, image_bytes, filename, prompt)
             except requests.exceptions.RequestException as e:
-                backoff = min(2 ** attempt, 30)
+                backoff = min(2**attempt, 30)
                 if attempt < self._max_retries - 1:
                     time.sleep(backoff)
                     continue
@@ -65,7 +68,7 @@ class MultimodalLLMClientPool:
                 )
             except Exception as e:
                 if "service unavailable" in str(e).lower():
-                    backoff = min(2 ** attempt, 30)
+                    backoff = min(2**attempt, 30)
                     if attempt < self._max_retries - 1:
                         time.sleep(backoff)
                         continue
@@ -82,12 +85,17 @@ class MultimodalLLMClientPool:
     ) -> ImageAnalysisResult:
         """Send a single image analysis request to one URL."""
         endpoint = f"{url}/analyze"
-        
-        files = {"file": (filename, image_bytes)}
+
+        # Infer MIME type from filename extension
+        mime_type, _ = mimetypes.guess_type(filename)
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+
+        files = {"file": (filename, image_bytes, mime_type)}
         data = {}
         if prompt:
             data["prompt"] = prompt
-        
+
         response = requests.post(
             endpoint,
             files=files,
@@ -95,15 +103,20 @@ class MultimodalLLMClientPool:
             timeout=self._timeout,
             verify=self._verify_ssl,
         )
-        
+
         if response.status_code >= 500:
-            raise requests.exceptions.RequestException(f"Server error: {response.status_code}")
-        
+            raise requests.exceptions.RequestException(
+                f"Server error: {response.status_code}"
+            )
+
         if response.status_code != 200:
-            raise Exception(f"Unexpected status code: {response.status_code}")
-        
+            error_body = response.text[:500] if response.text else "no response body"
+            raise Exception(
+                f"Unexpected status code: {response.status_code} - {error_body}"
+            )
+
         result = response.json()
-        
+
         return ImageAnalysisResult(
             extracted_text=result.get("extracted_text", ""),
             description=result.get("description"),

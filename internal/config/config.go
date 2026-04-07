@@ -27,6 +27,8 @@ type Config struct {
 	ExtractQueue       string        `env:"EXTRACT_QUEUE" default:"extract_text"`
 	MetadataQueue      string        `env:"METADATA_QUEUE" default:"metadata"`
 	InferencesQueue    string        `env:"INFERENCES_QUEUE" default:"inferences"`
+	AudioQueue         string        `env:"AUDIO_QUEUE" default:"audio"`
+	ImageQueue         string        `env:"IMAGE_QUEUE" default:"image"`
 	AllowLocalURLs     bool          `env:"ALLOW_LOCAL_URLS" default:"false"`
 	WebhookURL         string        `env:"WEBHOOK_URL" default:""`
 	UploadPath         string        `env:"UPLOAD_PATH" default:"/app/data/uploads"`

@@ -167,7 +167,7 @@ class AudioWorker:
 
 
 async def main():
-    setup_logging()
+    setup_logging("audio-worker")
 
     worker = AudioWorker()
     connection = await worker.connect()

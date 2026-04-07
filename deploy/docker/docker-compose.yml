@@ -452,6 +452,49 @@ services:
       start_period: 30s
     networks:
     - backend
+
+  audio-worker:
+    build:
+      context: ../..
+      dockerfile: cmd/audio-worker/Dockerfile
+    networks:
+      - backend
+      - datastore
+    environment:
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - REDIS_URL=${REDIS_URL}
+      - WHISPER_URLS=${WHISPER_URLS:-http://whisper:9000}
+      - WHISPER_TIMEOUT=${WHISPER_TIMEOUT:-300}
+      - WHISPER_MAX_RETRIES=${WHISPER_MAX_RETRIES:-3}
+      - AUDIO_QUEUE=audio
+      - AUDIO_CHUNK_MAX_CHARS=${AUDIO_CHUNK_MAX_CHARS:-1500}
+      - MAX_AUDIO_SIZE_MB=${MAX_AUDIO_SIZE_MB:-500}
+      - METRICS_PORT=8005
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+      - redis
+
+  image-worker:
+    build:
+      context: ../..
+      dockerfile: cmd/image-worker/Dockerfile
+    networks:
+      - backend
+      - datastore
+    environment:
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - REDIS_URL=${REDIS_URL}
+      - MULTIMODAL_LLM_URLS=${MULTIMODAL_LLM_URLS:-http://multimodal-llm:8000}
+      - MULTIMODAL_LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-120}
+      - MULTIMODAL_LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
+      - IMAGE_QUEUE=image
+      - METRICS_PORT=8006
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+      - redis
+
 networks:
   docker_default:
     external: true

@@ -168,7 +168,7 @@ class ImageWorker:
 
 
 async def main():
-    setup_logging()
+    setup_logging("image-worker")
 
     worker = ImageWorker()
     connection = await worker.connect()

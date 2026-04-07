@@ -57,6 +57,9 @@ var (
 	maxSpreadsheetRows  int
 	maxSpreadsheetBytes int64
 
+	// Audio validation limits
+	maxAudioSizeMB int
+
 	// pipelineOrder defines the canonical order of processing steps.
 	pipelineOrder = []string{"extraction", "embeddings", "entities", "metadata", "inferences"}
 )
@@ -136,6 +139,17 @@ func main() {
 		maxSpreadsheetSizeMB = 5
 	}
 	maxSpreadsheetBytes = int64(maxSpreadsheetSizeMB * 1024 * 1024)
+
+	maxAudioSizeMBStr := os.Getenv("MAX_AUDIO_SIZE_MB")
+	if maxAudioSizeMBStr == "" {
+		maxAudioSizeMBStr = "500"
+	}
+	maxAudioSizeMB, err = strconv.Atoi(maxAudioSizeMBStr)
+	if err != nil {
+		logger.Warn().Err(err).Str("value", maxAudioSizeMBStr).
+			Msg("Invalid MAX_AUDIO_SIZE_MB, using default 500")
+		maxAudioSizeMB = 500
+	}
 
 	r := setupRouter()
 
@@ -855,10 +869,17 @@ func uploadHandler(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if header.Size > int64(cfg.MaxDocumentSizeMB*1024*1024) {
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+
+	maxSizeMB := cfg.MaxDocumentSizeMB
+	if ext == ".mp3" || ext == ".wav" || ext == ".m4a" || ext == ".ogg" {
+		maxSizeMB = maxAudioSizeMB
+	}
+
+	if header.Size > int64(maxSizeMB*1024*1024) {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error:  "file_too_large",
-			Detail: fmt.Sprintf("maximum file size is %dMB", cfg.MaxDocumentSizeMB),
+			Detail: fmt.Sprintf("maximum file size is %dMB", maxSizeMB),
 		})
 		return
 	}
@@ -878,13 +899,17 @@ func uploadHandler(c *gin.Context) {
 		".jpg":  true,
 		".jpeg": true,
 		".png":  true,
+		".mp3":  true,
+		".wav":  true,
+		".m4a":  true,
+		".ogg":  true,
 	}
 
-	ext := strings.ToLower(filepath.Ext(header.Filename))
+	ext = strings.ToLower(filepath.Ext(header.Filename))
 	if ext == "" || !allowedExtensions[ext] {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error:  "invalid_file_type",
-			Detail: "file type not allowed. Supported types: pdf, txt, doc, docx, ppt, pptx, xls, xlsx, csv, json, jpg, jpeg, png",
+			Detail: "file type not allowed. Supported types: pdf, txt, doc, docx, ppt, pptx, xls, xlsx, csv, json, jpg, jpeg, png, mp3, wav, m4a, ogg",
 		})
 		return
 	}
@@ -1046,15 +1071,25 @@ func uploadHandler(c *gin.Context) {
 		DocumentPath:  filePath,
 		MIMEType:      header.Header.Get("Content-Type"),
 		NotifyWebhook: notifyWebhook,
+		ContentType:   models.ContentTypeDocument,
 	}
 
-	// Mark document type for pipeline routing
-	if ext == ".csv" || ext == ".xls" || ext == ".xlsx" {
-		jobMsg.MIMEType = "application/spreadsheet" // Use existing MIMEType field to mark it
+	// Determine content type and queue based on file extension
+	targetQueue := cfg.ExtractQueue
+
+	if ext == ".mp3" || ext == ".wav" || ext == ".m4a" || ext == ".ogg" {
+		jobMsg.ContentType = models.ContentTypeAudio
+		jobMsg.Diarize = c.PostForm("diarize") == "true"
+		targetQueue = cfg.AudioQueue
+	} else if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+		jobMsg.ContentType = models.ContentTypeImage
+		targetQueue = cfg.ImageQueue
+	} else if ext == ".csv" || ext == ".xls" || ext == ".xlsx" {
+		jobMsg.MIMEType = "application/spreadsheet"
 	}
 
-	if err := mqBroker.Publish(ctx, cfg.ExtractQueue, jobMsg); err != nil {
-		logger.Error().Err(err).Msg("failed to publish job")
+	if err := mqBroker.Publish(ctx, targetQueue, jobMsg); err != nil {
+		logger.Error().Err(err).Str("queue", targetQueue).Msg("failed to publish job")
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Error:  "internal_error",
 			Detail: "failed to process job",

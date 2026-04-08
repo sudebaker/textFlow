@@ -175,6 +175,15 @@ var (
 		[]string{"cache_type"},
 	)
 
+	// Feature validation metrics
+	InvalidFeaturesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_invalid_features_total",
+			Help: "Total number of invalid features rejected or ignored",
+		},
+		[]string{"reason"}, // "unknown_feature", "too_long", "too_many", "duplicate"
+	)
+
 	// Circuit breaker metrics
 	CircuitBreakerState = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{

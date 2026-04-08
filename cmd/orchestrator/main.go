@@ -1105,6 +1105,25 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
+	// Read features from form (e.g., "inferences")
+	featuresStr := c.PostForm("features")
+	if featuresStr != "" {
+		featuresList := []string{}
+		for _, f := range strings.Split(featuresStr, ",") {
+			f = strings.TrimSpace(f)
+			if f != "" {
+				featuresList = append(featuresList, f)
+			}
+		}
+		if len(featuresList) > 0 {
+			if err := redis.SetJobFeatures(ctx, jobID, featuresList); err != nil {
+				logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to store features")
+			} else {
+				logger.Info().Str("job_id", jobID).Strs("features", featuresList).Msg("Features stored from multipart")
+			}
+		}
+	}
+
 	jobMsg := models.JobMessage{
 		JobID:         jobID,
 		DocumentPath:  filePath,

@@ -175,9 +175,9 @@ paths:
         required: true
         type: string
       responses:
-        "204":
+        '204':
           description: No Content
-        "404":
+        '404':
           description: Not Found
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
@@ -193,11 +193,11 @@ paths:
       produces:
       - application/json
       responses:
-        "200":
+        '200':
           description: OK
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.GetJobResponse'
-        "404":
+        '404':
           description: Not Found
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
@@ -218,11 +218,11 @@ paths:
       produces:
       - application/json
       responses:
-        "200":
+        '200':
           description: OK
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.JobResults'
-        "404":
+        '404':
           description: Not Found
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
@@ -242,15 +242,15 @@ paths:
       produces:
       - application/json
       responses:
-        "202":
+        '202':
           description: Accepted
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse'
-        "400":
+        '400':
           description: Bad Request
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-        "500":
+        '500':
           description: Internal Server Error
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
@@ -259,14 +259,15 @@ paths:
     post:
       consumes:
       - multipart/form-data
-      description: Upload a document via multipart/form-data for async processing.
+      description: Upload a file (document, audio, image, or spreadsheet) via multipart/form-data
+        for async processing. Supports optional features like inferences and diarization.
       parameters:
       - description: Document file
         in: formData
         name: file
         required: true
         type: file
-      - description: Filename
+      - description: Original filename (optional, for metadata)
         in: formData
         name: filename
         type: string
@@ -274,16 +275,58 @@ paths:
         in: formData
         name: notify_webhook
         type: string
+      - description: Comma-separated list of optional features (e.g., 'inferences').
+          Invalid features are silently ignored.
+        in: formData
+        name: features
+        type: string
+      - description: Audio files only. Enable speaker identification in transcription
+          when true. Ignored for non-audio files.
+        in: formData
+        name: diarize
+        type: boolean
       produces:
       - application/json
       responses:
-        "202":
+        '202':
           description: Accepted
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse'
-        "400":
+        '400':
           description: Bad Request
           schema:
             $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-      summary: Upload a document
-swagger: "2.0"
+        '413':
+          description: Payload Too Large (file exceeds size limit)
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+        '429':
+          description: Too Many Requests (rate limit exceeded)
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Upload a file for processing
+  /v1/jobs/{id}/stream:
+    get:
+      description: Subscribe to real-time job status updates via Server-Sent Events
+        (SSE).
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        '200':
+          description: OK (SSE stream established)
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+      summary: Stream job events (SSE)
+swagger: '2.0'

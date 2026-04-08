@@ -966,27 +966,27 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 		return fmt.Errorf("failed to get results: status %d", resp.StatusCode)
 	}
 
-	var result GetJobResponse
+	var result JobResults
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return err
 	}
 
-	if result.Results == nil {
+	if result.Text == "" && len(result.Chunks) == 0 {
 		return fmt.Errorf("no results found for job %s", jobID)
 	}
 
-	for i, chunk := range result.Results.Chunks {
+	for i, chunk := range result.Chunks {
 		if chunk.EmbeddingCompressed != "" {
 			embeddings, err := decompressEmbeddings(chunk.EmbeddingCompressed)
 			if err != nil {
 				return fmt.Errorf("failed to decompress embeddings for chunk %s: %w", chunk.ChunkID, err)
 			}
-			result.Results.Chunks[i].Embeddings = embeddings
-			result.Results.Chunks[i].EmbeddingCompressed = ""
+			result.Chunks[i].Embeddings = embeddings
+			result.Chunks[i].EmbeddingCompressed = ""
 		}
 	}
 
-	outputData, err := json.MarshalIndent(result.Results, "", "  ")
+	outputData, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -997,22 +997,22 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 	}
 
 	// Display inference summary if present (now inferences are per-chunk)
-	if result.Results != nil {
+	if len(result.Chunks) > 0 {
 		inferenceCount := 0
-		for _, chunk := range result.Results.Chunks {
+		for _, chunk := range result.Chunks {
 			inferenceCount += len(chunk.Inferences)
 		}
 		if inferenceCount > 0 {
 			fmt.Printf("\nInferences generated: %d total across %d chunks\n",
-				inferenceCount, len(result.Results.Chunks))
+				inferenceCount, len(result.Chunks))
 		}
 	}
 
 	created, err := getJobCreatedTime(ctx, apiURL, jobID)
 	if err == nil {
 		completedAt := time.Now()
-		if result.Results.CompletedAt != "" {
-			if t, e := time.Parse(time.RFC3339, result.Results.CompletedAt); e == nil {
+		if result.CompletedAt != "" {
+			if t, e := time.Parse(time.RFC3339, result.CompletedAt); e == nil {
 				completedAt = t
 			}
 		}

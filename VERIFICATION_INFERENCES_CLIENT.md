@@ -9,10 +9,19 @@ Este documento describe las modificaciones realizadas para permitir que el clien
 1. **`tools/client/main.go`** - Cliente Go
    - Línea 454: Paso de parámetro `inferencesEnabled` a `uploadFileMultipart()`
    - Línea 572: Actualización de firma de `uploadFileMultipart()` para recibir `inferencesEnabled`
-   - Línea 599-604: Nuevo código para escribir campo `features` en el formulario multipart
+   - Línea 605-609: Nuevo código para escribir campo `features` en el formulario multipart
 
 2. **`cmd/orchestrator/main.go`** - Orchestrator
-   - Líneas 1099-1125: Nuevo código para leer `features` del formulario multipart y almacenarlas en Redis
+   - Líneas 1108-1159: Nuevo código con **validación de seguridad** para leer `features` del formulario multipart, validar contra whitelist, y almacenarlas en Redis
+
+### Mejoras de Seguridad
+
+Las siguientes validaciones fueron agregadas en el orchestrator:
+- ✅ **Whitelist de features permitidas**: Solo `"inferences"` es aceptado (futuro-proof para más features)
+- ✅ **Límite de cantidad de features**: Máximo 10 features por job
+- ✅ **Límite de longitud de feature**: Máximo 50 caracteres por nombre de feature
+- ✅ **Logging consistente**: Features inválidas se registran pero no causan error (graceful degradation)
+- ✅ **Prevención de DoS**: Protección contra intentos de llenar Redis con valores arbitrarios
 
 ---
 
@@ -355,6 +364,51 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 [INFO] Job abc123 required steps: {extraction, embeddings, entities, metadata, inferences}
 [INFO] Job abc123: added 'inferences' to required_steps
 ```
+
+---
+
+## Consideraciones de Seguridad
+
+### Validación de Features
+
+El orchestrator implementa múltiples capas de validación para proteger contra abusos:
+
+#### 1. Whitelist de Features Permitidas
+Solo los features registrados en la whitelist son aceptados:
+```go
+validFeatures := map[string]bool{
+    "inferences": true,
+    // Futuras features: "classification": true, "summarization": true, etc.
+}
+```
+
+**Comportamiento**: Features inválidos se ignoran silenciosamente (graceful degradation) y se registran con `logger.Warn()`.
+
+**Ejemplo**: Si un cliente envía `features=inferences,invalid_feature,typo`:
+- ✅ `"inferences"` se almacena en Redis
+- ❌ `"invalid_feature"` se ignora (registro warning)
+- ❌ `"typo"` se ignora (registro warning)
+
+#### 2. Límites de Cantidad y Longitud
+```go
+const maxFeatures = 10           // Máximo 10 features por job
+const maxFeatureLength = 50      // Máximo 50 caracteres por nombre
+```
+
+**Prevención**:
+- Evita DoS por envío de miles de features
+- Previene overflow de Redis keys
+- Limita tamaño de datos en logs
+
+#### 3. Prevención de Job Hanging
+
+**Problema evitado**: Si un cliente envía un typo en feature name (ej: `"inferneces"`), sin validación:
+- El feature se almacena en Redis
+- Entities-worker lo ignora (no es `"inferences"`)
+- Completion-worker ve el feature → espera paso que nunca se ejecuta
+- **Resultado**: Job cuelga indefinidamente
+
+**Solución implementada**: Solo features válidos se aceptan, previniendo esta condición.
 
 ---
 

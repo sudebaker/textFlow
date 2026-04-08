@@ -1106,18 +1106,53 @@ func uploadHandler(c *gin.Context) {
 	}
 
 	// Read features from form (e.g., "inferences")
+	// Features allow optional pipeline stages to be enabled per-job
+	// Valid features: "inferences" (micro-inference generation)
 	featuresStr := c.PostForm("features")
 	if featuresStr != "" {
-		featuresList := []string{}
-		for _, f := range strings.Split(featuresStr, ",") {
-			f = strings.TrimSpace(f)
-			if f != "" {
-				featuresList = append(featuresList, f)
-			}
+		validFeatures := map[string]bool{
+			"inferences": true,
+			// Future features added here: "classification": true, etc.
 		}
+		const maxFeatures = 10
+		const maxFeatureLength = 50
+
+		featuresList := []string{}
+		rawFeatures := strings.Split(featuresStr, ",")
+
+		if len(rawFeatures) > maxFeatures {
+			logger.Warn().Str("job_id", jobID).Int("count", len(rawFeatures)).Int("max", maxFeatures).
+				Msg("Too many features requested, truncating to max allowed")
+			rawFeatures = rawFeatures[:maxFeatures]
+		}
+
+		for _, f := range rawFeatures {
+			f = strings.TrimSpace(f)
+			if f == "" {
+				continue
+			}
+
+			// Validate feature length
+			if len(f) > maxFeatureLength {
+				logger.Warn().Str("job_id", jobID).Str("feature", f[:20]+"...").Int("length", len(f)).
+					Int("max_length", maxFeatureLength).
+					Msg("Feature name exceeds max length, skipping")
+				continue
+			}
+
+			// Validate feature is allowed
+			if !validFeatures[f] {
+				logger.Warn().Str("job_id", jobID).Str("feature", f).
+					Msg("Invalid feature requested, ignoring (valid: inferences)")
+				continue
+			}
+
+			featuresList = append(featuresList, f)
+		}
+
 		if len(featuresList) > 0 {
 			if err := redis.SetJobFeatures(ctx, jobID, featuresList); err != nil {
-				logger.Warn().Err(err).Str("job_id", jobID).Msg("Failed to store features")
+				logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to store features")
 			} else {
 				logger.Info().Str("job_id", jobID).Strs("features", featuresList).Msg("Features stored from multipart")
 			}

@@ -41,22 +41,127 @@ print_error() {
     echo -e "${RED}[✗]${NC} $1"
 }
 
+# Create minimal PNG (1x1 transparent PNG, most portable format)
+create_test_png() {
+    local output_file="$1"
+    # Standard 1x1 transparent PNG (hex representation)
+    python3 << 'PYTHON_EOF'
+import sys
+import struct
+
+# Minimal valid PNG: 1x1 transparent
+png_data = bytes.fromhex(
+    '89504e470d0a1a0a0000000d4948445200000001000000010802000000'
+    '90775f00000000636041524743000001feff0050000000050000010000'
+    '000100000163643637000000000c494441546e78040050000000050000'
+    '010000000100000163643637000000000c494441546e78040050000000'
+    '050000010000000100000163643637000000000c4944415478040050'
+    '00000005000001000000010000000000000000000001006d000000000'
+    '0000000000000000000000000000000000000000000000000000000'
+    '00000000000000000000000000000000000000000000000000000'
+    '89504e470d0a1a0a'
+)
+
+# Use base64 encoded minimal valid PNG instead
+import base64
+minimal_png = base64.b64decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+)
+
+with open(sys.argv[1], 'wb') as f:
+    f.write(minimal_png)
+PYTHON_EOF
+    python3 -c "
+import base64
+png_data = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==')
+with open('$output_file', 'wb') as f:
+    f.write(png_data)
+"
+}
+
+# Create minimal WAV file (1 second of silence, 16kHz mono)
+create_test_wav() {
+    local output_file="$1"
+    python3 << 'PYTHON_EOF'
+import struct
+import sys
+
+channels = 1
+sample_rate = 16000
+bits_per_sample = 16
+duration_sec = 1
+
+# Audio data (silence)
+samples = bytes(sample_rate * channels * bits_per_sample // 8)
+riff_size = 36 + len(samples)
+
+# WAV header
+wav_header = struct.pack(
+    '<4sI4s4sIHHIIHH4sI',
+    b'RIFF', riff_size, b'WAVE',
+    b'fmt ', 16,           # subchunk1size
+    1,                      # audio format (PCM)
+    channels,
+    sample_rate,
+    sample_rate * channels * bits_per_sample // 8,  # byte rate
+    channels * bits_per_sample // 8,                 # block align
+    bits_per_sample,
+    b'data', len(samples)
+)
+
+with open(sys.argv[1], 'wb') as f:
+    f.write(wav_header + samples)
+PYTHON_EOF
+    python3 -c "
+import struct
+channels = 1
+sample_rate = 16000
+bits_per_sample = 16
+samples = bytes(sample_rate * channels * bits_per_sample // 8)
+riff_size = 36 + len(samples)
+wav_header = struct.pack(
+    '<4sI4s4sIHHIIHH4sI',
+    b'RIFF', riff_size, b'WAVE',
+    b'fmt ', 16, 1, channels,
+    sample_rate,
+    sample_rate * channels * bits_per_sample // 8,
+    channels * bits_per_sample // 8,
+    bits_per_sample,
+    b'data', len(samples)
+)
+with open('$output_file', 'wb') as f:
+    f.write(wav_header + samples)
+"
+}
+
+# Extract job ID from output (more robust parsing)
+extract_job_id() {
+    local output="$1"
+    # Look for pattern: "Job created: <uuid>" or "Job ID: <uuid>"
+    echo "$output" | grep -oE 'Job (created|ID): ([a-zA-Z0-9_-]+)' | awk -F': ' '{print $NF}' | tail -1
+}
+
 # Test 1: Image with inferences flag
 test_image_inferences() {
     print_info "Test 1: Image upload with inferences flag (-f)"
     
-    # Create a simple test image (1x1 PNG)
-    echo -n -e '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\n\xb7\x00\x00\x00\x00IEND\xaeB`\x82' > /tmp/test_image.png
+    # Create test image
+    create_test_png /tmp/test_image.png
     
     # Upload with -f flag
     print_info "Uploading image with -f flag..."
     OUTPUT=$($CLIENT_BIN -i /tmp/test_image.png -o /tmp/test_image_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
     
-    if echo "$OUTPUT" | grep -q "Job created"; then
+    if echo "$OUTPUT" | grep -q "Job created\|Job ID"; then
         print_success "Job created successfully"
         
-        # Extract job ID from output
-        JOB_ID=$(echo "$OUTPUT" | grep "Job created" | awk '{print $NF}')
+        # Extract job ID
+        JOB_ID=$(extract_job_id "$OUTPUT")
+        if [ -z "$JOB_ID" ]; then
+            print_error "✗ Could not extract job ID from output"
+            return 1
+        fi
+        
         print_info "Job ID: $JOB_ID"
         
         # Verify features are stored in Redis
@@ -76,7 +181,7 @@ test_image_inferences() {
         fi
     else
         print_error "✗ Test 1 FAILED: Could not create job"
-        echo "$OUTPUT"
+        echo "Output: $OUTPUT"
         return 1
     fi
 }
@@ -85,48 +190,22 @@ test_image_inferences() {
 test_audio_inferences() {
     print_info "Test 2: Audio upload with inferences flag (-f)"
     
-    # Create a minimal WAV file (1 second of silence)
-    # WAV header: 44 bytes minimum
-    python3 -c "
-import struct
-import sys
-
-# WAV header
-channels = 1
-sample_rate = 16000
-bits_per_sample = 16
-
-data = bytes([0] * (sample_rate * channels * bits_per_sample // 8))
-
-riff_size = 36 + len(data)
-wav = struct.pack(
-    '<4sI4s4sIHHIIHH4sI',
-    b'RIFF', riff_size,
-    b'WAVE',
-    b'fmt ', 16,  # subchunk1size
-    1, channels,
-    sample_rate,
-    sample_rate * channels * bits_per_sample // 8,
-    channels * bits_per_sample // 8,
-    bits_per_sample,
-    b'data', len(data)
-) + data
-
-with open('/tmp/test_audio.wav', 'wb') as f:
-    f.write(wav)
-" || {
-        print_error "Failed to create test WAV file"
-        return 1
-    }
+    # Create test WAV
+    create_test_wav /tmp/test_audio.wav
     
     # Upload with -f flag
     print_info "Uploading audio with -f flag..."
     OUTPUT=$($CLIENT_BIN -i /tmp/test_audio.wav -o /tmp/test_audio_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
     
-    if echo "$OUTPUT" | grep -q "Job created"; then
+    if echo "$OUTPUT" | grep -q "Job created\|Job ID"; then
         print_success "Job created successfully"
         
-        JOB_ID=$(echo "$OUTPUT" | grep "Job created" | awk '{print $NF}')
+        JOB_ID=$(extract_job_id "$OUTPUT")
+        if [ -z "$JOB_ID" ]; then
+            print_error "✗ Could not extract job ID"
+            return 1
+        fi
+        
         print_info "Job ID: $JOB_ID"
         
         # Verify features are stored
@@ -149,16 +228,21 @@ test_image_without_inferences() {
     print_info "Test 3: Image upload WITHOUT inferences flag (negative test)"
     
     # Create test image
-    echo -n -e '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\n\xb7\x00\x00\x00\x00IEND\xaeB`\x82' > /tmp/test_image_no_inf.png
+    create_test_png /tmp/test_image_no_inf.png
     
     # Upload WITHOUT -f flag
     print_info "Uploading image WITHOUT -f flag..."
     OUTPUT=$($CLIENT_BIN -i /tmp/test_image_no_inf.png -o /tmp/test_no_inf_results.json -u "$API_URL" --timeout 30s 2>&1 || true)
     
-    if echo "$OUTPUT" | grep -q "Job created"; then
+    if echo "$OUTPUT" | grep -q "Job created\|Job ID"; then
         print_success "Job created successfully"
         
-        JOB_ID=$(echo "$OUTPUT" | grep "Job created" | awk '{print $NF}')
+        JOB_ID=$(extract_job_id "$OUTPUT")
+        if [ -z "$JOB_ID" ]; then
+            print_error "✗ Could not extract job ID"
+            return 1
+        fi
+        
         print_info "Job ID: $JOB_ID"
         
         # Verify NO features are stored or inferences is not in features
@@ -181,11 +265,11 @@ test_redis_features_storage() {
     print_info "Test 4: Redis features storage verification"
     
     # First, upload a file with features
-    echo -n -e '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\n\xb7\x00\x00\x00\x00IEND\xaeB`\x82' > /tmp/test_redis.png
+    create_test_png /tmp/test_redis.png
     
     OUTPUT=$($CLIENT_BIN -i /tmp/test_redis.png -o /tmp/test_redis_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
     
-    JOB_ID=$(echo "$OUTPUT" | grep "Job created" | awk '{print $NF}')
+    JOB_ID=$(extract_job_id "$OUTPUT")
     if [ -z "$JOB_ID" ]; then
         print_error "✗ Test 4 FAILED: Could not extract job ID"
         return 1

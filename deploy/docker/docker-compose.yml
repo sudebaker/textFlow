@@ -102,8 +102,8 @@ services:
           cpus: '0.5'
           memory: 512M
     volumes:
-    - /tmp/ia-text-uploads:/app/data/uploads
-    - /tmp/ia-text-results:/app/data/results
+    - uploads-data:/app/data/uploads
+    - results-data:/app/data/results
   resource-manager:
     build:
       context: ../../
@@ -163,7 +163,7 @@ services:
           cpus: '1'
           memory: 1G
     volumes:
-    - /tmp/ia-text-uploads:/app/data/uploads:ro
+    - uploads-data:/app/data/uploads:ro
     - /tmp/tiktoken_cache:/tmp/tiktoken_cache
   embeddings-worker:
     build:

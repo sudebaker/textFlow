@@ -135,7 +135,16 @@ curl -X POST http://localhost:8080/v1/documents/process \
 
 **Endpoint:** `POST /v1/documents/upload`
 
-**Description:** Upload a document file directly as multipart form data. Supports PDF, text, Word, PowerPoint, Excel, CSV, JSON, and image formats.
+**Description:** Upload a document, audio, image, or spreadsheet file directly as multipart form data. The orchestrator will process the file type automatically, extracting text and metadata, generating embeddings, identifying entities, and optionally running inferences or diarization.
+
+**Supported File Types:**
+
+| Category | Extensions | Max Size | Notes |
+|----------|-----------|----------|-------|
+| **Documents** | `.pdf`, `.txt`, `.doc`, `.docx`, `.ppt`, `.pptx` | 10 MB | Text extraction via Docling |
+| **Spreadsheets** | `.xls`, `.xlsx`, `.csv`, `.json` | 5 MB | Flattened to text with max 2,000 rows |
+| **Images** | `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` | 10 MB | Analysis via Multimodal LLM |
+| **Audio** | `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` | 500 MB | Transcription via Whisper; supports diarization |
 
 **Request:**
 ```
@@ -148,6 +157,14 @@ Content-Type: application/pdf
 
 [binary file content]
 ------Boundary
+Content-Disposition: form-data; name="features"
+
+inferences
+------Boundary
+Content-Disposition: form-data; name="diarize"
+
+true
+------Boundary
 Content-Disposition: form-data; name="notify_webhook"
 
 https://example.com/webhook
@@ -155,17 +172,19 @@ https://example.com/webhook
 ```
 
 **Parameters:**
-- `file` (file, required): The document file to upload. Supported types:
-  - Documents: `.pdf`, `.txt`, `.doc`, `.docx`, `.ppt`, `.pptx`
-  - Spreadsheets: `.xls`, `.xlsx`, `.csv`
-  - Data: `.json`
-  - Images: `.jpg`, `.jpeg`, `.png`
+- `file` (file, required): The file to upload. See **Supported File Types** table above.
+- `features` (string, optional): Comma-separated list of extra pipeline features. Currently supported:
+  - `inferences` — Generate micro-inferences from extracted text using inference-worker (requires vLLM).
+  - Max 10 features per job, max 50 characters each. Invalid features are silently ignored with a warning.
+- `diarize` (boolean, optional): **Audio files only.** When `true`, identifies speakers in audio transcription via Whisper's diarization. Default: `false`. Ignored for non-audio files.
 - `notify_webhook` (string, optional): Webhook URL to notify when job completes. If not provided, uses `WEBHOOK_URL` from server config.
 
 **Constraints:**
-- Maximum file size: **10MB**
-- Spreadsheets: Maximum **2,000 rows** (configurable via `MAX_SPREADSHEET_ROWS`)
-- Spreadsheets: Maximum **5MB** (configurable via `MAX_SPREADSHEET_SIZE_MB`)
+- **Documents:** Maximum 10MB (configurable via `MAX_DOCUMENT_SIZE_MB`)
+- **Spreadsheets:** Maximum 5MB (configurable via `MAX_SPREADSHEET_SIZE_MB`), max 2,000 rows (configurable via `MAX_SPREADSHEET_ROWS`)
+- **Images:** Maximum 10MB
+- **Audio:** Maximum 500MB (configurable via `MAX_AUDIO_SIZE_MB`)
+- **Rate Limiting:** 100 requests per second per IP; burst of 10 requests allowed.
 
 **Response (202 Accepted):**
 ```json
@@ -178,16 +197,43 @@ https://example.com/webhook
 
 **Error Examples:**
 - `400 Bad Request`: No file provided or file parse error
-- `400 Bad Request`: Invalid file type
+- `400 Bad Request`: Invalid file type (e.g., `.exe` upload)
 - `400 Bad Request`: File exceeds size limit (`file_too_large`)
 - `400 Bad Request`: CSV/Excel exceeds row limit
+- `429 Too Many Requests`: Rate limit exceeded (100 req/sec per IP)
 - `500 Internal Server Error`: Failed to save or queue job
 
-**Example:**
+**Examples:**
+
+**Upload image with inferences (requires vLLM):**
 ```bash
 curl -X POST http://localhost:8080/v1/documents/upload \
-  -F "file=@report.pdf" \
+  -F "file=@screenshot.png" \
+  -F "features=inferences" \
   -F "notify_webhook=https://myapp.com/webhook"
+```
+
+**Upload audio with diarization (speaker identification):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@meeting_recording.mp3" \
+  -F "diarize=true" \
+  -F "notify_webhook=https://myapp.com/webhook"
+```
+
+**Upload audio with both diarization and inferences:**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@conference.wav" \
+  -F "diarize=true" \
+  -F "features=inferences" \
+  -F "notify_webhook=https://myapp.com/webhook"
+```
+
+**Upload PDF (basic processing, no extra features):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@report.pdf"
 ```
 
 ---
@@ -257,18 +303,189 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 - `500 Internal Server Error`: Failed to retrieve job status
 
 **Job Status Lifecycle:**
-1. `pending` — Job created, waiting for extraction
-2. `extracting` — Document extraction in progress
-3. `processing` — Text processing
-4. `embedding` — Generating embeddings
-5. `entities` — Extracting entities
-6. `inferences` — Generating micro-inferences (only when `features: ["inferences"]` was set)
-7. `completed` — All processing complete, results available via `/download`
-8. `failed` — Job failed at some stage
+
+All jobs follow the same pipeline stages regardless of file type (documents, audio, images, spreadsheets):
+
+1. `pending` — Job created, waiting for first stage
+2. `extracting` — Extracting content from file (PDF text, audio transcription, image analysis, spreadsheet parsing)
+3. `processing` — Not currently used; reserved for future compatibility
+4. `embedding` — Generating text embeddings (BAAI/bge-m3 model)
+5. `entities` — Extracting named entities and PII (GLiNER model + regex patterns)
+6. `inferences` — *(Optional)* Generating inference results (only if `features: ["inferences"]` was set in request)
+7. `metadata` — Extracting and enriching document metadata
+8. `completed` — All processing complete, results available via `/download`
+9. `failed` — Job failed at any stage; check `error` field in response
+
+**Pipeline by File Type:**
+
+| File Type | Pipeline Stages | Notes |
+|-----------|-----------------|-------|
+| **Documents** (PDF, DOCX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Docling extracts text, then standard NLP pipeline |
+| **Audio** (MP3, WAV, etc.) | extracting (transcription) → embedding → entities → [inferences] → metadata → completed | Whisper transcribes audio; optional diarization output. Diarization output is included in extracted text with speaker labels. |
+| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → entities → [inferences] → metadata → completed | Multimodal LLM analyzes image content, produces description. Description is processed through embedding/entity stages. |
+| **Spreadsheets** (CSV, XLSX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Rows flattened into text blocks (max 2,000 rows), then standard pipeline |
+
+**Status Transitions:**
+```
+pending → extracting → embedding → entities → [inferences] → metadata → completed
+                             ↓
+                           failed (at any stage)
+```
+
+**Response Format for Different Stages:**
+
+When job is `extracting`:
+```json
+{"status": "extracting", "current_step": "extracting"}
+```
+
+When job is processing:
+```json
+{"status": "embedding", "current_step": "embedding"}
+```
+
+When job is completed:
+```json
+{
+  "status": "completed",
+  "current_step": "completed",
+  "steps": {
+    "extraction": "completed",
+    "embeddings": "completed",
+    "entities": "completed",
+    "metadata": "completed"
+  }
+}
+```
+
+When job fails:
+```json
+{
+  "status": "failed",
+  "current_step": "embedding",
+  "error": "embedding_error",
+  "detail": "BAAI model failed to generate embeddings"
+}
+```
 
 **Example:**
 ```bash
 curl http://localhost:8080/v1/documents/job_xyz789abc
+```
+
+---
+
+### 4a. Features Parameter
+
+**Overview:** The `features` parameter enables optional processing stages beyond the standard pipeline. It is passed during job creation (in both `/v1/documents/upload` and `/v1/documents/process` endpoints) and causes the job to transition through additional stages before completion.
+
+**Currently Supported Features:**
+
+#### `inferences`
+Generates micro-inferences (short, actionable insights) from the extracted text using an inference model (typically vLLM).
+
+**Requirements:**
+- `inference-worker` service must be running
+- vLLM with a suitable language model (e.g., Mistral-7B, Llama-2-13B)
+- The orchestrator must be able to reach the inference-worker via RabbitMQ
+
+**Pipeline Impact:**
+- Adds `inferences` stage after `entities`
+- Job flow becomes: `extracting → embedding → entities → **inferences** → metadata → completed`
+- Increases total job time by 5–15 seconds depending on text length
+
+**Output Format:**
+When job completes with `features: ["inferences"]`, the `/v1/documents/{job_id}/download` response includes an `inferences` array:
+
+```json
+{
+  "job_id": "job_xyz789abc",
+  "inferences": [
+    {
+      "text": "Document discusses quarterly revenue growth of 15%",
+      "type": "insight",
+      "confidence": 0.92
+    },
+    {
+      "text": "Three key risks identified: supply chain, market competition, regulatory changes",
+      "type": "summary",
+      "confidence": 0.88
+    }
+  ]
+}
+```
+
+**Feature Validation:**
+- Maximum **10 features per job** (currently only `inferences` is implemented)
+- Maximum **50 characters per feature name**
+- Invalid feature names are **silently ignored** with a warning logged
+- If all features are invalid, job processes normally without the optional stages
+
+**Examples:**
+
+**Request with inferences (will add inferences stage):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@document.pdf" \
+  -F "features=inferences"
+```
+
+**Request with invalid feature (ignored, job processes normally):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@document.pdf" \
+  -F "features=nonexistent_feature"
+# Output: warning logged, job runs without extra stages
+```
+
+---
+
+### 4b. Diarize Parameter
+
+**Overview:** The `diarize` parameter enables speaker identification in audio transcription. It is only used for audio files and is ignored for other file types.
+
+**Supported File Types:**
+- `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac`
+
+**When to Use:**
+- Transcribing meetings, interviews, podcasts, or conference calls
+- Identifying which speaker said what
+- Extracting per-speaker statistics
+
+**How It Works:**
+1. **Whisper Transcription:** Audio is transcribed to text via Whisper
+2. **Diarization:** Speaker identification is applied (marking speaker turns in transcript)
+3. **Output:** Transcript includes speaker labels like `[Speaker 1]`, `[Speaker 2]`, etc.
+4. **Downstream Processing:** Speaker-labeled text flows through embedding, entity extraction, and optional inference stages
+
+**Output Format:**
+When audio is uploaded with `diarize=true`, the extracted text in `/v1/documents/{job_id}/download` includes speaker labels:
+
+```json
+{
+  "text": "[Speaker 1]: Good morning, everyone. Let's start the quarterly review. [Speaker 2]: Sure. [Speaker 1]: Our revenue is up 15% compared to last quarter..."
+}
+```
+
+**Limitations:**
+- Diarization works best with 2–5 speakers
+- Background noise may affect speaker identification accuracy
+- Overlapping speech may not be handled perfectly
+
+**Example:**
+
+**Transcribe audio with speaker identification:**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@meeting_recording.mp3" \
+  -F "diarize=true"
+```
+
+**Transcribe audio without diarization (standard transcription):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@meeting_recording.mp3" \
+  -F "diarize=false"
 ```
 
 ---
@@ -432,6 +649,144 @@ Possible values: `pending`, `extracting`, `processing`, `embedding`, `entities`,
 
 ---
 
+## External Service Requirements
+
+The orchestrator depends on external services for different processing stages. All services can be **optionally air-gapped** (run without internet) by mounting pre-downloaded model files.
+
+**Required Services:**
+
+| Service | Purpose | Input | Output | Notes |
+|---------|---------|-------|--------|-------|
+| **Docling** | Document extraction | PDF, DOCX, PPTX, images | Extracted text, chunks, markdown | HTTP service; handles Documents category |
+| **Whisper** (via inference-worker) | Audio transcription | MP3, WAV, M4A, OGG, FLAC | Transcript text, optionally with diarization | OpenAI Whisper; handles Audio category |
+| **Multimodal LLM** (via inference-worker) | Image analysis | JPG, PNG, WEBP, BMP | Image description/analysis text | E.g., LLaVA, Claude Vision, GPT-4V; handles Images category |
+| **BAAI/bge-m3** | Text embedding generation | Text chunks | 384-dimensional vectors | Embedding model; runs in embeddings-worker; air-gapped compatible |
+| **GLiNER** | Named entity recognition | Text | Entity spans with labels and confidence | NER model; runs in entities-worker; air-gapped compatible; offline-critical |
+| **Regex Entity Extractor** | PII/Pattern extraction | Text | Regex-matched entities (EMAIL, PHONE, etc.) | HTTP service; runs in entities-worker; air-gapped compatible |
+| **vLLM** (optional) | Inference generation | Text | Micro-inferences/insights | Only used when `features: ["inferences"]` is set; requires inference-worker |
+
+**Request/Response Contract (Agnostic to Implementation):**
+
+These specifications define what each service MUST receive and return. Specific implementations (vLLM, Replicate, local models, etc.) are interchangeable as long as they respect these contracts.
+
+**1. Docling (Document Extraction)**
+```
+Input:  File (PDF, DOCX, PPTX, etc.) or file URL
+Output: {
+  "text": "full extracted text",
+  "chunks": [{"text": "...", "page": 1, "..."}],
+  "metadata": {"pages": 10, "title": "...", "..."}
+}
+```
+
+**2. Whisper (Audio Transcription)**
+```
+Input:  Audio file (MP3, WAV, etc.), optional diarize: bool
+Output: {
+  "text": "Transcribed text, optionally with [Speaker 1]: labels",
+  "language": "en",
+  "confidence": 0.95
+}
+```
+
+**3. Multimodal LLM (Image Analysis)**
+```
+Input:  Image file (JPG, PNG, etc.) + system prompt
+Output: {
+  "description": "Natural language description of image",
+  "objects": ["list", "of", "detected", "objects"],
+  "text_in_image": "Any text visible in the image"
+}
+```
+
+**4. BAAI/bge-m3 (Embeddings)**
+```
+Input:  Text chunk
+Output: [0.123, 0.456, ..., 0.789]  # 384-dim float array
+```
+
+**5. GLiNER (NER)**
+```
+Input:  Text
+Output: [
+  {"entity": "John Doe", "label": "PERSON", "confidence": 0.95, "start": 0, "end": 8},
+  ...
+]
+```
+
+**6. Regex Entity Extractor (PII)**
+```
+Input:  Text
+Output: {
+  "EMAIL": ["user@example.com", ...],
+  "PHONE": ["+1-555-1234", ...],
+  "CREDIT_CARD": ["****-****-****-1234", ...],
+  ...
+}
+```
+
+**7. vLLM (Inferences) — Optional**
+```
+Input:  {
+  "text": "...",
+  "prompt": "Extract 2-3 key insights from this text"
+}
+Output: {
+  "inferences": [
+    "Insight 1",
+    "Insight 2",
+    ...
+  ]
+}
+```
+
+**Air-Gapped Deployment:**
+For offline use, all services except Docling can run without internet. Pre-download models and mount them:
+- BAAI/bge-m3 → `embeddings-worker`
+- GLiNER → `entities-worker`
+- Whisper → inference worker
+- vLLM models → inference worker
+
+See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
+
+---
+
+## Rate Limits & Constraints
+
+**Request Rate Limits:**
+- **100 requests per second** per IP address (configurable)
+- **Burst allowance:** 10 requests (token bucket algorithm)
+- **Exceeding limit:** Returns `429 Too Many Requests` with `Retry-After` header
+
+**File Size Constraints:**
+
+| File Type | Max Size | Configurable Via |
+|-----------|----------|------------------|
+| Documents (PDF, DOCX, etc.) | 10 MB | `MAX_DOCUMENT_SIZE_MB` |
+| Spreadsheets (CSV, XLSX) | 5 MB | `MAX_SPREADSHEET_SIZE_MB` |
+| Images (JPG, PNG, etc.) | 10 MB | `MAX_DOCUMENT_SIZE_MB` |
+| Audio (MP3, WAV, etc.) | 500 MB | `MAX_AUDIO_SIZE_MB` |
+
+**Data Constraints:**
+
+| Constraint | Limit | Configurable Via |
+|-----------|-------|------------------|
+| Spreadsheet rows | 2,000 rows | `MAX_SPREADSHEET_ROWS` |
+| Features per job | 10 features | Hard-coded |
+| Feature name length | 50 characters | Hard-coded |
+| Job TTL (time to keep results) | 24 hours | `JOB_TTL` |
+| Job timeout | 5 minutes | `JOB_TIMEOUT` |
+| Concurrent jobs per orchestrator | Unlimited | System resources |
+
+**Response Time Estimates** (rough, depends on file size and server load):
+- **Documents (10MB PDF):** 10–30 seconds
+- **Audio (1 hour):** 30–60 seconds (transcription time varies)
+- **Images (10MB):** 5–15 seconds
+- **Spreadsheets (500 rows):** 5–10 seconds
+- **With inferences:** Add 5–15 seconds
+
+---
+
 ## Configuration
 
 ### Server Configuration
@@ -462,11 +817,7 @@ Environment variables (set in `docker-compose.yml` or `.env`):
 
 ---
 
-## Rate Limiting
 
-No rate limiting is currently implemented. Be mindful of system resources when submitting multiple large documents simultaneously.
-
----
 
 ## Webhook Notifications
 
@@ -488,16 +839,121 @@ Content-Type: application/json
 
 ## Error Handling
 
-### Common Errors
+### HTTP Status Codes and Error Responses
 
-| Code | Error | Cause |
-|------|-------|-------|
-| 400 | invalid_request | Malformed JSON or missing required fields |
-| 400 | invalid_input | Document validation failed (e.g., SSRF attempt) |
-| 400 | invalid_file_type | Uploaded file type not supported |
-| 413 | file_too_large | File exceeds size limit (10MB) |
-| 404 | not_found | Job ID does not exist |
-| 500 | internal_error | Server error (check logs) |
+**All error responses follow this format:**
+```json
+{
+  "error": "error_code",
+  "detail": "Human-readable error message"
+}
+```
+
+### Complete Error Reference
+
+| HTTP Status | Error Code | Cause | Example |
+|-------------|-----------|-------|---------|
+| **400** | `invalid_request` | Malformed JSON or missing required fields | Missing `file` in multipart form |
+| **400** | `invalid_input` | Validation failed (e.g., SSRF attempt, invalid JSON) | Suspicious URL in `document_url` |
+| **400** | `invalid_file_type` | Uploaded file type not supported | Uploading `.exe` or `.zip` file |
+| **400** | `file_too_large` | File exceeds size limit (see constraints table) | 15MB PDF when limit is 10MB |
+| **400** | `csv_row_limit_exceeded` | CSV/Excel file exceeds row limit | 3,000 rows in spreadsheet when limit is 2,000 |
+| **400** | `both_inputs_provided` | Both `document_base64` and `document_url` supplied | Mutually exclusive parameters |
+| **400** | `missing_required_field` | Required field missing from request | `document_base64` and `document_url` both absent |
+| **413** | `payload_too_large` | Request body exceeds maximum size | Uploading massive base64 encoded file |
+| **429** | `rate_limit_exceeded` | Too many requests from this IP | More than 100 req/sec per IP |
+| **404** | `not_found` | Job ID does not exist or has expired | Job TTL elapsed (24 hours default) |
+| **425** | `too_early` | Job not yet completed | Attempting to download before job finishes |
+| **500** | `internal_error` | Server-side error | Unexpected exception in handler |
+| **500** | `extraction_error` | File extraction failed | Docling crashed on malformed PDF |
+| **500** | `embedding_error` | Embedding generation failed | BAAI model unavailable or crashed |
+| **500** | `entity_extraction_error` | Entity recognition failed | GLiNER service unreachable |
+| **500** | `inference_error` | Inference generation failed (if `features: ["inferences"]` set) | vLLM service down |
+| **500** | `storage_error` | Failed to save results | Disk full or permission denied |
+| **503** | `service_unavailable` | Infrastructure services unavailable | Redis/RabbitMQ down |
+
+### Error Response Examples
+
+**400 Bad Request — Invalid file type:**
+```json
+{
+  "error": "invalid_file_type",
+  "detail": "File type '.exe' is not supported. Supported types: pdf, docx, txt, pptx, xls, xlsx, csv, json, jpg, jpeg, png, webp, bmp, mp3, wav, m4a, ogg, flac"
+}
+```
+
+**413 Payload Too Large:**
+```json
+{
+  "error": "file_too_large",
+  "detail": "File size 15485760 bytes exceeds limit of 10485760 bytes (10 MB)"
+}
+```
+
+**429 Rate Limit:**
+```json
+{
+  "error": "rate_limit_exceeded",
+  "detail": "Rate limit exceeded: 100 requests per second per IP"
+}
+```
+**Response Headers:**
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1
+```
+
+**404 Not Found:**
+```json
+{
+  "error": "not_found",
+  "detail": "Job 'job_invalid_id' does not exist or has expired (24h TTL)"
+}
+```
+
+**500 Internal Error — Job failed at extraction:**
+```json
+{
+  "error": "extraction_error",
+  "detail": "Document extraction failed: PDF appears corrupted or uses unsupported compression"
+}
+```
+
+### Handling Errors in Client Code
+
+**Python example:**
+```python
+import requests
+
+try:
+    response = requests.post(
+        "http://localhost:8080/v1/documents/upload",
+        files={"file": open("document.pdf", "rb")}
+    )
+    response.raise_for_status()  # Raises HTTPError for 4xx/5xx
+    job_id = response.json()["job_id"]
+except requests.exceptions.HTTPError as e:
+    error_data = e.response.json()
+    print(f"Error: {error_data['error']}")
+    print(f"Detail: {error_data['detail']}")
+except Exception as e:
+    print(f"Unexpected error: {e}")
+```
+
+**Bash example (with error handling):**
+```bash
+response=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@document.pdf")
+http_code=$(echo "$response" | tail -n 1)
+body=$(echo "$response" | head -n -1)
+
+if [ "$http_code" = "202" ]; then
+    echo "Job created: $(echo "$body" | jq -r '.job_id')"
+else
+    echo "Error ($http_code): $(echo "$body" | jq -r '.detail')"
+    exit 1
+fi
+```
 
 ---
 
@@ -696,39 +1152,160 @@ curl http://localhost:8080/v1/batches/batch_abc123/status
 
 **Endpoint:** `GET /v1/jobs/{job_id}/stream`
 
-**Description:** Subscribe to real-time job status updates via Server-Sent Events (SSE).
+**Description:** Subscribe to real-time job status updates via Server-Sent Events (SSE). This endpoint streams status changes as they happen, allowing clients to monitor job progress in real-time without polling.
+
+> **Note:** This endpoint uses the `/v1/jobs/` prefix, which differs from other endpoints that use `/v1/documents/`. Both `GET /v1/documents/{job_id}` (polling) and `GET /v1/jobs/{job_id}/stream` (SSE) are valid for monitoring job status.
 
 **Path Parameters:**
-- `job_id` (string, required): The job ID to stream.
+- `job_id` (string, required): The job ID returned from job creation (e.g., `job_abc123def456`).
+
+**Query Parameters:**
+- None
 
 **Response (200 OK):**
 ```
 Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
 
 event: job_pending
-data: {"job_id":"job_abc","status":"pending","timestamp":"2025-03-16T10:30:00Z"}
+data: {"job_id":"job_abc123","status":"pending","timestamp":"2025-03-16T10:30:00Z"}
 
 event: job_extracting
-data: {"job_id":"job_abc","status":"extracting","progress":0.5,"timestamp":"2025-03-16T10:30:05Z"}
+data: {"job_id":"job_abc123","status":"extracting","progress":0,"timestamp":"2025-03-16T10:30:05Z"}
+
+event: job_embedding
+data: {"job_id":"job_abc123","status":"embedding","progress":0.33,"timestamp":"2025-03-16T10:30:15Z"}
+
+event: job_entities
+data: {"job_id":"job_abc123","status":"entities","progress":0.66,"timestamp":"2025-03-16T10:30:25Z"}
 
 event: job_completed
-data: {"job_id":"job_abc","status":"completed","timestamp":"2025-03-16T10:35:00Z"}
+data: {"job_id":"job_abc123","status":"completed","progress":1.0,"timestamp":"2025-03-16T10:30:35Z","results_url":"http://localhost:8080/v1/documents/job_abc123/download"}
+
+: heartbeat
+
 ```
 
-**Event Types:**
-- `job_pending`: Job created, waiting for processing
-- `job_extracting`: Text extraction in progress
-- `job_processing`: Processing (embeddings, entities)
-- `job_completed`: Job completed successfully
-- `job_failed`: Job failed with error
+**Event Types and Payloads:**
+
+| Event | Status | Meaning | Payload |
+|-------|--------|---------|---------|
+| `job_pending` | `pending` | Job created, queued for processing | `{job_id, status, timestamp}` |
+| `job_extracting` | `extracting` | Extracting content from file | `{job_id, status, progress, timestamp}` |
+| `job_embedding` | `embedding` | Generating text embeddings | `{job_id, status, progress, timestamp}` |
+| `job_entities` | `entities` | Extracting named entities | `{job_id, status, progress, timestamp}` |
+| `job_inferences` | `inferences` | Generating inferences (if requested) | `{job_id, status, progress, timestamp}` |
+| `job_metadata` | `metadata` | Extracting document metadata | `{job_id, status, progress, timestamp}` |
+| `job_completed` | `completed` | Job finished successfully | `{job_id, status, progress: 1.0, timestamp, results_url}` |
+| `job_failed` | `failed` | Job failed at some stage | `{job_id, status, error, error_detail, timestamp}` |
 
 **Heartbeat:**
-The server sends periodic heartbeat comments (`: heartbeat\n\n`) every 30 seconds to keep the connection alive.
+The server sends a comment-only message (`: heartbeat\n\n`) every **30 seconds** to keep the connection alive and prevent client timeouts. Clients should ignore heartbeat messages (they're not events).
 
-**Example:**
-```bash
-curl -N http://localhost:8080/v1/jobs/job_abc123/stream
+**Connection Behavior:**
+- **Timeout:** Connection closes after **10 minutes** of inactivity (maximum SSE stream duration)
+- **Max Connections:** No hard limit; depends on server resources
+- **Buffering:** Events are not buffered; if client disconnects, events during disconnection are lost (use polling for reliable delivery)
+
+**Error Handling:**
+
+If the job ID does not exist:
 ```
+HTTP/1.1 404 Not Found
+
+{
+  "error": "not_found",
+  "detail": "Job 'job_invalid_id' does not exist"
+}
+```
+
+**Examples:**
+
+**Basic streaming with curl (displays live events):**
+```bash
+curl -N http://localhost:8080/v1/jobs/job_abc123def456/stream
+```
+
+**Streaming with timeout (wait max 5 minutes):**
+```bash
+curl --max-time 300 -N http://localhost:8080/v1/jobs/job_abc123def456/stream
+```
+
+**Streaming in JavaScript/Node.js:**
+```javascript
+const eventSource = new EventSource('/v1/jobs/job_abc123def456/stream');
+
+eventSource.addEventListener('job_pending', (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Job pending:', data.job_id);
+});
+
+eventSource.addEventListener('job_extracting', (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Extracting:', Math.round(data.progress * 100) + '%');
+});
+
+eventSource.addEventListener('job_completed', (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Job completed! Download results:', data.results_url);
+  eventSource.close();
+});
+
+eventSource.addEventListener('job_failed', (event) => {
+  const data = JSON.parse(event.data);
+  console.error('Job failed:', data.error);
+  eventSource.close();
+});
+
+eventSource.onerror = () => {
+  console.error('SSE connection error');
+  eventSource.close();
+};
+```
+
+**Python example using requests-sse:**
+```python
+import json
+from sseclient import SSEClient
+
+def stream_job(job_id):
+    url = f'http://localhost:8080/v1/jobs/{job_id}/stream'
+    client = SSEClient(url)
+    
+    try:
+        for event in client:
+            # Ignore heartbeat comments
+            if event.data == ':heartbeat':
+                continue
+            
+            data = json.loads(event.data)
+            print(f"Event: {event.event}, Status: {data['status']}")
+            
+            if event.event == 'job_completed':
+                print(f"Results ready at: {data['results_url']}")
+                break
+            elif event.event == 'job_failed':
+                print(f"Job failed: {data['error']}")
+                break
+    except Exception as e:
+        print(f"Connection lost: {e}")
+
+stream_job('job_abc123def456')
+```
+
+**Polling vs. Streaming Comparison:**
+
+| Feature | Polling (`GET /v1/documents/{job_id}`) | Streaming (`GET /v1/jobs/{job_id}/stream`) |
+|---------|--------------------------------------|------------------------------------------|
+| **Real-time updates** | No; requires polling interval | Yes; immediate notification |
+| **Network overhead** | High (frequent requests) | Low (single connection) |
+| **Event history** | Lost if missed polling window | Lost if client disconnects |
+| **Max duration** | Unlimited | 10 minutes |
+| **Best for** | Simple cases, slow jobs | Real-time dashboards, monitoring |
+
+**Use polling for:** Long-running jobs where missing an intermediate status is acceptable.  
+**Use streaming for:** Real-time progress dashboards, web UI job monitoring.
 
 ---
 

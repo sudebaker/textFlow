@@ -20,13 +20,32 @@
 
 set -e
 
+# Configuration constants
 API_URL="http://localhost:8080"
 CLIENT_BIN="./bin/client"
 REDIS_CLI="redis-cli"
+TEMP_DIR="/tmp/ia-text-orchestrator-tests-$$"
+AUDIO_SAMPLE_RATE=16000
+AUDIO_DURATION_SEC=1
+AUDIO_BITS_PER_SAMPLE=16
+TEST_TIMEOUT=30s
+
+# Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+# Cleanup function: removes temporary files on exit
+cleanup() {
+    if [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
+}
+trap cleanup EXIT
+
+# Create temporary directory for test files
+mkdir -p "$TEMP_DIR"
 
 # Color output functions
 print_info() {
@@ -41,38 +60,13 @@ print_error() {
     echo -e "${RED}[✗]${NC} $1"
 }
 
-# Create minimal PNG (1x1 transparent PNG, most portable format)
+# Create minimal PNG (1x1 transparent PNG)
+# Deduplicated implementation: single function replacing the duplicated code
 create_test_png() {
     local output_file="$1"
-    # Standard 1x1 transparent PNG (hex representation)
-    python3 << 'PYTHON_EOF'
-import sys
-import struct
-
-# Minimal valid PNG: 1x1 transparent
-png_data = bytes.fromhex(
-    '89504e470d0a1a0a0000000d4948445200000001000000010802000000'
-    '90775f00000000636041524743000001feff0050000000050000010000'
-    '000100000163643637000000000c494441546e78040050000000050000'
-    '010000000100000163643637000000000c494441546e78040050000000'
-    '050000010000000100000163643637000000000c4944415478040050'
-    '00000005000001000000010000000000000000000001006d000000000'
-    '0000000000000000000000000000000000000000000000000000000'
-    '00000000000000000000000000000000000000000000000000000'
-    '89504e470d0a1a0a'
-)
-
-# Use base64 encoded minimal valid PNG instead
-import base64
-minimal_png = base64.b64decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
-)
-
-with open(sys.argv[1], 'wb') as f:
-    f.write(minimal_png)
-PYTHON_EOF
     python3 -c "
 import base64
+# Minimal valid 1x1 transparent PNG (base64 encoded)
 png_data = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==')
 with open('$output_file', 'wb') as f:
     f.write(png_data)
@@ -82,14 +76,12 @@ with open('$output_file', 'wb') as f:
 # Create minimal WAV file (1 second of silence, 16kHz mono)
 create_test_wav() {
     local output_file="$1"
-    python3 << 'PYTHON_EOF'
+    python3 -c "
 import struct
-import sys
 
 channels = 1
-sample_rate = 16000
-bits_per_sample = 16
-duration_sec = 1
+sample_rate = $AUDIO_SAMPLE_RATE
+bits_per_sample = $AUDIO_BITS_PER_SAMPLE
 
 # Audio data (silence)
 samples = bytes(sample_rate * channels * bits_per_sample // 8)
@@ -109,36 +101,24 @@ wav_header = struct.pack(
     b'data', len(samples)
 )
 
-with open(sys.argv[1], 'wb') as f:
-    f.write(wav_header + samples)
-PYTHON_EOF
-    python3 -c "
-import struct
-channels = 1
-sample_rate = 16000
-bits_per_sample = 16
-samples = bytes(sample_rate * channels * bits_per_sample // 8)
-riff_size = 36 + len(samples)
-wav_header = struct.pack(
-    '<4sI4s4sIHHIIHH4sI',
-    b'RIFF', riff_size, b'WAVE',
-    b'fmt ', 16, 1, channels,
-    sample_rate,
-    sample_rate * channels * bits_per_sample // 8,
-    channels * bits_per_sample // 8,
-    bits_per_sample,
-    b'data', len(samples)
-)
 with open('$output_file', 'wb') as f:
     f.write(wav_header + samples)
 "
 }
 
-# Extract job ID from output (more robust parsing)
+# Extract job ID from output (more robust UUID pattern matching)
+# Matches standard UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 extract_job_id() {
     local output="$1"
-    # Look for pattern: "Job created: <uuid>" or "Job ID: <uuid>"
-    echo "$output" | grep -oE 'Job (created|ID): ([a-zA-Z0-9_-]+)' | awk -F': ' '{print $NF}' | tail -1
+    # First try: look for "Job created: <uuid>" or "Job ID: <uuid>"
+    local job_id=$(echo "$output" | grep -oE 'Job (created|ID): [a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | awk -F': ' '{print $NF}' | head -1)
+    
+    # Fallback: search for UUID anywhere in output
+    if [ -z "$job_id" ]; then
+        job_id=$(echo "$output" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
+    fi
+    
+    echo "$job_id"
 }
 
 # Test 1: Image with inferences flag
@@ -146,11 +126,11 @@ test_image_inferences() {
     print_info "Test 1: Image upload with inferences flag (-f)"
     
     # Create test image
-    create_test_png /tmp/test_image.png
+    create_test_png $TEMP_DIR/test_image.png
     
     # Upload with -f flag
     print_info "Uploading image with -f flag..."
-    OUTPUT=$($CLIENT_BIN -i /tmp/test_image.png -o /tmp/test_image_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
+    OUTPUT=$($CLIENT_BIN -i $TEMP_DIR/test_image.png -o $TEMP_DIR/test_image_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
     
     if echo "$OUTPUT" | grep -q "Job created\|Job ID"; then
         print_success "Job created successfully"
@@ -191,11 +171,11 @@ test_audio_inferences() {
     print_info "Test 2: Audio upload with inferences flag (-f)"
     
     # Create test WAV
-    create_test_wav /tmp/test_audio.wav
+    create_test_wav $TEMP_DIR/test_audio.wav
     
     # Upload with -f flag
     print_info "Uploading audio with -f flag..."
-    OUTPUT=$($CLIENT_BIN -i /tmp/test_audio.wav -o /tmp/test_audio_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
+    OUTPUT=$($CLIENT_BIN -i $TEMP_DIR/test_audio.wav -o $TEMP_DIR/test_audio_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
     
     if echo "$OUTPUT" | grep -q "Job created\|Job ID"; then
         print_success "Job created successfully"
@@ -228,11 +208,11 @@ test_image_without_inferences() {
     print_info "Test 3: Image upload WITHOUT inferences flag (negative test)"
     
     # Create test image
-    create_test_png /tmp/test_image_no_inf.png
+    create_test_png $TEMP_DIR/test_image_no_inf.png
     
     # Upload WITHOUT -f flag
     print_info "Uploading image WITHOUT -f flag..."
-    OUTPUT=$($CLIENT_BIN -i /tmp/test_image_no_inf.png -o /tmp/test_no_inf_results.json -u "$API_URL" --timeout 30s 2>&1 || true)
+    OUTPUT=$($CLIENT_BIN -i $TEMP_DIR/test_image_no_inf.png -o $TEMP_DIR/test_no_inf_results.json -u "$API_URL" --timeout 30s 2>&1 || true)
     
     if echo "$OUTPUT" | grep -q "Job created\|Job ID"; then
         print_success "Job created successfully"
@@ -265,9 +245,9 @@ test_redis_features_storage() {
     print_info "Test 4: Redis features storage verification"
     
     # First, upload a file with features
-    create_test_png /tmp/test_redis.png
+    create_test_png $TEMP_DIR/test_redis.png
     
-    OUTPUT=$($CLIENT_BIN -i /tmp/test_redis.png -o /tmp/test_redis_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
+    OUTPUT=$($CLIENT_BIN -i $TEMP_DIR/test_redis.png -o $TEMP_DIR/test_redis_results.json -u "$API_URL" -f --timeout 30s 2>&1 || true)
     
     JOB_ID=$(extract_job_id "$OUTPUT")
     if [ -z "$JOB_ID" ]; then

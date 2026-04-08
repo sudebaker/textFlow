@@ -1096,6 +1096,26 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate features BEFORE marking job as created (SEC-002 fix)
+	// Read features from form (e.g., "inferences")
+	// Features allow optional pipeline stages to be enabled per-job
+	// Valid features: "inferences" (micro-inference generation)
+	featuresStr := c.PostForm("features")
+	var validatedFeatures []string
+	if featuresStr != "" {
+		var err error
+		validatedFeatures, err = validateFeatures(featuresStr, cfg)
+		if err != nil {
+			// Hard limit exceeded (too many features or too long feature name)
+			logger.Warn().Str("job_id", jobID).Err(err).Msg("Feature validation failed")
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{
+				Error:  "invalid_features",
+				Detail: err.Error(),
+			})
+			return
+		}
+	}
+
 	if err := redis.SetJobCreated(ctx, jobID); err != nil {
 		logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to mark job as created")
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
@@ -1105,57 +1125,12 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	// Read features from form (e.g., "inferences")
-	// Features allow optional pipeline stages to be enabled per-job
-	// Valid features: "inferences" (micro-inference generation)
-	featuresStr := c.PostForm("features")
-	if featuresStr != "" {
-		validFeatures := map[string]bool{
-			"inferences": true,
-			// Future features added here: "classification": true, etc.
-		}
-		const maxFeatures = 10
-		const maxFeatureLength = 50
-
-		featuresList := []string{}
-		rawFeatures := strings.Split(featuresStr, ",")
-
-		if len(rawFeatures) > maxFeatures {
-			logger.Warn().Str("job_id", jobID).Int("count", len(rawFeatures)).Int("max", maxFeatures).
-				Msg("Too many features requested, truncating to max allowed")
-			rawFeatures = rawFeatures[:maxFeatures]
-		}
-
-		for _, f := range rawFeatures {
-			f = strings.TrimSpace(f)
-			if f == "" {
-				continue
-			}
-
-			// Validate feature length
-			if len(f) > maxFeatureLength {
-				logger.Warn().Str("job_id", jobID).Str("feature", f[:20]+"...").Int("length", len(f)).
-					Int("max_length", maxFeatureLength).
-					Msg("Feature name exceeds max length, skipping")
-				continue
-			}
-
-			// Validate feature is allowed
-			if !validFeatures[f] {
-				logger.Warn().Str("job_id", jobID).Str("feature", f).
-					Msg("Invalid feature requested, ignoring (valid: inferences)")
-				continue
-			}
-
-			featuresList = append(featuresList, f)
-		}
-
-		if len(featuresList) > 0 {
-			if err := redis.SetJobFeatures(ctx, jobID, featuresList); err != nil {
-				logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to store features")
-			} else {
-				logger.Info().Str("job_id", jobID).Strs("features", featuresList).Msg("Features stored from multipart")
-			}
+	// Store validated features in Redis (if any)
+	if len(validatedFeatures) > 0 {
+		if err := redis.SetJobFeatures(ctx, jobID, validatedFeatures); err != nil {
+			logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to store features")
+		} else {
+			logger.Info().Str("job_id", jobID).Strs("features", validatedFeatures).Msg("Features stored from multipart")
 		}
 	}
 
@@ -1334,4 +1309,74 @@ func downloadHandler(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json", jobID))
 	c.Header("Content-Type", "application/json")
 	c.JSON(http.StatusOK, results)
+}
+
+// validateFeatures validates, deduplicates, and normalizes feature strings.
+// It enforces feature name length and total count limits.
+// Returns a slice of normalized (lowercase) valid features and an error if limits are exceeded.
+// Invalid features (not in whitelist) are silently ignored with a warning log + metric.
+// Returns an error if: total features exceed MaxFeaturesPerJob, or any feature name exceeds MaxFeatureNameLen.
+func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) {
+	if featuresStr == "" {
+		return []string{}, nil
+	}
+
+	// Whitelist of valid features
+	validFeatureSet := map[string]bool{
+		"inferences": true,
+		// Future features: "classification": true, "extraction": true, etc.
+	}
+
+	// Parse comma-separated list
+	rawFeatures := strings.Split(featuresStr, ",")
+
+	// Check total count before processing (hard limit)
+	if len(rawFeatures) > cfg.MaxFeaturesPerJob {
+		metrics.InvalidFeaturesTotal.WithLabelValues("too_many").Inc()
+		return nil, fmt.Errorf("too many features: %d requested, max %d allowed", len(rawFeatures), cfg.MaxFeaturesPerJob)
+	}
+
+	// Normalize and deduplicate
+	seenFeatures := make(map[string]bool)
+	validatedFeatures := []string{}
+
+	for _, f := range rawFeatures {
+		// Trim whitespace
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+
+		// Check feature name length (hard limit per feature)
+		if len(f) > cfg.MaxFeatureNameLen {
+			metrics.InvalidFeaturesTotal.WithLabelValues("too_long").Inc()
+			logger.Warn().Str("feature", f[:20]+"...").Int("length", len(f)).Int("max_length", cfg.MaxFeatureNameLen).
+				Msg("Feature name exceeds max length, skipping")
+			continue
+		}
+
+		// Normalize to lowercase
+		normalized := strings.ToLower(f)
+
+		// Check if feature is whitelisted
+		if !validFeatureSet[normalized] {
+			metrics.InvalidFeaturesTotal.WithLabelValues("unknown_feature").Inc()
+			logger.Warn().Str("feature", f).
+				Msg("Invalid feature requested, ignoring (valid: inferences)")
+			continue
+		}
+
+		// Deduplicate
+		if seenFeatures[normalized] {
+			metrics.InvalidFeaturesTotal.WithLabelValues("duplicate").Inc()
+			logger.Warn().Str("feature", normalized).
+				Msg("Duplicate feature, skipping")
+			continue
+		}
+
+		seenFeatures[normalized] = true
+		validatedFeatures = append(validatedFeatures, normalized)
+	}
+
+	return validatedFeatures, nil
 }

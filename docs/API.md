@@ -174,8 +174,8 @@ https://example.com/webhook
 **Parameters:**
 - `file` (file, required): The file to upload. See **Supported File Types** table above.
 - `features` (string, optional): Comma-separated list of extra pipeline features. Currently supported:
-  - `inferences` — Generate micro-inferences from extracted text using inference-worker (requires vLLM).
-  - Max 10 features per job, max 50 characters each. Invalid features are silently ignored with a warning.
+   - `inferences` — Generate micro-inferences from extracted text using inference-worker (requires vLLM).
+   - Max features per job and max characters per name are configurable (see **Data Constraints** section). Invalid features are silently ignored with a warning.
 - `diarize` (boolean, optional): **Audio files only.** When `true`, identifies speakers in audio transcription via Whisper's diarization. Default: `false`. Ignored for non-audio files.
 - `notify_webhook` (string, optional): Webhook URL to notify when job completes. If not provided, uses `WEBHOOK_URL` from server config.
 
@@ -416,10 +416,13 @@ When job completes with `features: ["inferences"]`, the `/v1/documents/{job_id}/
 ```
 
 **Feature Validation:**
-- Maximum **10 features per job** (currently only `inferences` is implemented)
-- Maximum **50 characters per feature name**
-- Invalid feature names are **silently ignored** with a warning logged
-- If all features are invalid, job processes normally without the optional stages
+- Maximum **10 features per job** (configurable via `MAX_FEATURES_PER_JOB` env var)
+- Maximum **50 characters per feature name** (configurable via `MAX_FEATURE_NAME_LENGTH` env var)
+- Feature names are **normalized to lowercase** and automatically **deduplicated**
+- Invalid feature names (not in whitelist) are **silently ignored** with a warning logged + metric increment
+- If **all features are invalid**, job processes normally without the optional stages
+- If **feature limits are exceeded** (too many features or too long name), request returns **400 Bad Request**
+- Features are validated and stored in Redis **before** the job is marked as created (ensuring data consistency)
 
 **Examples:**
 
@@ -434,8 +437,38 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 ```bash
 curl -X POST http://localhost:8080/v1/documents/upload \
   -F "file=@document.pdf" \
-  -F "features=nonexistent_feature"
+   -F "features=nonexistent_feature"
 # Output: warning logged, job runs without extra stages
+```
+
+**Feature Validation Errors:**
+
+When feature validation fails, the API returns a **400 Bad Request** response:
+
+```json
+{
+  "error": "invalid_features",
+  "detail": "too many features: 15 requested, max 10 allowed"
+}
+```
+
+Common error scenarios:
+| Scenario | Response | Resolution |
+|----------|----------|-----------|
+| Too many features (>10) | `400 Bad Request` | Reduce number of features |
+| Feature name too long (>50 chars) | `400 Bad Request` | Use shorter feature names |
+| Invalid feature name | Warning logged, job proceeds | Feature is silently ignored; valid features are processed |
+| Duplicate features | Warning logged, feature deduplicated | Feature is included once (no duplicates) |
+
+**Monitoring:**
+
+Invalid features are tracked in the Prometheus metric `ia_text_invalid_features_total`:
+
+```
+ia_text_invalid_features_total{reason="unknown_feature"} 5
+ia_text_invalid_features_total{reason="too_long"} 2
+ia_text_invalid_features_total{reason="duplicate"} 3
+ia_text_invalid_features_total{reason="too_many"} 0
 ```
 
 ---
@@ -772,8 +805,8 @@ See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
 | Constraint | Limit | Configurable Via |
 |-----------|-------|------------------|
 | Spreadsheet rows | 2,000 rows | `MAX_SPREADSHEET_ROWS` |
-| Features per job | 10 features | Hard-coded |
-| Feature name length | 50 characters | Hard-coded |
+| Features per job | 10 features | `MAX_FEATURES_PER_JOB` |
+| Feature name length | 50 characters | `MAX_FEATURE_NAME_LENGTH` |
 | Job TTL (time to keep results) | 24 hours | `JOB_TTL` |
 | Job timeout | 5 minutes | `JOB_TIMEOUT` |
 | Concurrent jobs per orchestrator | Unlimited | System resources |

@@ -451,7 +451,7 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 	if !strings.HasPrefix(inputFile, "http://") && !strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
-			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL)
+			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled)
 		}
 	}
 
@@ -569,7 +569,7 @@ func downloadAndEncode(ctx context.Context, fileURL string) (string, string, err
 	return encoded, filename, nil
 }
 
-func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string) (string, error) {
+func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool) (string, error) {
 	fmt.Printf("Uploading %s file via multipart: %s\n", strings.TrimPrefix(ext, "."), filePath)
 
 	body := &bytes.Buffer{}
@@ -599,6 +599,12 @@ func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ex
 	if webhookURL != "" {
 		if err := writer.WriteField("notify_webhook", webhookURL); err != nil {
 			return "", fmt.Errorf("failed to write webhook field: %w", err)
+		}
+	}
+
+	if inferencesEnabled {
+		if err := writer.WriteField("features", "inferences"); err != nil {
+			return "", fmt.Errorf("failed to write features field: %w", err)
 		}
 	}
 

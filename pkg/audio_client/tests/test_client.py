@@ -17,7 +17,7 @@ class TestWhisperClientPool:
         """Test default URL is used when env var not set."""
         with patch.dict("os.environ", {}, clear=False):
             client = WhisperClientPool()
-            assert "http://whisper:9000" in client._urls
+            assert "http://whisper:8080" in client._urls
 
     def test_custom_urls(self):
         """Test custom URLs from env var."""
@@ -79,10 +79,10 @@ class TestWhisperClientPool:
         mock_response.json.return_value = {
             "text": "Hola mundo",
             "language": "es",
-            "duration_seconds": 5.5,
+            "duration": 5.5,
             "segments": [
-                {"start": 0.0, "end": 2.0, "text": "Hola", "speaker": "int1"},
-                {"start": 2.1, "end": 5.5, "text": "mundo", "speaker": "int1"},
+                {"start": 0.0, "end": 2.0, "text": "Hola"},
+                {"start": 2.1, "end": 5.5, "text": "mundo"},
             ],
         }
 
@@ -160,7 +160,7 @@ class TestWhisperClientPool:
         mock_response.json.return_value = {
             "text": "Simple transcription",
             "language": "en",
-            "duration_seconds": 10.0,
+            "duration": 10.0,
         }
 
         mocker.patch("requests.post", return_value=mock_response)
@@ -184,3 +184,41 @@ class TestWhisperClientPool:
         ):
             client = WhisperClientPool()
             assert client._timeout == 120
+
+    def test_transcribe_sends_audio_field(self, mocker):
+        """Verify the multipart field name is 'audio', not 'file'."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "text": "test",
+            "language": "es",
+            "duration": 1.0,
+        }
+        mock_post = mocker.patch("requests.post", return_value=mock_response)
+
+        client = WhisperClientPool()
+        client.transcribe(audio_bytes=b"audio data", filename="test.mp3", language="es")
+
+        call_kwargs = mock_post.call_args
+        files_sent = call_kwargs.kwargs.get("files") or call_kwargs[1].get("files")
+        assert "audio" in files_sent, "Must send file as 'audio', not 'file'"
+        assert files_sent["audio"][0] == "test.mp3"
+        assert files_sent["audio"][1] == b"audio data"
+
+    def test_transcribe_duration_field_mapping(self, mocker):
+        """Verify 'duration' from API response maps to duration_seconds in model."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "text": "test audio",
+            "language": "en",
+            "duration": 42.7,
+        }
+        mocker.patch("requests.post", return_value=mock_response)
+
+        client = WhisperClientPool()
+        result = client.transcribe(audio_bytes=b"audio", filename="test.mp3")
+
+        assert result.duration_seconds == 42.7, (
+            "duration from API response must be mapped to duration_seconds"
+        )

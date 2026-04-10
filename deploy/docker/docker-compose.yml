@@ -531,42 +531,6 @@ services:
     depends_on:
     - rabbitmq
     - redis
-  whisperx:
-    build:
-      context: ../../whisperx-service
-      dockerfile: Dockerfile
-    container_name: ia-text-whisperx
-    networks:
-    - backend
-    ports:
-    - 9000:9000
-    environment:
-    - WHISPERX_MODEL=${WHISPERX_MODEL:-small}
-    - WHISPERX_DEVICE=${WHISPERX_DEVICE:-cpu}
-    - WHISPERX_COMPUTE_TYPE=${WHISPERX_COMPUTE_TYPE:-int8}
-    - ENABLE_DIARIZATION=${ENABLE_DIARIZATION:-true}
-    - MAX_AUDIO_SIZE_MB=${MAX_AUDIO_SIZE_MB:-500}
-    - WHISPERX_LANGUAGE=${WHISPERX_LANGUAGE:-es}
-    - LOG_LEVEL=${WHISPERX_LOG_LEVEL:-info}
-    healthcheck:
-      test:
-      - CMD
-      - curl
-      - -f
-      - http://localhost:9000/health
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 12G
-        reservations:
-          cpus: '2'
-          memory: 6G
   audio-worker:
     build:
       context: ../..

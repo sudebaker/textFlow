@@ -56,7 +56,7 @@ class WhisperClientPool:
         for attempt in range(self._max_retries):
             url = self._next_url()
             try:
-                return self._transcribe_single(url, audio_bytes, filename, language, diarize)
+                return self._transcribe_custom(url, audio_bytes, filename, language, diarize)
             except requests.exceptions.RequestException as e:
                 backoff = min(2 ** attempt, 30)
                 if attempt < self._max_retries - 1:
@@ -83,22 +83,8 @@ class WhisperClientPool:
         language: Optional[str],
         diarize: bool,
     ) -> TranscriptionResult:
-        """Send a single transcription request to one URL.
-        
-        Supports both:
-        - Custom /transcribe endpoint (our service)
-        - OpenAI Whisper ASR webservice /asr endpoint (onerahmet)
-        """
-        # Try custom endpoint first
-        try:
-            return self._transcribe_custom(url, audio_bytes, filename, language, diarize)
-        except Exception as e:
-            # Fallback to onerahmet endpoint if custom fails
-            try:
-                return self._transcribe_onerahmet(url, audio_bytes, filename, language)
-            except Exception:
-                # Re-raise original error
-                raise e
+        """Send a single transcription request to one URL."""
+        return self._transcribe_custom(url, audio_bytes, filename, language, diarize)
     
     def _transcribe_custom(
         self,
@@ -153,51 +139,4 @@ class WhisperClientPool:
             segments=segments,
         )
     
-    def _transcribe_onerahmet(
-        self,
-        url: str,
-        audio_bytes: bytes,
-        filename: str,
-        language: Optional[str],
-    ) -> TranscriptionResult:
-        """Send request to onerahmet /asr endpoint (OpenAI Whisper ASR webservice).
-        
-        Note: This endpoint doesn't support diarization, only basic transcription.
-        """
-        endpoint = f"{url}/asr"
-        
-        files = {"audio_file": (filename, audio_bytes)}
-        data = {}
-        if language:
-            data["language"] = language
-        
-        response = requests.post(
-            endpoint,
-            files=files,
-            data=data,
-            timeout=self._timeout,
-            verify=self._verify_ssl,
-        )
-        
-        if response.status_code >= 500:
-            raise requests.exceptions.RequestException(f"Server error: {response.status_code}")
-        
-        if response.status_code != 200:
-            raise Exception(f"Unexpected status code: {response.status_code}")
-        
-        result = response.json()
-        
-        # onerahmet returns {"result": [{"confidence": ..., "result": "text"}]}
-        # Extract text from result array
-        text = ""
-        if isinstance(result.get("result"), list):
-            text = " ".join(seg.get("result", "") for seg in result["result"])
-        elif isinstance(result.get("result"), str):
-            text = result["result"]
-        
-        return TranscriptionResult(
-            text=text,
-            language=language,
-            duration_seconds=None,
-            segments=None,
-        )
+

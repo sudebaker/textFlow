@@ -123,7 +123,7 @@ class TestWhisperClientPool:
         with patch.dict(
             "os.environ",
             {
-                "WHISPER_URLS": "http://whisper-1:9000,http://whisper-2:9000",
+                "WHISPER_URLS": "http://whisper-1:8080,http://whisper-2:8080",
                 "WHISPER_MAX_RETRIES": "2",
             },
             clear=False,
@@ -144,7 +144,7 @@ class TestWhisperClientPool:
 
         with patch.dict(
             "os.environ",
-            {"WHISPER_URLS": "http://whisper-1:9000", "WHISPER_MAX_RETRIES": "1"},
+            {"WHISPER_URLS": "http://whisper-1:8080", "WHISPER_MAX_RETRIES": "1"},
             clear=False,
         ):
             client = WhisperClientPool()

@@ -18,7 +18,7 @@ class WhisperClientPool:
     """
 
     def __init__(self):
-        urls_env = os.getenv("WHISPER_URLS", "http://whisper:9000")
+        urls_env = os.getenv("WHISPER_URLS", "http://whisper:8080")
         self._urls = [u.strip() for u in urls_env.split(",") if u.strip()]
         self._index = 0
         self._lock = threading.Lock()
@@ -111,7 +111,7 @@ class WhisperClientPool:
         """Send request to custom /transcribe endpoint."""
         endpoint = f"{url}/transcribe"
         
-        files = {"file": (filename, audio_bytes)}
+        files = {"audio": (filename, audio_bytes)}
         data = {}
         if language:
             data["language"] = language
@@ -149,7 +149,7 @@ class WhisperClientPool:
         return TranscriptionResult(
             text=result.get("text", ""),
             language=result.get("language"),
-            duration_seconds=result.get("duration_seconds"),
+            duration_seconds=result.get("duration"),
             segments=segments,
         )
     

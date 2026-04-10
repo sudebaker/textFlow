@@ -112,6 +112,7 @@ class TestWhisperClientPool:
         mock_success.json.return_value = {
             "text": "Transcription OK",
             "language": "en",
+            "duration": 5.0,
         }
 
         mocker.patch(

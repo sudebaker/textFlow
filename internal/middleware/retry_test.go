@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"ia-text-orchestrator/internal/middleware"
+	"textflow/internal/middleware"
 )
 
 var errTemporary = errors.New("temporary error")

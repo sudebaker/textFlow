@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Embeddings Worker for IA Text Orchestrator
+Embeddings Worker for textFlow
 Consumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3
 
 ⭐ GPU Features:

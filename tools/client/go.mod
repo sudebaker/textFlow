@@ -1,3 +1,3 @@
-module ia-text-orchestrator/tools/client
+module textflow/tools/client
 
 go 1.25.7

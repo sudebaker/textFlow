@@ -1,6 +1,6 @@
-# IA Text Orchestrator - Docker Deployment
+# textFlow - Docker Deployment
 
-This directory contains Docker Compose configuration for the IA Text Orchestrator, designed for **air-gapped (on-premise) deployment** with zero internet access.
+This directory contains Docker Compose configuration for the textFlow, designed for **air-gapped (on-premise) deployment** with zero internet access.
 
 ## 🔒 Air-Gapped Deployment (CRITICAL)
 

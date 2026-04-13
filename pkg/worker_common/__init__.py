@@ -1,5 +1,5 @@
 """
-Worker Common Library for IA Text Orchestrator
+Worker Common Library for textFlow
 
 This package provides shared utilities for Python workers to reduce code duplication.
 """

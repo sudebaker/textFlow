@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
-	"ia-text-orchestrator/pkg/logging"
+	"textflow/pkg/logging"
 )
 
 // EventBus is a Redis pub/sub wrapper for broadcasting job lifecycle events.

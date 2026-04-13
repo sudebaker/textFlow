@@ -205,7 +205,7 @@ MODELS_SIZE=$(du -sh "$DIST_DIR/models.tar.gz" | awk '{print $1}')
 
 {
   echo "========================================"
-  echo "IA Text Orchestrator — Deployment Bundle"
+  echo "textFlow — Deployment Bundle"
   echo "========================================"
   echo ""
   echo "Build timestamp : $BUILD_DATE"

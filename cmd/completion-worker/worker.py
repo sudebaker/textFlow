@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Completion Worker: Final aggregator in the IA Text Orchestrator pipeline.
+"""Completion Worker: Final aggregator in the textFlow pipeline.
 
 This module monitors job completion across all workers via Redis pub/sub and
 aggregates their results into a single finalized JSON structure. It acts as the

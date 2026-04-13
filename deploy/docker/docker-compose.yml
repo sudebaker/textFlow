@@ -2,7 +2,7 @@ version: '3.8'
 services:
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: ia-text-rabbitmq
+    container_name: textflow-rabbitmq
     command: 'sh -c "rabbitmq-plugins enable rabbitmq_delayed_message_exchange ||
       true && rabbitmq-server"
 
@@ -28,7 +28,7 @@ services:
           memory: 512M
   redis:
     image: redis:7-alpine
-    container_name: ia-text-redis
+    container_name: textflow-redis
     command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction
     healthcheck:
       test:
@@ -53,7 +53,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/orchestrator/Dockerfile
-    container_name: ia-text-orchestrator
+    container_name: textflow-orchestrator
     ports:
     - 8080:8080
     networks:
@@ -116,7 +116,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/resource-manager/Dockerfile
-    container_name: ia-text-resource-manager
+    container_name: textflow-resource-manager
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=9090
@@ -144,7 +144,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/extraction-worker/Dockerfile
-    container_name: ia-text-extraction-worker
+    container_name: textflow-extraction-worker
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
@@ -188,7 +188,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
-    container_name: ia-text-embeddings-worker
+    container_name: textflow-embeddings-worker
     runtime: nvidia
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set \u2014 copy .env.example to .env and\
@@ -237,7 +237,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
-    container_name: ia-text-entities-worker
+    container_name: textflow-entities-worker
     runtime: nvidia
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set \u2014 copy .env.example to .env and\
@@ -303,7 +303,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/inference-worker/Dockerfile
-    container_name: ia-text-inference-worker
+    container_name: textflow-inference-worker
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
@@ -346,7 +346,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/regex-entity-extractor/Dockerfile
-    container_name: ia-text-regex-entity-extractor
+    container_name: textflow-regex-entity-extractor
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=8081
@@ -375,7 +375,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/metadata-worker/Dockerfile
-    container_name: ia-text-metadata-worker
+    container_name: textflow-metadata-worker
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
@@ -412,7 +412,7 @@ services:
     build:
       context: ../../
       dockerfile: cmd/completion-worker/Dockerfile
-    container_name: ia-text-completion-worker
+    container_name: textflow-completion-worker
     env_file: .env
     environment:
     - REDIS_URL=redis://redis:6379
@@ -445,7 +445,7 @@ services:
           memory: 512M
   redis-exporter:
     image: oliver006/redis_exporter:v1.67.0
-    container_name: ia-text-redis-exporter
+    container_name: textflow-redis-exporter
     environment:
       REDIS_ADDR: redis://redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -465,7 +465,7 @@ services:
           memory: 128M
   docling:
     image: quay.io/docling-project/docling-serve:latest
-    container_name: ia-text-docling
+    container_name: textflow-docling
     runtime: nvidia
     ports:
     - 8000:5001
@@ -506,7 +506,7 @@ services:
     - backend
     - datastore
     volumes:
-    - /tmp/ia-text-uploads:/app/data/uploads:ro
+    - /tmp/textflow-uploads:/app/data/uploads:ro
     extra_hosts:
     - host.docker.internal:host-gateway
     environment:
@@ -539,7 +539,7 @@ services:
     - backend
     - datastore
     volumes:
-    - /tmp/ia-text-uploads:/app/data/uploads:ro
+    - /tmp/textflow-uploads:/app/data/uploads:ro
     extra_hosts:
     - host.docker.internal:host-gateway
     environment:

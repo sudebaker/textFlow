@@ -1,6 +1,6 @@
-# IA Text Orchestrator - Console Client
+# textFlow - Console Client
 
-Cliente en Go para interactuar con la API del IA Text Orchestrator.
+Cliente en Go para interactuar con la API del textFlow.
 
 ## Instalación
 

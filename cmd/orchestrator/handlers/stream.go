@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"ia-text-orchestrator/internal/broker"
-	"ia-text-orchestrator/internal/events"
-	"ia-text-orchestrator/internal/models"
-	redisclient "ia-text-orchestrator/internal/redis"
-	"ia-text-orchestrator/pkg/logging"
+	"textflow/internal/broker"
+	"textflow/internal/events"
+	"textflow/internal/models"
+	redisclient "textflow/internal/redis"
+	"textflow/pkg/logging"
 )
 
 const (

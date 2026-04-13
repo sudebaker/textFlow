@@ -1,5 +1,5 @@
 groups:
-  - name: ia-text-orchestrator-critical
+  - name: textflow-critical
     interval: 30s
     rules:
       # Critical Alert 1: High Job Failure Rate

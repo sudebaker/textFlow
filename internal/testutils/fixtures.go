@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/models"
+	"textflow/internal/config"
+	"textflow/internal/models"
 )
 
 // TestRedisClient is a fixture for testing Redis operations

@@ -1,5 +1,5 @@
 definitions:
-  ia-text-orchestrator_internal_models.Chunk:
+  textflow_internal_models.Chunk:
     properties:
       chunk_id:
         type: string
@@ -15,7 +15,7 @@ definitions:
         type: array
       inferences:
         items:
-          $ref: '#/definitions/ia-text-orchestrator_internal_models.InferenceItem'
+          $ref: '#/definitions/textflow_internal_models.InferenceItem'
         type: array
       start_offset:
         type: integer
@@ -24,7 +24,7 @@ definitions:
       token_count:
         type: integer
     type: object
-  ia-text-orchestrator_internal_models.CreateJobRequest:
+  textflow_internal_models.CreateJobRequest:
     properties:
       document_base64:
         type: string
@@ -42,16 +42,16 @@ definitions:
       webhook_url:
         type: string
     type: object
-  ia-text-orchestrator_internal_models.CreateJobResponse:
+  textflow_internal_models.CreateJobResponse:
     properties:
       job_id:
         type: string
       status:
-        $ref: '#/definitions/ia-text-orchestrator_internal_models.JobStatus'
+        $ref: '#/definitions/textflow_internal_models.JobStatus'
       status_url:
         type: string
     type: object
-  ia-text-orchestrator_internal_models.EntityMinimal:
+  textflow_internal_models.EntityMinimal:
     properties:
       chunk_id:
         type: string
@@ -66,31 +66,31 @@ definitions:
       text:
         type: string
     type: object
-  ia-text-orchestrator_internal_models.ErrorResponse:
+  textflow_internal_models.ErrorResponse:
     properties:
       detail:
         type: string
       error:
         type: string
     type: object
-  ia-text-orchestrator_internal_models.GetJobResponse:
+  textflow_internal_models.GetJobResponse:
     properties:
       created_at:
+        type: string
+      current_step:
         type: string
       error:
         type: string
       job_id:
         type: string
-      results:
-        $ref: '#/definitions/ia-text-orchestrator_internal_models.JobResults'
       status:
-        $ref: '#/definitions/ia-text-orchestrator_internal_models.JobStatus'
+        $ref: '#/definitions/textflow_internal_models.JobStatus'
       steps:
         additionalProperties:
           type: string
         type: object
     type: object
-  ia-text-orchestrator_internal_models.InferenceItem:
+  textflow_internal_models.InferenceItem:
     properties:
       confidence:
         type: number
@@ -103,11 +103,11 @@ definitions:
       text:
         type: string
     type: object
-  ia-text-orchestrator_internal_models.JobResults:
+  textflow_internal_models.JobResults:
     properties:
       chunks:
         items:
-          $ref: '#/definitions/ia-text-orchestrator_internal_models.Chunk'
+          $ref: '#/definitions/textflow_internal_models.Chunk'
         type: array
       completed_at:
         type: string
@@ -118,12 +118,12 @@ definitions:
         type: object
       entities:
         additionalProperties:
-          $ref: '#/definitions/ia-text-orchestrator_internal_models.EntityMinimal'
+          $ref: '#/definitions/textflow_internal_models.EntityMinimal'
         type: object
       job_id:
         type: string
       source_classification:
-        $ref: '#/definitions/ia-text-orchestrator_internal_models.SourceClassificationResult'
+        $ref: '#/definitions/textflow_internal_models.SourceClassificationResult'
       status:
         type: string
       text:
@@ -132,7 +132,7 @@ definitions:
         additionalProperties: true
         type: object
     type: object
-  ia-text-orchestrator_internal_models.JobStatus:
+  textflow_internal_models.JobStatus:
     enum:
     - pending
     - extracting
@@ -140,6 +140,8 @@ definitions:
     - embedding
     - entities
     - inferences
+    - transcribing
+    - analyzing_image
     - completed
     - failed
     type: string
@@ -150,9 +152,11 @@ definitions:
     - StatusEmbedding
     - StatusEntities
     - StatusInferences
+    - StatusTranscribing
+    - StatusAnalyzingImage
     - StatusCompleted
     - StatusFailed
-  ia-text-orchestrator_internal_models.SourceClassificationResult:
+  textflow_internal_models.SourceClassificationResult:
     properties:
       classifier_version:
         type: string
@@ -175,15 +179,16 @@ paths:
         required: true
         type: string
       responses:
-        '204':
+        "204":
           description: No Content
-        '404':
+        "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Delete a job
     get:
-      description: Retrieve current status and results of a processing job.
+      description: Returns job status and current pipeline step. Does not include
+        results — use /download for results.
       parameters:
       - description: Job ID
         in: path
@@ -193,18 +198,19 @@ paths:
       produces:
       - application/json
       responses:
-        '200':
-          description: OK
+        "200":
+          description: Job status with current_step field
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.GetJobResponse'
-        '404':
+            $ref: '#/definitions/textflow_internal_models.GetJobResponse'
+        "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-      summary: Get job status and results
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+      summary: Get job status
   /v1/documents/{id}/download:
     get:
-      description: Download the full JSON results for a completed job.
+      description: Returns gzip-compressed JSON results from filesystem. Only available
+        when job status is completed.
       parameters:
       - description: Job ID
         in: path
@@ -218,14 +224,14 @@ paths:
       produces:
       - application/json
       responses:
-        '200':
-          description: OK
+        "200":
+          description: 'Gzip-compressed JSON (Content-Encoding: gzip)'
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.JobResults'
-        '404':
+            $ref: '#/definitions/textflow_internal_models.JobResults'
+        "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Download job results
   /v1/documents/process:
     post:
@@ -238,36 +244,35 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobRequest'
+          $ref: '#/definitions/textflow_internal_models.CreateJobRequest'
       produces:
       - application/json
       responses:
-        '202':
+        "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse'
-        '400':
+            $ref: '#/definitions/textflow_internal_models.CreateJobResponse'
+        "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-        '500':
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+        "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Process a document
   /v1/documents/upload:
     post:
       consumes:
       - multipart/form-data
-      description: Upload a file (document, audio, image, or spreadsheet) via multipart/form-data
-        for async processing. Supports optional features like inferences and diarization.
+      description: Upload a document via multipart/form-data for async processing.
       parameters:
       - description: Document file
         in: formData
         name: file
         required: true
         type: file
-      - description: Original filename (optional, for metadata)
+      - description: Filename
         in: formData
         name: filename
         type: string
@@ -275,58 +280,16 @@ paths:
         in: formData
         name: notify_webhook
         type: string
-      - description: Comma-separated list of optional features (e.g., 'inferences').
-          Invalid features are silently ignored.
-        in: formData
-        name: features
-        type: string
-      - description: Audio files only. Enable speaker identification in transcription
-          when true. Ignored for non-audio files.
-        in: formData
-        name: diarize
-        type: boolean
       produces:
       - application/json
       responses:
-        '202':
+        "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse'
-        '400':
+            $ref: '#/definitions/textflow_internal_models.CreateJobResponse'
+        "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-        '413':
-          description: Payload Too Large (file exceeds size limit)
-          schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-        '429':
-          description: Too Many Requests (rate limit exceeded)
-          schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-        '500':
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-      summary: Upload a file for processing
-  /v1/jobs/{id}/stream:
-    get:
-      description: Subscribe to real-time job status updates via Server-Sent Events
-        (SSE).
-      parameters:
-      - description: Job ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - text/event-stream
-      responses:
-        '200':
-          description: OK (SSE stream established)
-        '404':
-          description: Not Found
-          schema:
-            $ref: '#/definitions/ia-text-orchestrator_internal_models.ErrorResponse'
-      summary: Stream job events (SSE)
-swagger: '2.0'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+      summary: Upload a document
+swagger: "2.0"

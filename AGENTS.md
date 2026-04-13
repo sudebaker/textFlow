@@ -1,4 +1,4 @@
-# AGENTS.md - IA Text Orchestrator
+# AGENTS.md - textFlow
 
 **Idioma**: Responde siempre en español.
 

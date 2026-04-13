@@ -234,7 +234,7 @@ print_status() {
 main() {
   echo ""
   echo "======================================"
-  echo "  IA Text Orchestrator — Installer"
+  echo "  textFlow — Installer"
   echo "======================================"
   echo ""
 

@@ -1,4 +1,4 @@
-module ia-text-orchestrator
+module textflow
 
 go 1.23.0
 

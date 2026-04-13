@@ -29,20 +29,20 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
-	"ia-text-orchestrator/cmd/orchestrator/handlers"
-	"ia-text-orchestrator/internal/broker"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/events"
-	"ia-text-orchestrator/internal/health"
-	"ia-text-orchestrator/internal/middleware"
-	"ia-text-orchestrator/internal/models"
-	redisclient "ia-text-orchestrator/internal/redis"
-	"ia-text-orchestrator/pkg/logging"
-	"ia-text-orchestrator/pkg/metrics"
+	"textflow/cmd/orchestrator/handlers"
+	"textflow/internal/broker"
+	"textflow/internal/config"
+	"textflow/internal/events"
+	"textflow/internal/health"
+	"textflow/internal/middleware"
+	"textflow/internal/models"
+	redisclient "textflow/internal/redis"
+	"textflow/pkg/logging"
+	"textflow/pkg/metrics"
 
 	"github.com/swaggo/files"
 	"github.com/swaggo/gin-swagger"
-	_ "ia-text-orchestrator/docs/swagger"
+	_ "textflow/docs/swagger"
 )
 
 var (
@@ -64,7 +64,7 @@ var (
 	pipelineOrder = []string{"extraction", "embeddings", "entities", "metadata", "inferences"}
 )
 
-// main is the entry point for the IA Text Orchestrator service.
+// main is the entry point for the textFlow service.
 // It initializes configuration, logging, metrics, and connects to external services (RabbitMQ, Redis).
 // It manages the lifecycle of the HTTP server and background workers (metrics collector, job timeout watchdog).
 // It blocks on signal handling and gracefully shuts down all components on SIGINT or SIGTERM.
@@ -88,7 +88,7 @@ func main() {
 	// Re-initialize logger with configured log level
 	logger = logging.Init(cfg.LogLevel)
 
-	logger.Info().Msg("Starting IA Text Orchestrator")
+	logger.Info().Msg("Starting textFlow")
 	logger.Info().
 		Str("ExtractQueue", cfg.ExtractQueue).
 		Str("EmbeddingsQueue", cfg.EmbeddingsQueue).

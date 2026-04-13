@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"ia-text-orchestrator/internal/broker"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/events"
-	"ia-text-orchestrator/internal/models"
-	redisclient "ia-text-orchestrator/internal/redis"
+	"textflow/internal/broker"
+	"textflow/internal/config"
+	"textflow/internal/events"
+	"textflow/internal/models"
+	redisclient "textflow/internal/redis"
 )
 
 // Pipeline is a stateless orchestrator that coordinates work across three independent worker queues

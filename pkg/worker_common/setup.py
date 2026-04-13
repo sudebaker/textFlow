@@ -1,7 +1,7 @@
 """
 Setup configuration for worker_common library.
 
-This package provides shared utilities for Python workers in the IA Text Orchestrator project.
+This package provides shared utilities for Python workers in the textFlow project.
 """
 
 from setuptools import setup, find_packages
@@ -9,8 +9,8 @@ from setuptools import setup, find_packages
 setup(
     name="worker-common",
     version="1.0.0",
-    description="Shared utilities for IA Text Orchestrator Python workers",
-    author="IA Text Orchestrator Team",
+    description="Shared utilities for textFlow Python workers",
+    author="textFlow Team",
     packages=find_packages(where="."),
     package_dir={"": "."},
     python_requires=">=3.9",

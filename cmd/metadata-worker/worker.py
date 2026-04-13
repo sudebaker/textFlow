@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Metadata extraction worker for IA Text Orchestrator.
+"""Metadata extraction worker for textFlow.
 
 This worker extracts lightweight text-level metadata without requiring ML models,
 making it fast and deterministic. It consumes extracted text from the extraction

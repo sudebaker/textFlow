@@ -1,8 +1,8 @@
-# IA Text Orchestrator - API Reference
+# textFlow - API Reference
 
 ## Overview
 
-The IA Text Orchestrator is an event-driven microservices platform for document processing, featuring a REST API for job creation, status tracking, and result retrieval. The orchestrator coordinates extraction, embeddings, entity recognition, and metadata analysis through RabbitMQ and Redis.
+textFlow is an event-driven microservices platform for document processing, featuring a REST API for job creation, status tracking, and result retrieval. The orchestrator coordinates extraction, embeddings, entity recognition, and metadata analysis through RabbitMQ and Redis.
 
 **Base URL:** `http://localhost:8080`  
 **API Version:** `v1`
@@ -49,7 +49,7 @@ Currently, the API does not require authentication. All endpoints are publicly a
 {
   "status": "healthy",
   "timestamp": "2025-03-16T10:30:00Z",
-  "service": "ia-text-orchestrator",
+  "service": "textflow",
   "version": "1.0.0",
   "uptime": "2h30m",
   "memory_usage": "Check /metrics for detailed memory metrics",
@@ -1474,8 +1474,8 @@ for chunk in results['chunks']:
 ## Support
 
 For issues or questions:
-1. Check server logs: `docker logs ia-text-orchestrator`
-2. Review worker logs: `docker logs ia-text-entities-worker`, etc.
+1. Check server logs: `docker logs textflow-orchestrator`
+2. Review worker logs: `docker logs textflow-entities-worker`, etc.
 3. Verify Redis/RabbitMQ are healthy: `make infra-status`
 4. File an issue: GitHub Issues
 

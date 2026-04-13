@@ -21,7 +21,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.CreateJobRequest"
+                            "$ref": "#/definitions/textflow_internal_models.CreateJobRequest"
                         }
                     }
                 ],
@@ -29,19 +29,19 @@
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse"
+                            "$ref": "#/definitions/textflow_internal_models.CreateJobResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
                         }
                     }
                 }
@@ -82,13 +82,13 @@
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.CreateJobResponse"
+                            "$ref": "#/definitions/textflow_internal_models.CreateJobResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
                         }
                     }
                 }
@@ -96,11 +96,11 @@
         },
         "/v1/documents/{id}": {
             "get": {
-                "description": "Retrieve current status and results of a processing job.",
+                "description": "Returns job status and current pipeline step. Does not include results — use /download for results.",
                 "produces": [
                     "application/json"
                 ],
-                "summary": "Get job status and results",
+                "summary": "Get job status",
                 "parameters": [
                     {
                         "type": "string",
@@ -112,15 +112,15 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Job status with current_step field",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.GetJobResponse"
+                            "$ref": "#/definitions/textflow_internal_models.GetJobResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
                         }
                     }
                 }
@@ -144,7 +144,7 @@
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
                         }
                     }
                 }
@@ -152,7 +152,7 @@
         },
         "/v1/documents/{id}/download": {
             "get": {
-                "description": "Download the full JSON results for a completed job.",
+                "description": "Returns gzip-compressed JSON results from filesystem. Only available when job status is completed.",
                 "produces": [
                     "application/json"
                 ],
@@ -174,15 +174,15 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Gzip-compressed JSON (Content-Encoding: gzip)",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.JobResults"
+                            "$ref": "#/definitions/textflow_internal_models.JobResults"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/ia-text-orchestrator_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
                         }
                     }
                 }
@@ -190,7 +190,7 @@
         }
     },
     "definitions": {
-        "ia-text-orchestrator_internal_models.Chunk": {
+        "textflow_internal_models.Chunk": {
             "type": "object",
             "properties": {
                 "chunk_id": {
@@ -214,7 +214,7 @@
                 "inferences": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/ia-text-orchestrator_internal_models.InferenceItem"
+                        "$ref": "#/definitions/textflow_internal_models.InferenceItem"
                     }
                 },
                 "start_offset": {
@@ -228,7 +228,7 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.CreateJobRequest": {
+        "textflow_internal_models.CreateJobRequest": {
             "type": "object",
             "properties": {
                 "document_base64": {
@@ -255,21 +255,21 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.CreateJobResponse": {
+        "textflow_internal_models.CreateJobResponse": {
             "type": "object",
             "properties": {
                 "job_id": {
                     "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/ia-text-orchestrator_internal_models.JobStatus"
+                    "$ref": "#/definitions/textflow_internal_models.JobStatus"
                 },
                 "status_url": {
                     "type": "string"
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.EntityMinimal": {
+        "textflow_internal_models.EntityMinimal": {
             "type": "object",
             "properties": {
                 "chunk_id": {
@@ -292,7 +292,7 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.ErrorResponse": {
+        "textflow_internal_models.ErrorResponse": {
             "type": "object",
             "properties": {
                 "detail": {
@@ -303,10 +303,13 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.GetJobResponse": {
+        "textflow_internal_models.GetJobResponse": {
             "type": "object",
             "properties": {
                 "created_at": {
+                    "type": "string"
+                },
+                "current_step": {
                     "type": "string"
                 },
                 "error": {
@@ -315,11 +318,8 @@
                 "job_id": {
                     "type": "string"
                 },
-                "results": {
-                    "$ref": "#/definitions/ia-text-orchestrator_internal_models.JobResults"
-                },
                 "status": {
-                    "$ref": "#/definitions/ia-text-orchestrator_internal_models.JobStatus"
+                    "$ref": "#/definitions/textflow_internal_models.JobStatus"
                 },
                 "steps": {
                     "type": "object",
@@ -329,7 +329,7 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.InferenceItem": {
+        "textflow_internal_models.InferenceItem": {
             "type": "object",
             "properties": {
                 "confidence": {
@@ -349,13 +349,13 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.JobResults": {
+        "textflow_internal_models.JobResults": {
             "type": "object",
             "properties": {
                 "chunks": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/ia-text-orchestrator_internal_models.Chunk"
+                        "$ref": "#/definitions/textflow_internal_models.Chunk"
                     }
                 },
                 "completed_at": {
@@ -371,14 +371,14 @@
                 "entities": {
                     "type": "object",
                     "additionalProperties": {
-                        "$ref": "#/definitions/ia-text-orchestrator_internal_models.EntityMinimal"
+                        "$ref": "#/definitions/textflow_internal_models.EntityMinimal"
                     }
                 },
                 "job_id": {
                     "type": "string"
                 },
                 "source_classification": {
-                    "$ref": "#/definitions/ia-text-orchestrator_internal_models.SourceClassificationResult"
+                    "$ref": "#/definitions/textflow_internal_models.SourceClassificationResult"
                 },
                 "status": {
                     "type": "string"
@@ -392,7 +392,7 @@
                 }
             }
         },
-        "ia-text-orchestrator_internal_models.JobStatus": {
+        "textflow_internal_models.JobStatus": {
             "type": "string",
             "enum": [
                 "pending",
@@ -401,6 +401,8 @@
                 "embedding",
                 "entities",
                 "inferences",
+                "transcribing",
+                "analyzing_image",
                 "completed",
                 "failed"
             ],
@@ -411,11 +413,13 @@
                 "StatusEmbedding",
                 "StatusEntities",
                 "StatusInferences",
+                "StatusTranscribing",
+                "StatusAnalyzingImage",
                 "StatusCompleted",
                 "StatusFailed"
             ]
         },
-        "ia-text-orchestrator_internal_models.SourceClassificationResult": {
+        "textflow_internal_models.SourceClassificationResult": {
             "type": "object",
             "properties": {
                 "classifier_version": {

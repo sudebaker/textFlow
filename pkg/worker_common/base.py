@@ -1,5 +1,5 @@
 """
-BaseWorker class for IA Text Orchestrator Python workers.
+BaseWorker class for textFlow Python workers.
 
 Provides common functionality for all workers:
 - Redis connection with automatic reconnection

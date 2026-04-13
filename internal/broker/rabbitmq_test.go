@@ -8,8 +8,8 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/pkg/logging"
+	"textflow/internal/config"
+	"textflow/pkg/logging"
 )
 
 func TestRabbitMQBroker_Reconnect(t *testing.T) {

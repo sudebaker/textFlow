@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Inference Worker for IA Text Orchestrator.
+Inference Worker for textFlow.
 
 Extracts micro-inferences (facts) from document chunks using an external LLM (vLLM).
 This is an OPTIONAL feature — only activated when a job requests features=["inferences"].

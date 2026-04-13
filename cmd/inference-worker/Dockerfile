@@ -1,6 +1,6 @@
 FROM python:3.11.12-slim-bookworm
 
-LABEL maintainer="ia-text-orchestrator"
+LABEL maintainer="textflow"
 LABEL description="Inference Worker for Micro-Inferences"
 
 WORKDIR /app

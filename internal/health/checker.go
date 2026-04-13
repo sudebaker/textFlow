@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	"ia-text-orchestrator/internal/broker"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/middleware"
-	redisclient "ia-text-orchestrator/internal/redis"
+	"textflow/internal/broker"
+	"textflow/internal/config"
+	"textflow/internal/middleware"
+	redisclient "textflow/internal/redis"
 )
 
 // CheckResult represents the result of a single health check

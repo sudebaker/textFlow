@@ -12,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
-	"ia-text-orchestrator/pkg/logging"
+	"textflow/pkg/logging"
 )
 
 type ResourceInfo struct {

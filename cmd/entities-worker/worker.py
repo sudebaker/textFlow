@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Entities Worker for IA Text Orchestrator
+Entities Worker for textFlow
 Consumes messages from RabbitMQ and extracts entities using GLiNER
 """
 

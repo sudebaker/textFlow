@@ -11,9 +11,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/vmihailenco/msgpack/v5"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/models"
-	"ia-text-orchestrator/pkg/logging"
+	"textflow/internal/config"
+	"textflow/internal/models"
+	"textflow/pkg/logging"
 )
 
 // activeJobsSuffix is the Redis Sorted Set key suffix used to track active (non-terminal) jobs.

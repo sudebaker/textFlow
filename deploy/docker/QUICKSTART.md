@@ -1,4 +1,4 @@
-# IA Text Orchestrator - Guía de Configuración Rápida
+# textFlow - Guía de Configuración Rápida
 
 ## 📋 Requisitos Previos
 

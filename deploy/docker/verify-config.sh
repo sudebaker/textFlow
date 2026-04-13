@@ -1,5 +1,5 @@
 #!/bin/bash
-# IA Text Orchestrator - Configuration Verification Script
+# textFlow - Configuration Verification Script
 # Verifies air-gapped deployment readiness
 
 set -e
@@ -39,7 +39,7 @@ if [ ! -f "deploy/docker/docker-compose.yml" ]; then
     exit 1
 fi
 
-print_header "🔍 IA Text Orchestrator - Configuration Check"
+print_header "🔍 textFlow - Configuration Check"
 
 # ============================================================================
 # Check Model Files

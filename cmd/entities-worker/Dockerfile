@@ -4,7 +4,7 @@
 # Final image (no unused builder stage)
 FROM python:3.11.12-slim-bookworm
 
-LABEL maintainer="ia-text-orchestrator"
+LABEL maintainer="textflow"
 LABEL description="GLiNER Entity Extraction Worker for NER tasks"
 
 # Environment setup

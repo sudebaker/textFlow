@@ -1,6 +1,6 @@
 # Worker Common Library
 
-Shared utilities for Python workers in the IA Text Orchestrator project.
+Shared utilities for Python workers in the textFlow project.
 
 ## Overview
 

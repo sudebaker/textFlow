@@ -433,7 +433,7 @@ def generate_html_index() -> None:
         </div>
         
         <footer>
-            <p>Generated on 2026-03-27 | <a href="https://github.com/anomalyco/ia-text-orchestrator">Repository</a></p>
+            <p>Generated on 2026-03-27 | <a href="https://github.com/anomalyco/textflow">Repository</a></p>
         </footer>
     </div>
 </body>

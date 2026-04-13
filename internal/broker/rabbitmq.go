@@ -10,10 +10,10 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/models"
-	"ia-text-orchestrator/pkg/logging"
-	"ia-text-orchestrator/pkg/metrics"
+	"textflow/internal/config"
+	"textflow/internal/models"
+	"textflow/pkg/logging"
+	"textflow/pkg/metrics"
 )
 
 const (

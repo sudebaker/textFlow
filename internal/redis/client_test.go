@@ -9,8 +9,8 @@ import (
 	"github.com/alicebob/miniredis/v2/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"ia-text-orchestrator/internal/config"
-	"ia-text-orchestrator/internal/models"
+	"textflow/internal/config"
+	"textflow/internal/models"
 )
 
 // setupTestRedis creates a miniredis instance for testing

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"ia-text-orchestrator/pkg/metrics"
+	"textflow/pkg/metrics"
 )
 
 type CircuitBreakerManager struct {

@@ -1,4 +1,4 @@
-# Makefile for ia-text-orchestrator
+# Makefile for textFlow
 
 .PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models docker-build-offline docker-build-models package package-skip-build deploy install-remote
 
@@ -14,7 +14,7 @@ YELLOW=\033[1;33m
 NC=\033[0m
 
 help: ## Show this help message
-	@echo -e "\n${GREEN}ia-text-orchestrator - Available commands:${NC}\n"
+	@echo -e "\n${GREEN}textFlow - Available commands:${NC}\n"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
 

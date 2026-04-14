@@ -25,7 +25,7 @@ import (
 
 const (
 	pollingInterval = 3 * time.Second
-	defaultTimeout  = 10 * time.Minute
+	defaultTimeout  = 1 * time.Hour
 	defaultAPIURL   = "http://localhost:8080"
 )
 

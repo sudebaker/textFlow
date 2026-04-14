@@ -6,6 +6,18 @@ Event-driven microservices: Go orchestrator + Python workers (RabbitMQ, Redis, U
 
 ---
 
+## Communication Style
+
+**Skill:** `token-efficient-communication`
+
+- **Compression Level:** Moderate (eliminate fluff, preserve critical context)
+- **Exception Zones:** Architecture documentation (README.md, AGENTS.md), complex debugging, developer onboarding
+- **Focus:** Actionable, structured responses with minimal preamble
+
+See `~/.config/opencode/skills/token-efficient-communication/` for full details and examples.
+
+---
+
 ## Build / Test Commands
 
 ```bash

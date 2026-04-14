@@ -1257,8 +1257,7 @@ func downloadHandler(c *gin.Context) {
 	results.Status = string(status)
 
 	if compression != "raw" {
-		c.Header("Content-Encoding", "gzip")
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json.gz", jobID))
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json", jobID))
 		c.Header("Content-Type", "application/json")
 
 		chunks := make([]map[string]interface{}, len(results.Chunks))
@@ -1284,9 +1283,11 @@ func downloadHandler(c *gin.Context) {
 
 				var compressed bytes.Buffer
 				w := gzip.NewWriter(&compressed)
-				defer w.Close()
 				if _, err := w.Write(buf.Bytes()); err != nil {
 					logger.Warn().Err(err).Msg("gzip write warning")
+					w.Close()
+					chunks[i] = chunkData
+					continue
 				}
 				if err := w.Close(); err != nil {
 					logger.Warn().Err(err).Msg("gzip close warning")

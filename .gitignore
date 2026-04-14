@@ -36,3 +36,11 @@ data/
 bin/*
 tools/client/client
 tools/client/client_test_build
+
+# E2E test artifacts
+tests/e2e/results/
+tests/e2e/datasets/
+tests/e2e/*.log
+tests/e2e/*.csv
+tests/e2e/*.json
+tests/e2e/*.txt

@@ -152,15 +152,17 @@ class EmbeddingsWorker:
     def _save_inference_embeddings(
         self, job_id: str, inference_embeddings: Dict[str, Any]
     ) -> None:
-        """Save inference embeddings to Redis using MessagePack."""
+        """Save inference embeddings to Redis using MessagePack with atomic TTL."""
         if not inference_embeddings:
             return
         key = f"orchestrator:job:{job_id}:inference_embeddings"
-        self.redis_client.set(
-            key,
-            msgpack.packb(inference_embeddings, use_bin_type=True)
-        )
-        self.redis_client.expire(key, 86400)
+        packed_data = msgpack.packb(inference_embeddings, use_bin_type=True)
+        
+        # Use pipeline for atomicity: prevents memory leak if worker fails between SET and EXPIRE
+        pipe = self.redis_client.pipeline()
+        pipe.set(key, packed_data)
+        pipe.expire(key, 86400)
+        pipe.execute()
 
     def load_model(self):
         use_gpu = detect_gpu()

@@ -564,22 +564,6 @@ func calculateCurrentStep(steps map[string]string, order []string) string {
 	return lastCompleted
 }
 
-// areAllRequiredStepsCompleted checks if all mandatory pipeline steps have completed.
-// Mandatory steps: extraction, embeddings, entities, metadata.
-// Optional steps (inferences) are not required for job completion.
-// Returns true if all mandatory steps are in "completed" state.
-func areAllRequiredStepsCompleted(steps map[string]string) bool {
-	// Mandatory steps that must be completed
-	mandatorySteps := []string{"extraction", "embeddings", "entities", "metadata"}
-	for _, step := range mandatorySteps {
-		status, ok := steps[step]
-		if !ok || status != "completed" {
-			return false
-		}
-	}
-	return true
-}
-
 // getJobHandler handles GET /v1/documents/{id} requests and returns the current status of a job.
 // This is a polling endpoint (non-blocking) - clients must retry to check for completion.
 // Results are NOT returned here; use /download once status is completed.
@@ -619,19 +603,11 @@ func getJobHandler(c *gin.Context) {
 	// Get step progress (available at all stages, not just completed)
 	steps, _ := redis.GetJobSteps(ctx, jobID)
 
-	// If status is not yet completed but all mandatory steps are done, update status to completed
-	if status != models.StatusCompleted && status != models.StatusFailed {
-		if areAllRequiredStepsCompleted(steps) {
-			// Atomically update status to completed
-			if err := redis.SetJobStatus(ctx, jobID, models.StatusCompleted); err != nil {
-				logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to update job status to completed")
-				// Continue anyway — return the current state to client
-			} else {
-				status = models.StatusCompleted
-				logger.Info().Str("job_id", jobID).Msg("Job auto-completed: all mandatory steps finished")
-			}
-		}
-	}
+	// NOTE: Job completion is handled exclusively by the completion-worker.
+	// The completion-worker aggregates results from all workers, writes the results
+	// file to disk, and THEN marks the job as completed. Do NOT auto-complete
+	// jobs here as it creates a race condition where the download endpoint
+	// returns "no results found" because the file hasn't been written yet.
 
 	// Calculate current_step from the steps map.
 	// Pipeline order: extraction → embeddings → entities → metadata → inferences

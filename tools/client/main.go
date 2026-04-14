@@ -743,42 +743,52 @@ func isActiveStatus(status string) bool {
 func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error) {
 	fmt.Println("Monitoring job progress...")
 
-	ticker := time.NewTicker(pollingInterval)
-	defer ticker.Stop()
+	pollingTicker := time.NewTicker(pollingInterval)
+	defer pollingTicker.Stop()
+
+	spinnerTicker := time.NewTicker(80 * time.Millisecond)
+	defer spinnerTicker.Stop()
 
 	spinnerIndex := 0
 	var lastProgress *JobProgress
-	lastUpdateTime := time.Now()
+	var lastLabel string
 
 	for {
 		select {
 		case <-ctx.Done():
-			printStatus("\r❌ Cancelled by user\n")
+			if ctx.Err() == context.DeadlineExceeded {
+				printStatus("\r⏱  Tiempo de espera excedido. El job continúa procesándose en el servidor.\n")
+				printStatus("   Usa --job-id %s -o results.json para descargar cuando termine.\n", jobID)
+				return "timeout", nil
+			}
+			printStatus("\r❌ Operación cancelada por usuario\n")
 			return "", ctx.Err()
-		case <-ticker.C:
+		case <-spinnerTicker.C:
+			if lastProgress != nil {
+				spinnerIndex = (spinnerIndex + 1) % len(spinner)
+				printStatus("\r%s %s", spinner[spinnerIndex], lastLabel)
+			}
+		case <-pollingTicker.C:
 			progress, err := getJobProgress(ctx, apiURL, jobID)
 			if err != nil {
+				if ctx.Err() != nil {
+					continue
+				}
 				progress = &JobProgress{
 					Status: "error",
 					Error:  err.Error(),
 				}
 			}
 			lastProgress = progress
-
-			// Animate spinner - rotate every 80ms worth of ticks
-			if time.Since(lastUpdateTime) >= 80*time.Millisecond {
-				spinnerIndex = (spinnerIndex + 1) % len(spinner)
-				lastUpdateTime = time.Now()
-			}
-
-			label := formatProgressLabel(lastProgress)
-			printStatus("\r%s %s", spinner[spinnerIndex], label)
+			lastLabel = formatProgressLabel(lastProgress)
 
 			if isTerminalStatus(progress.Status) {
 				if progress.Status == "completed" {
-					printStatus("\r✓ %s\n", label)
+					printStatus("\r✓ %s\n", lastLabel)
+				} else if progress.Status == "failed" {
+					printStatus("\r✗ Job falló: %s\n", progress.Error)
 				} else {
-					printStatus("\r✗ %s\n", label)
+					printStatus("\r✗ %s\n", lastLabel)
 				}
 				return progress.Status, nil
 			}
@@ -873,48 +883,52 @@ func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL
 func monitorBatch(ctx context.Context, apiURL, batchID string) (string, error) {
 	fmt.Println("Monitoring batch progress...")
 
-	ticker := time.NewTicker(pollingInterval)
-	defer ticker.Stop()
+	pollingTicker := time.NewTicker(pollingInterval)
+	defer pollingTicker.Stop()
+
+	spinnerTicker := time.NewTicker(80 * time.Millisecond)
+	defer spinnerTicker.Stop()
 
 	spinnerIndex := 0
 	var lastProgress *JobProgress
-	lastUpdateTime := time.Now()
+	var lastLabel string
 
 	for {
 		select {
 		case <-ctx.Done():
-			printStatus("\r❌ Cancelled by user\n")
+			if ctx.Err() == context.DeadlineExceeded {
+				printStatus("\r⏱  Tiempo de espera excedido. El batch continúa procesándose.\n")
+				return "timeout", nil
+			}
+			printStatus("\r❌ Operación cancelada por usuario\n")
 			return "", ctx.Err()
-		case <-ticker.C:
+		case <-spinnerTicker.C:
+			if lastProgress != nil {
+				spinnerIndex = (spinnerIndex + 1) % len(spinner)
+				printStatus("\r%s %s", spinner[spinnerIndex], lastLabel)
+			}
+		case <-pollingTicker.C:
 			status, err := getBatchStatus(ctx, apiURL, batchID)
 			if err != nil {
+				if ctx.Err() != nil {
+					continue
+				}
 				lastProgress = &JobProgress{
 					Status: "error",
 					Error:  err.Error(),
 				}
-				continue
+			} else {
+				lastProgress = &JobProgress{
+					Status:          status.Status,
+					ChunksProcessed: status.Completed,
+					TotalChunks:     status.Total,
+				}
+				if status.Failed > 0 {
+					lastProgress.Error = fmt.Sprintf("%d failed", status.Failed)
+				}
 			}
 
-			// Create progress info for batch
-			lastProgress = &JobProgress{
-				Status:          status.Status,
-				ChunksProcessed: status.Completed,
-				TotalChunks:     status.Total,
-			}
-
-			// Add failed count to error field for display
-			if status.Failed > 0 {
-				lastProgress.Error = fmt.Sprintf("%d failed", status.Failed)
-			}
-
-			// Animate spinner
-			if time.Since(lastUpdateTime) >= 80*time.Millisecond {
-				spinnerIndex = (spinnerIndex + 1) % len(spinner)
-				lastUpdateTime = time.Now()
-			}
-
-			label := formatProgressLabel(lastProgress)
-			printStatus("\r%s %s", spinner[spinnerIndex], label)
+			lastLabel = formatProgressLabel(lastProgress)
 
 			if status.Status == "completed" || status.Status == "failed" || status.Status == "partial" {
 				var finalLabel string
@@ -988,38 +1002,45 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 	}
 
 	reader := bufio.NewReader(resp.Body)
+
+	spinnerTicker := time.NewTicker(80 * time.Millisecond)
+	defer spinnerTicker.Stop()
+
 	spinnerIndex := 0
 	lastStatus := "pending"
 	var lastProgress *JobProgress
-	lastUpdateTime := time.Now()
+	var lastLabel string
 
-	// Initial progress
 	lastProgress = &JobProgress{Status: lastStatus}
-	printStatus("%s %s", spinner[0], formatProgressLabel(lastProgress))
+	lastLabel = formatProgressLabel(lastProgress)
+	printStatus("%s %s", spinner[0], lastLabel)
 
 	for {
 		select {
 		case <-ctx.Done():
-			printStatus("\r❌ Cancelled by user\n")
+			if ctx.Err() == context.DeadlineExceeded {
+				printStatus("\r⏱  Tiempo de espera excedido. El job continúa procesándose en el servidor.\n")
+				printStatus("   Usa --job-id %s -o results.json para descargar cuando termine.\n", jobID)
+				return "timeout", nil
+			}
+			printStatus("\r❌ Operación cancelada por usuario\n")
 			return "", ctx.Err()
+		case <-spinnerTicker.C:
+			spinnerIndex = (spinnerIndex + 1) % len(spinner)
+			printStatus("\r%s %s", spinner[spinnerIndex], lastLabel)
 		default:
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
-					label := formatProgressLabel(lastProgress)
-					printStatus("\r✓ %s\n", label)
+					printStatus("\r✓ %s\n", lastLabel)
 					return lastStatus, nil
 				}
-				printStatus("\r❌ SSE stream error\n")
+				printStatus("\r❌ Error en stream SSE: %v\n", err)
 				return lastStatus, fmt.Errorf("error reading SSE stream: %w", err)
 			}
 
 			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-
-			if strings.HasPrefix(line, ":") {
+			if line == "" || strings.HasPrefix(line, ":") {
 				continue
 			}
 
@@ -1035,21 +1056,13 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 				lastProgress = &JobProgress{
 					Status: event.Status,
 				}
-
-				// Animate spinner
-				if time.Since(lastUpdateTime) >= 80*time.Millisecond {
-					spinnerIndex = (spinnerIndex + 1) % len(spinner)
-					lastUpdateTime = time.Now()
-				}
-
-				label := formatProgressLabel(lastProgress)
-				printStatus("\r%s %s", spinner[spinnerIndex], label)
+				lastLabel = formatProgressLabel(lastProgress)
 
 				if isTerminalStatus(event.Status) {
 					if event.Status == "completed" {
-						printStatus("\r✓ %s\n", label)
+						printStatus("\r✓ %s\n", lastLabel)
 					} else {
-						printStatus("\r✗ %s\n", label)
+						printStatus("\r✗ %s\n", lastLabel)
 					}
 					return event.Status, nil
 				}

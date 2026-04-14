@@ -527,7 +527,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 
 **Endpoint:** `GET /v1/documents/{job_id}/download`
 
-**Description:** Download the full processing results for a completed job. Returns gzip-compressed JSON containing text, chunks, embeddings, entities, and metadata. **Only available when job status is `completed`.**
+**Description:** Download the full processing results for a completed job. Returns JSON containing text, chunks, embeddings, entities, and metadata. Embeddings are compressed at the field level using gzip+base64 (see `embedding_compressed` field). **Only available when job status is `completed`.**
 
 > **Note:** This endpoint reads results from the filesystem. Always check job status via `GET /v1/documents/{job_id}` before calling this endpoint.
 
@@ -535,16 +535,15 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 - `job_id` (string, required): The job ID returned from job creation.
 
 **Query Parameters:**
-- `compression` (string, optional): Set to `raw` to disable gzip compression and receive plain JSON.
+- `compression` (string, optional): Set to `raw` to receive results without any field-level compression (embeddings as plain float arrays). Default: field-level compression enabled.
 
-**Response Headers (compressed, default):**
+**Response Headers:**
 ```
-Content-Encoding: gzip
-Content-Disposition: attachment; filename=results_job_xyz789abc.json.gz
+Content-Disposition: attachment; filename=results_job_xyz789abc.json
 Content-Type: application/json
 ```
 
-**Response Body (JSON — after decompression):**
+**Response Body (JSON):**
 ```json
 {
   "job_id": "job_xyz789abc",
@@ -558,12 +557,10 @@ Content-Type: application/json
       "text": "First paragraph...",
       "start_offset": 0,
       "end_offset": 128,
-      "token_count": 25
+      "token_count": 25,
+      "embedding_compressed": "H4sIAAAAAAAC/wuOTS1KzEvJL0pVAOGSSJCSgZlCUWp+cUlqRVpqRWJJEZBSWJqXnFpSmZpXXFGal5yak1pSmZpXXFGal1qQnFqRWlpRWlJRmlGaV1RcWpJfVFJZkllQmFqUnVpSmZpXXFGal1qQnFqRWlpRWlJRmlGaV1RcWpJfVFJZkllQmFqUnVpSmZpXXFGal1qQnFqRWlpRWlJRmlGaV1RcWpJfVFJZkllQmFqUXloRWlqAk5lSmpBZU5ZUUlVSYnJOam1panHpGZk1eZkpFZk1ickppQUFHVapZFgAAAA=="
     }
   ],
-  "embeddings": {
-    "chunk_0": [0.123, 0.456, "..."]
-  },
   "entities": [
     {
       "text": "John Doe",
@@ -598,12 +595,11 @@ Content-Type: application/json
 
 **Example:**
 ```bash
-# Download compressed results (default)
-curl -o results.json.gz http://localhost:8080/v1/documents/job_xyz789abc/download
-gunzip results.json.gz
+# Download results (embeddings compressed at field level by default)
+curl -o results.json http://localhost:8080/v1/documents/job_xyz789abc/download
 
-# Download uncompressed
-curl http://localhost:8080/v1/documents/job_xyz789abc/download?raw=true
+# Download results with raw embeddings (uncompressed)
+curl http://localhost:8080/v1/documents/job_xyz789abc/download?raw=true | jq .
 ```
 
 ---
@@ -1411,52 +1407,145 @@ curl -X POST http://localhost:8080/v1/documents/batch \
 
 ## Compression
 
-### Gzip-Compressed Downloads (Default)
+### Field-Level Embedding Compression
 
-The `/v1/documents/{job_id}/download` endpoint **compresses embeddings by default** using gzip.
+The `/v1/documents/{job_id}/download` endpoint returns **field-level compression for embeddings by default** using gzip + base64 encoding. This is NOT HTTP-level compression.
 
-**Request (default - compressed):**
+**Request (default - field-level compression):**
 ```bash
 curl http://localhost:8080/v1/documents/job_abc123/download
 ```
 
-**Request (raw/uncompressed - opt-out):**
+**Request (raw - no field compression, opt-out):**
 ```bash
-curl http://localhost:8080/v1/documents/job_abc123/download?raw=true
-```
-
-**Response Headers (compressed):**
-```
-Content-Encoding: gzip
-Content-Disposition: attachment; filename=results_job_abc123.json.gz
+curl http://localhost:8080/v1/documents/job_abc123/download?compression=raw
 ```
 
 **Response Fields:**
+
+When compression is enabled (default):
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `embedding_compressed` | string | Base64-encoded gzip-compressed float32 array (little-endian) |
-| `compression` | string | Always `"gzip"` when compressed |
+| `compression` | string | Always `"gzip"` when embeddings are compressed |
+
+When compression is disabled (`?compression=raw`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `embeddings` | array | Plain float32 array (not compressed) |
 
 **Decompression Example (Python):**
 ```python
-import base64, gzip, struct, json
+import base64, gzip, struct, json, requests
 
-def decompress_embeddings(embedded: str) -> list[float]:
-    compressed = base64.b64decode(embedded)
+def decompress_embeddings(encoded: str) -> list[float]:
+    """Decompress base64-encoded gzip-compressed embeddings to float32 array."""
+    compressed = base64.b64decode(encoded)
     raw_bytes = gzip.decompress(compressed)
     count = len(raw_bytes) // 4
-    return struct.unpack(f'<{count}f', raw_bytes)
+    return list(struct.unpack(f'<{count}f', raw_bytes))
 
-results = requests.get(f'{API}/v1/documents/{job_id}/download').json()
+# Download results with compressed embeddings
+response = requests.get(f'http://localhost:8080/v1/documents/{job_id}/download')
+results = response.json()
+
+# Decompress each chunk's embeddings
 for chunk in results['chunks']:
     if 'embedding_compressed' in chunk:
         chunk['embeddings'] = decompress_embeddings(chunk['embedding_compressed'])
+        del chunk['embedding_compressed']  # Remove compressed version
+
+print(f"Chunk 0 embeddings: {results['chunks'][0]['embeddings']}")
+```
+
+**Decompression Example (JavaScript/Node.js):**
+```javascript
+const zlib = require('zlib');
+const Buffer = require('buffer').Buffer;
+
+function decompressEmbeddings(encoded) {
+    // Decode base64
+    const compressed = Buffer.from(encoded, 'base64');
+    
+    // Decompress gzip
+    const decompressed = zlib.gunzipSync(compressed);
+    
+    // Parse float32 array (little-endian)
+    const count = decompressed.length / 4;
+    const embeddings = [];
+    for (let i = 0; i < count; i++) {
+        embeddings.push(decompressed.readFloatLE(i * 4));
+    }
+    return embeddings;
+}
+
+// Usage
+const response = await fetch(`http://localhost:8080/v1/documents/${jobId}/download`);
+const results = await response.json();
+
+for (const chunk of results.chunks) {
+    if (chunk.embedding_compressed) {
+        chunk.embeddings = decompressEmbeddings(chunk.embedding_compressed);
+        delete chunk.embedding_compressed;
+    }
+}
+```
+
+**Decompression Example (Go):**
+```go
+import (
+    "bytes"
+    "compress/gzip"
+    "encoding/base64"
+    "encoding/binary"
+    "io"
+    "math"
+)
+
+func decompressEmbeddings(encoded string) ([]float32, error) {
+    // Decode base64
+    compressed, err := base64.StdEncoding.DecodeString(encoded)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Create gzip reader
+    reader, err := gzip.NewReader(bytes.NewReader(compressed))
+    if err != nil {
+        return nil, err
+    }
+    defer reader.Close()
+    
+    // Read decompressed bytes
+    rawBytes, err := io.ReadAll(reader)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Parse float32 array (little-endian)
+    count := len(rawBytes) / 4
+    embeddings := make([]float32, count)
+    for i := 0; i < count; i++ {
+        bits := binary.LittleEndian.Uint32(rawBytes[i*4 : (i+1)*4])
+        embeddings[i] = math.Float32frombits(bits)
+    }
+    return embeddings, nil
+}
 ```
 
 **Benefits:**
 - 70-90% reduction in transfer size for large embeddings
-- Faster download times
+- Faster download times  
 - Reduced bandwidth costs
+- HTTP responses remain cacheable
+- Compatible with all HTTP clients (no special decompression required)
+
+**When to Use `compression=raw`:**
+- Debugging/testing (easier to inspect raw embeddings)
+- High-memory systems where decompression overhead is negligible
+- Integration with downstream systems that require pre-decompressed embeddings
 
 ---
 

@@ -897,6 +897,7 @@ func monitorBatch(ctx context.Context, apiURL, batchID string) (string, error) {
 	spinnerTicker := time.NewTicker(80 * time.Millisecond)
 	defer spinnerTicker.Stop()
 
+	var mu sync.RWMutex
 	spinnerIndex := 0
 	var lastProgress *JobProgress
 	var lastLabel string
@@ -911,9 +912,13 @@ func monitorBatch(ctx context.Context, apiURL, batchID string) (string, error) {
 			printStatus("\r❌ Operación cancelada por usuario\n")
 			return "", ctx.Err()
 		case <-spinnerTicker.C:
-			if lastProgress != nil {
+			mu.RLock()
+			progress := lastProgress
+			label := lastLabel
+			mu.RUnlock()
+			if progress != nil {
 				spinnerIndex = (spinnerIndex + 1) % len(spinner)
-				printStatus("\r%s %s", spinner[spinnerIndex], lastLabel)
+				printStatus("\r%s %s", spinner[spinnerIndex], label)
 			}
 		case <-pollingTicker.C:
 			status, err := getBatchStatus(ctx, apiURL, batchID)
@@ -936,7 +941,9 @@ func monitorBatch(ctx context.Context, apiURL, batchID string) (string, error) {
 				}
 			}
 
+			mu.Lock()
 			lastLabel = formatProgressLabel(lastProgress)
+			mu.Unlock()
 
 			if status.Status == "completed" || status.Status == "failed" || status.Status == "partial" {
 				var finalLabel string
@@ -1014,6 +1021,7 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 	spinnerTicker := time.NewTicker(80 * time.Millisecond)
 	defer spinnerTicker.Stop()
 
+	var mu sync.RWMutex
 	spinnerIndex := 0
 	lastStatus := "pending"
 	var lastProgress *JobProgress
@@ -1034,13 +1042,18 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 			printStatus("\r❌ Operación cancelada por usuario\n")
 			return "", ctx.Err()
 		case <-spinnerTicker.C:
+			mu.RLock()
+			label := lastLabel
+			mu.RUnlock()
 			spinnerIndex = (spinnerIndex + 1) % len(spinner)
-			printStatus("\r%s %s", spinner[spinnerIndex], lastLabel)
+			printStatus("\r%s %s", spinner[spinnerIndex], label)
 		default:
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
+					mu.RLock()
 					printStatus("\r✓ %s\n", lastLabel)
+					mu.RUnlock()
 					return lastStatus, nil
 				}
 				printStatus("\r❌ Error en stream SSE: %v\n", err)
@@ -1061,10 +1074,12 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 				}
 
 				lastStatus = event.Status
+				mu.Lock()
 				lastProgress = &JobProgress{
 					Status: event.Status,
 				}
 				lastLabel = formatProgressLabel(lastProgress)
+				mu.Unlock()
 
 				if isTerminalStatus(event.Status) {
 					if event.Status == "completed" {

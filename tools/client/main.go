@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -749,6 +750,7 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 	spinnerTicker := time.NewTicker(80 * time.Millisecond)
 	defer spinnerTicker.Stop()
 
+	var mu sync.RWMutex
 	spinnerIndex := 0
 	var lastProgress *JobProgress
 	var lastLabel string
@@ -764,9 +766,13 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 			printStatus("\r❌ Operación cancelada por usuario\n")
 			return "", ctx.Err()
 		case <-spinnerTicker.C:
-			if lastProgress != nil {
+			mu.RLock()
+			progress := lastProgress
+			label := lastLabel
+			mu.RUnlock()
+			if progress != nil {
 				spinnerIndex = (spinnerIndex + 1) % len(spinner)
-				printStatus("\r%s %s", spinner[spinnerIndex], lastLabel)
+				printStatus("\r%s %s", spinner[spinnerIndex], label)
 			}
 		case <-pollingTicker.C:
 			progress, err := getJobProgress(ctx, apiURL, jobID)
@@ -779,8 +785,10 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 					Error:  err.Error(),
 				}
 			}
+			mu.Lock()
 			lastProgress = progress
 			lastLabel = formatProgressLabel(lastProgress)
+			mu.Unlock()
 
 			if isTerminalStatus(progress.Status) {
 				if progress.Status == "completed" {

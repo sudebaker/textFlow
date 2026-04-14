@@ -971,8 +971,11 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 		return err
 	}
 
-	if result.Text == "" && len(result.Chunks) == 0 {
-		return fmt.Errorf("no results found for job %s", jobID)
+	// Validate that we have at least one of: text or chunks
+	// The 'text' field is optional (only present if it was extracted).
+	// Results with chunks but no full text are valid (e.g., document with separate chunks).
+	if len(result.Chunks) == 0 && result.Text == "" {
+		return fmt.Errorf("no results found for job %s: no chunks or text extracted", jobID)
 	}
 
 	for i, chunk := range result.Chunks {

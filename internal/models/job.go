@@ -82,10 +82,11 @@ type EntityMinimal struct {
 
 // InferenceItem represents a single micro-inference embedded inside a chunk in the final results.
 type InferenceItem struct {
-	Text       string   `json:"text"`
-	Confidence float32  `json:"confidence"`
-	EntityRefs []string `json:"entity_refs,omitempty"`
-	EntityID   string   `json:"entity_id,omitempty"`
+	Text       string    `json:"text"`
+	Confidence float32   `json:"confidence"`
+	EntityRefs []string  `json:"entity_refs,omitempty"`
+	EntityID   string    `json:"entity_id,omitempty"`
+	Embedding  []float32 `json:"embedding,omitempty"`
 }
 
 // JobResults represents the final aggregated results of a completed job.

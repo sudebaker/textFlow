@@ -1044,52 +1044,6 @@ func getJobCreatedTime(ctx context.Context, apiURL string, jobID string) (time.T
 	return result.CreatedAt, nil
 }
 
-func downloadCompressedResults(ctx context.Context, apiURL string, jobID string, outputFile string) error {
-	fmt.Println("Downloading compressed results...")
-
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL+"/v1/documents/"+jobID+"/download", nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to get results: status %d", resp.StatusCode)
-	}
-
-	var reader io.ReadCloser
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		reader, err = gzip.NewReader(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer reader.Close()
-	} else {
-		reader = resp.Body
-	}
-
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	err = os.WriteFile(outputFile, data, 0644)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Results saved to: %s\n", outputFile)
-	return nil
-}
-
 func decompressEmbeddings(encoded string) ([]float32, error) {
 	compressed, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {

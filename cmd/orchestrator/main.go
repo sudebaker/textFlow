@@ -1236,6 +1236,7 @@ func downloadHandler(c *gin.Context) {
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json", jobID))
 		c.Header("Content-Type", "application/json")
 
+		// Compress embeddings in chunks
 		chunks := make([]map[string]interface{}, len(results.Chunks))
 		for i, chunk := range results.Chunks {
 			chunkData := map[string]interface{}{
@@ -1243,6 +1244,17 @@ func downloadHandler(c *gin.Context) {
 				"text":         chunk.Text,
 				"start_offset": chunk.StartOffset,
 				"end_offset":   chunk.EndOffset,
+			}
+
+			// Add optional fields if present
+			if chunk.TokenCount > 0 {
+				chunkData["token_count"] = chunk.TokenCount
+			}
+			if len(chunk.EntityIDs) > 0 {
+				chunkData["entity_ids"] = chunk.EntityIDs
+			}
+			if len(chunk.Inferences) > 0 {
+				chunkData["inferences"] = chunk.Inferences
 			}
 
 			if len(chunk.Embeddings) > 0 {
@@ -1275,11 +1287,36 @@ func downloadHandler(c *gin.Context) {
 			chunks[i] = chunkData
 		}
 
-		c.JSON(http.StatusOK, gin.H{
+		// Return full results with compressed embeddings
+		response := gin.H{
 			"job_id":      jobID,
+			"status":      results.Status,
+			"created_at":  results.CreatedAt,
 			"compression": "gzip",
 			"chunks":      chunks,
-		})
+		}
+
+		// Add optional fields if present
+		if results.CompletedAt != "" {
+			response["completed_at"] = results.CompletedAt
+		}
+		if results.Text != "" {
+			response["text"] = results.Text
+		}
+		if len(results.Entities) > 0 {
+			response["entities"] = results.Entities
+		}
+		if len(results.DocumentMetadata) > 0 {
+			response["document_metadata"] = results.DocumentMetadata
+		}
+		if len(results.TextMetadata) > 0 {
+			response["text_metadata"] = results.TextMetadata
+		}
+		if results.SourceClassification != nil {
+			response["source_classification"] = results.SourceClassification
+		}
+
+		c.JSON(http.StatusOK, response)
 		return
 	}
 

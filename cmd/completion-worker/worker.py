@@ -709,6 +709,15 @@ class CompletionWorker:
                         inf_copy["embedding"] = chunk_inf_emb[emb_key]
                     inferences[idx] = inf_copy
 
+                if inferences and chunk_inf_emb:
+                    expected = len(inferences)
+                    actual = len(chunk_inf_emb)
+                    if expected != actual:
+                        logger.warning(
+                            f"Embedding count mismatch for chunk {cid}: "
+                            f"expected {expected}, got {actual}"
+                        )
+
                 enriched["inferences"] = inferences
                 enriched_chunks.append(enriched)
 

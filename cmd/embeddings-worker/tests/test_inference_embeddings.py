@@ -241,10 +241,10 @@ class TestInferenceEmbeddingsStorage:
 
         worker._save_inference_embeddings("job-123", inference_embeddings)
 
-        call_args = mock_redis.set.call_args
-        if len(call_args[0]) > 2:
-            expire_time = call_args[0][2]
-            assert expire_time > 0
+        mock_redis.expire.assert_called_once()
+        expire_call = mock_redis.expire.call_args
+        assert expire_call[0][0] == "orchestrator:job:job-123:inference_embeddings"
+        assert expire_call[0][1] > 0
 
 
 class TestBackwardCompatibility:

@@ -19,6 +19,7 @@ def _setup_mock_modules():
     """Set up mock modules before importing worker."""
     import sys
     from unittest.mock import MagicMock
+    import json
 
     mock_pkg = MagicMock()
     sys.modules['pkg'] = mock_pkg
@@ -33,9 +34,19 @@ def _setup_mock_modules():
     sys.modules['redis'] = MagicMock()
     sys.modules['requests'] = MagicMock()
     
+    # Mock msgpack with real serialization behavior for testing
     mock_msgpack = MagicMock()
-    mock_msgpack.packb.side_effect = lambda data, **kwargs: data
-    mock_msgpack.unpackb.side_effect = lambda data, **kwargs: data
+    
+    def mock_packb(data, **kwargs):
+        """Simulate msgpack.packb by JSON serializing then encoding to bytes."""
+        return json.dumps(data).encode('utf-8')
+    
+    def mock_unpackb(data, **kwargs):
+        """Simulate msgpack.unpackb by decoding bytes then JSON parsing."""
+        return json.loads(data.decode('utf-8'))
+    
+    mock_msgpack.packb = mock_packb
+    mock_msgpack.unpackb = mock_unpackb
     sys.modules['msgpack'] = mock_msgpack
 
 
@@ -216,6 +227,10 @@ class TestInferenceEmbeddingsStorage:
         import msgpack
 
         worker, mock_redis = _create_mock_embeddings_worker()
+        
+        # Mock the pipeline for atomic operations
+        mock_pipe = MagicMock()
+        mock_redis.pipeline.return_value = mock_pipe
 
         inference_embeddings = {
             "chunk_0": {
@@ -225,26 +240,41 @@ class TestInferenceEmbeddingsStorage:
 
         worker._save_inference_embeddings("job-123", inference_embeddings)
 
-        call_args = mock_redis.set.call_args
-        key = call_args[0][0]
-        value = call_args[0][1]
+        # Verify set was called via pipeline with correct key and serialized value
+        set_call = mock_pipe.set.call_args
+        key = set_call[0][0]
+        value = set_call[0][1]
 
         assert key == "orchestrator:job:job-123:inference_embeddings"
         unpacked = msgpack.unpackb(value, raw=False)
         assert unpacked["chunk_0"]["inference_0"] == [0.1, 0.2, 0.3]
 
     def test_save_inference_embeddings_sets_correct_ttl(self):
-        """Inference embeddings are stored with appropriate TTL."""
+        """Inference embeddings are stored with appropriate TTL using atomic pipeline."""
         worker, mock_redis = _create_mock_embeddings_worker()
+        
+        # Mock the pipeline for atomic operations
+        mock_pipe = MagicMock()
+        mock_redis.pipeline.return_value = mock_pipe
 
         inference_embeddings = {"chunk_0": {"inference_0": [0.1, 0.2, 0.3]}}
 
         worker._save_inference_embeddings("job-123", inference_embeddings)
 
-        mock_redis.expire.assert_called_once()
-        expire_call = mock_redis.expire.call_args
+        # Verify pipeline was used for atomicity
+        mock_redis.pipeline.assert_called_once()
+        assert mock_pipe.set.called
+        assert mock_pipe.expire.called
+        assert mock_pipe.execute.called
+        
+        # Verify set call had correct key
+        set_call = mock_pipe.set.call_args
+        assert set_call[0][0] == "orchestrator:job:job-123:inference_embeddings"
+        
+        # Verify expire call had correct TTL
+        expire_call = mock_pipe.expire.call_args
         assert expire_call[0][0] == "orchestrator:job:job-123:inference_embeddings"
-        assert expire_call[0][1] > 0
+        assert expire_call[0][1] == 86400
 
 
 class TestBackwardCompatibility:

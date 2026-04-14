@@ -61,6 +61,18 @@ type GetJobResponse struct {
 	CurrentStep string            `json:"current_step,omitempty"`
 }
 
+// JobProgress tracks real-time job progress information
+type JobProgress struct {
+	Status          string            `json:"status"`
+	CurrentStep     string            `json:"current_step"`
+	Steps           map[string]string `json:"steps"`
+	ChunksProcessed int
+	TotalChunks     int
+	Entities        int
+	Inferences      int
+	Error           string
+}
+
 type JobResults struct {
 	JobID            string                   `json:"job_id"`
 	Status           string                   `json:"status"`
@@ -162,6 +174,13 @@ type JobEvent struct {
 var (
 	spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠒", "⠂", "⠂", "⠒", "⠲", "⠴", "⠤", "⠄", "⠄", "⠤", "⠴", "⠶", "⠦", "⠰", "⠠", "⠰", "⠦", "⠶", "⠴", "⠤", "⠄", "⠄", "⠤", "⠴", "⠶", "⠦", "⠰"}
 )
+
+// printStatus prints a status update and flushes stdout
+func printStatus(format string, args ...interface{}) {
+	fmt.Printf(format, args...)
+	// Force flush to stdout - some terminals buffer \r updates
+	os.Stdout.Sync()
+}
 
 func main() {
 	var (
@@ -649,12 +668,68 @@ func statusLabel(status, step string) string {
 		return "Analyzing image (LLM)..."
 	case "processing":
 		if step != "" {
-			return fmt.Sprintf("processing | step: %s", step)
+			return fmt.Sprintf("Processing: %s", step)
 		}
-		return "processing"
+		return "Processing..."
+	case "completed":
+		return "✓ Completed"
+	case "failed":
+		return "✗ Failed"
 	default:
 		return status
 	}
+}
+
+// formatProgressLabel creates a detailed progress label with all available metrics
+func formatProgressLabel(progress *JobProgress) string {
+	var parts []string
+
+	// Status with symbol
+	switch progress.Status {
+	case "completed":
+		parts = append(parts, "✓ Completed")
+	case "failed":
+		parts = append(parts, "✗ Failed")
+	case "pending":
+		parts = append(parts, "⏳ Pending")
+	case "processing":
+		parts = append(parts, "⚙ Processing")
+	case "transcribing":
+		parts = append(parts, "🎤 Transcribing")
+	case "analyzing_image":
+		parts = append(parts, "🖼 Analyzing")
+	}
+
+	// Current step
+	if progress.CurrentStep != "" {
+		parts = append(parts, fmt.Sprintf("(%s)", progress.CurrentStep))
+	}
+
+	// Progress metrics
+	var metrics []string
+
+	if progress.TotalChunks > 0 {
+		pct := 0.0
+		if progress.TotalChunks > 0 {
+			pct = float64(progress.ChunksProcessed) / float64(progress.TotalChunks) * 100
+		}
+		metrics = append(metrics, fmt.Sprintf("chunks: %d/%d (%.0f%%)",
+			progress.ChunksProcessed, progress.TotalChunks, pct))
+	}
+
+	if progress.Entities > 0 {
+		metrics = append(metrics, fmt.Sprintf("entities: %d", progress.Entities))
+	}
+
+	if progress.Inferences > 0 {
+		metrics = append(metrics, fmt.Sprintf("inferences: %d", progress.Inferences))
+	}
+
+	if len(metrics) > 0 {
+		parts = append(parts, fmt.Sprintf("[%s]", strings.Join(metrics, " | ")))
+	}
+
+	return strings.Join(parts, " ")
 }
 
 func isTerminalStatus(status string) bool {
@@ -667,30 +742,45 @@ func isActiveStatus(status string) bool {
 
 func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error) {
 	fmt.Println("Monitoring job progress...")
-	fmt.Printf("Status: pending")
 
 	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
 	spinnerIndex := 0
+	var lastProgress *JobProgress
+	lastUpdateTime := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
+			printStatus("\r❌ Cancelled by user\n")
 			return "", ctx.Err()
 		case <-ticker.C:
-			spinnerIndex = (spinnerIndex + 1) % len(spinner)
-			currentStatus, currentStep, err := getJobStatus(ctx, apiURL, jobID)
+			progress, err := getJobProgress(ctx, apiURL, jobID)
 			if err != nil {
-				fmt.Printf("\r%s Error polling status: %v   ", spinner[spinnerIndex], err)
-				continue
+				progress = &JobProgress{
+					Status: "error",
+					Error:  err.Error(),
+				}
+			}
+			lastProgress = progress
+
+			// Animate spinner - rotate every 80ms worth of ticks
+			if time.Since(lastUpdateTime) >= 80*time.Millisecond {
+				spinnerIndex = (spinnerIndex + 1) % len(spinner)
+				lastUpdateTime = time.Now()
 			}
 
-			fmt.Printf("\r%s %-40s", spinner[spinnerIndex], statusLabel(currentStatus, currentStep))
+			label := formatProgressLabel(lastProgress)
+			printStatus("\r%s %s", spinner[spinnerIndex], label)
 
-			if isTerminalStatus(currentStatus) {
-				fmt.Println()
-				return currentStatus, nil
+			if isTerminalStatus(progress.Status) {
+				if progress.Status == "completed" {
+					printStatus("\r✓ %s\n", label)
+				} else {
+					printStatus("\r✗ %s\n", label)
+				}
+				return progress.Status, nil
 			}
 		}
 	}
@@ -782,38 +872,63 @@ func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL
 
 func monitorBatch(ctx context.Context, apiURL, batchID string) (string, error) {
 	fmt.Println("Monitoring batch progress...")
-	fmt.Printf("Status: pending")
 
 	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
 	spinnerIndex := 0
-	lastStatus := ""
+	var lastProgress *JobProgress
+	lastUpdateTime := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
+			printStatus("\r❌ Cancelled by user\n")
 			return "", ctx.Err()
 		case <-ticker.C:
-			spinnerIndex = (spinnerIndex + 1) % len(spinner)
 			status, err := getBatchStatus(ctx, apiURL, batchID)
 			if err != nil {
-				fmt.Printf("\r%s Error polling batch status: %v   ", spinner[spinnerIndex], err)
+				lastProgress = &JobProgress{
+					Status: "error",
+					Error:  err.Error(),
+				}
 				continue
 			}
 
-			displayStatus := fmt.Sprintf("%s (%d/%d done, %d failed)",
-				status.Status, status.Completed, status.Total, status.Failed)
-
-			if status.Status != lastStatus {
-				fmt.Printf("\r%s Status: %-40s", spinner[spinnerIndex], displayStatus)
-				lastStatus = status.Status
-			} else {
-				fmt.Printf("\r%s Status: %-40s", spinner[spinnerIndex], displayStatus)
+			// Create progress info for batch
+			lastProgress = &JobProgress{
+				Status:          status.Status,
+				ChunksProcessed: status.Completed,
+				TotalChunks:     status.Total,
 			}
 
+			// Add failed count to error field for display
+			if status.Failed > 0 {
+				lastProgress.Error = fmt.Sprintf("%d failed", status.Failed)
+			}
+
+			// Animate spinner
+			if time.Since(lastUpdateTime) >= 80*time.Millisecond {
+				spinnerIndex = (spinnerIndex + 1) % len(spinner)
+				lastUpdateTime = time.Now()
+			}
+
+			label := formatProgressLabel(lastProgress)
+			printStatus("\r%s %s", spinner[spinnerIndex], label)
+
 			if status.Status == "completed" || status.Status == "failed" || status.Status == "partial" {
-				fmt.Println()
+				var finalLabel string
+				if status.Status == "completed" {
+					finalLabel = fmt.Sprintf("✓ Batch completed: %d/%d done, %d failed",
+						status.Completed, status.Total, status.Failed)
+				} else if status.Status == "failed" {
+					finalLabel = fmt.Sprintf("✗ Batch failed: %d/%d done, %d failed",
+						status.Completed, status.Total, status.Failed)
+				} else {
+					finalLabel = fmt.Sprintf("⚠ Batch partial: %d/%d done, %d failed",
+						status.Completed, status.Total, status.Failed)
+				}
+				printStatus("\r%s\n", finalLabel)
 				return status.Status, nil
 			}
 		}
@@ -873,21 +988,29 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 	}
 
 	reader := bufio.NewReader(resp.Body)
-	lastStatus := "pending"
 	spinnerIndex := 0
+	lastStatus := "pending"
+	var lastProgress *JobProgress
+	lastUpdateTime := time.Now()
 
-	fmt.Printf("Status: %s", lastStatus)
+	// Initial progress
+	lastProgress = &JobProgress{Status: lastStatus}
+	printStatus("%s %s", spinner[0], formatProgressLabel(lastProgress))
 
 	for {
 		select {
 		case <-ctx.Done():
+			printStatus("\r❌ Cancelled by user\n")
 			return "", ctx.Err()
 		default:
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
+					label := formatProgressLabel(lastProgress)
+					printStatus("\r✓ %s\n", label)
 					return lastStatus, nil
 				}
+				printStatus("\r❌ SSE stream error\n")
 				return lastStatus, fmt.Errorf("error reading SSE stream: %w", err)
 			}
 
@@ -908,13 +1031,26 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 					continue
 				}
 
-				spinnerIndex = (spinnerIndex + 1) % len(spinner)
 				lastStatus = event.Status
+				lastProgress = &JobProgress{
+					Status: event.Status,
+				}
 
-				fmt.Printf("\r%s Status: %-20s", spinner[spinnerIndex], statusLabel(lastStatus, ""))
+				// Animate spinner
+				if time.Since(lastUpdateTime) >= 80*time.Millisecond {
+					spinnerIndex = (spinnerIndex + 1) % len(spinner)
+					lastUpdateTime = time.Now()
+				}
+
+				label := formatProgressLabel(lastProgress)
+				printStatus("\r%s %s", spinner[spinnerIndex], label)
 
 				if isTerminalStatus(event.Status) {
-					fmt.Println()
+					if event.Status == "completed" {
+						printStatus("\r✓ %s\n", label)
+					} else {
+						printStatus("\r✗ %s\n", label)
+					}
 					return event.Status, nil
 				}
 			}
@@ -945,6 +1081,59 @@ func getJobStatus(ctx context.Context, apiURL string, jobID string) (string, str
 	}
 
 	return result.Status, result.CurrentStep, nil
+}
+
+// getJobProgress retrieves full progress information including metrics
+func getJobProgress(ctx context.Context, apiURL string, jobID string) (*JobProgress, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL+"/v1/documents/"+jobID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("job not found: %s", jobID)
+	}
+
+	var result GetJobResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	progress := &JobProgress{
+		Status:      result.Status,
+		CurrentStep: result.CurrentStep,
+		Steps:       result.Steps,
+		Error:       result.Error,
+	}
+
+	// Calculate metrics from results if available
+	if result.Results != nil {
+		progress.TotalChunks = len(result.Results.Chunks)
+		progress.Entities = len(result.Results.Entities)
+
+		// Count inferences across all chunks
+		for _, chunk := range result.Results.Chunks {
+			progress.Inferences += len(chunk.Inferences)
+		}
+
+		// Estimate chunks processed based on chunks with data
+		processedCount := 0
+		for _, chunk := range result.Results.Chunks {
+			if len(chunk.Embeddings) > 0 || chunk.EmbeddingCompressed != "" || len(chunk.Inferences) > 0 {
+				processedCount++
+			}
+		}
+		progress.ChunksProcessed = processedCount
+	}
+
+	return progress, nil
 }
 
 func downloadResults(ctx context.Context, apiURL string, jobID string, outputFile string) error {

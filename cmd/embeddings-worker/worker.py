@@ -92,6 +92,75 @@ class EmbeddingsWorker:
         self.service = None
         self.batch_size = EMBEDDING_BATCH_SIZE_CPU
 
+    def _check_micro_inferences_exist(self, job_id: str) -> bool:
+        """Check if micro_inferences exist in Redis for this job."""
+        key = f"orchestrator:job:{job_id}:micro_inferences"
+        return self.redis_client.exists(key) > 0
+
+    def _load_micro_inferences(self, job_id: str) -> List[Dict[str, Any]]:
+        """Load and parse micro_inferences from Redis."""
+        key = f"orchestrator:job:{job_id}:micro_inferences"
+        raw = self.redis_client.get(key)
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Failed to parse micro_inferences for job: {job_id}")
+            return []
+
+    def _generate_inference_embeddings(
+        self, micro_inferences: List[Dict[str, Any]]
+    ) -> Dict[str, Dict[str, List[float]]]:
+        """Generate embeddings for each micro-inference text.
+        
+        Args:
+            micro_inferences: List of dicts with chunk_id and inferences
+            
+        Returns:
+            Dict mapping chunk_id -> {inference_idx: embedding_vector}
+        """
+        if not micro_inferences:
+            return {}
+
+        inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
+
+        for chunk_data in micro_inferences:
+            chunk_id = chunk_data.get("chunk_id")
+            inferences = chunk_data.get("inferences", [])
+
+            if not chunk_id or not inferences:
+                continue
+
+            inference_texts = [inf.get("text", "") for inf in inferences]
+
+            if not any(inference_texts):
+                continue
+
+            embeddings = self.service.generate_embeddings(
+                inference_texts, batch_size=self.batch_size
+            )
+
+            chunk_embeddings: Dict[str, List[float]] = {}
+            for idx, embedding in enumerate(embeddings):
+                chunk_embeddings[f"inference_{idx}"] = embedding
+
+            inference_embeddings[chunk_id] = chunk_embeddings
+
+        return inference_embeddings
+
+    def _save_inference_embeddings(
+        self, job_id: str, inference_embeddings: Dict[str, Any]
+    ) -> None:
+        """Save inference embeddings to Redis using MessagePack."""
+        if not inference_embeddings:
+            return
+        key = f"orchestrator:job:{job_id}:inference_embeddings"
+        self.redis_client.set(
+            key,
+            msgpack.packb(inference_embeddings, use_bin_type=True)
+        )
+
     def load_model(self):
         use_gpu = detect_gpu()
         self.batch_size = (
@@ -187,7 +256,29 @@ class EmbeddingsWorker:
                 f"orchestrator:job:{job_id}:steps", "embeddings", "completed"
             )
 
-            self.event_bus.publish_job_progress(job_id, 33, "embedding")
+            inference_progress = 33
+            if self._check_micro_inferences_exist(job_id):
+                logger.info(f"Generating inference embeddings for job: {job_id}")
+                try:
+                    micro_inferences = self._load_micro_inferences(job_id)
+                    if micro_inferences:
+                        inference_embeddings = self._generate_inference_embeddings(micro_inferences)
+                        self._save_inference_embeddings(job_id, inference_embeddings)
+                        self.redis_client.hset(
+                            f"orchestrator:job:{job_id}:steps", "inference_embeddings", "completed"
+                        )
+                        inference_count = sum(
+                            len(c.get("inferences", [])) 
+                            for c in micro_inferences
+                        )
+                        logger.info(
+                            f"Generated inference embeddings for {inference_count} inferences"
+                        )
+                        inference_progress = 40
+                except Exception as e:
+                    logger.warning(f"Failed to generate inference embeddings: {e}")
+
+            self.event_bus.publish_job_progress(job_id, inference_progress, "embedding")
 
             duration = time.time() - start_time
             job_duration.observe(duration)

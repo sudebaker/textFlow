@@ -613,6 +613,7 @@ class CompletionWorker:
 
             # Embeddings are stored as MsgPack binary — use raw client (no decode_responses)
             embeddings_raw_bytes = self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings")
+            inference_embeddings_raw = self.redis_raw.get(f"orchestrator:job:{job_id}:inference_embeddings")
 
             created_at_timestamp = int(meta.get("created_at", time.time()))
             created_at = datetime.fromtimestamp(created_at_timestamp).isoformat()
@@ -638,6 +639,14 @@ class CompletionWorker:
                 raw = msgpack.unpackb(embeddings_raw_bytes, raw=False)
                 # raw is {chunk_id: [float]} — filter out any non-list values
                 embeddings_by_chunk = {k: v for k, v in raw.items() if isinstance(v, list)}
+
+            # --- Inference Embeddings: {chunk_id: {inference_idx: [float]}} ---
+            inference_embeddings_by_chunk: dict = {}
+            if inference_embeddings_raw:
+                raw = msgpack.unpackb(inference_embeddings_raw, raw=False)
+                inference_embeddings_by_chunk = {
+                    k: v for k, v in raw.items() if isinstance(v, dict)
+                }
 
             # --- Entities: deduplicate → global dict {entity_id: {label, text, confidence}} ---
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
@@ -689,7 +698,18 @@ class CompletionWorker:
                 enriched = dict(chunk)  # shallow copy — preserve all existing fields
                 enriched["embeddings"] = embeddings_by_chunk.get(cid, [])
                 enriched["entity_ids"] = entity_ids_by_chunk.get(cid, [])
-                enriched["inferences"] = inferences_by_chunk.get(cid, [])
+
+                # Enrich each inference with its embedding
+                inferences = inferences_by_chunk.get(cid, [])
+                chunk_inf_emb = inference_embeddings_by_chunk.get(cid, {})
+                for idx, inf in enumerate(inferences):
+                    inf_copy = dict(inf)
+                    emb_key = f"inference_{idx}"
+                    if emb_key in chunk_inf_emb:
+                        inf_copy["embedding"] = chunk_inf_emb[emb_key]
+                    inferences[idx] = inf_copy
+
+                enriched["inferences"] = inferences
                 enriched_chunks.append(enriched)
 
             # --- Final result ---

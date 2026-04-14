@@ -132,7 +132,7 @@ class EmbeddingsWorker:
             if not chunk_id or not inferences:
                 continue
 
-            inference_texts = [inf.get("text", "") for inf in inferences]
+            inference_texts = [inf.get("text") or "" for inf in inferences]
 
             if not any(inference_texts):
                 continue
@@ -160,6 +160,7 @@ class EmbeddingsWorker:
             key,
             msgpack.packb(inference_embeddings, use_bin_type=True)
         )
+        self.redis_client.expire(key, 86400)
 
     def load_model(self):
         use_gpu = detect_gpu()

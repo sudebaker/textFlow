@@ -303,7 +303,6 @@ services:
     build:
       context: ../../
       dockerfile: cmd/inference-worker/Dockerfile
-    container_name: textflow-inference-worker
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
@@ -335,6 +334,7 @@ services:
     - docker_default
     restart: unless-stopped
     deploy:
+      replicas: ${INFERENCE_WORKER_REPLICAS:-4}
       resources:
         limits:
           cpus: '1'
@@ -443,7 +443,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 512M
+          memory: 1G
   redis-exporter:
     image: oliver006/redis_exporter:v1.67.0
     container_name: textflow-redis-exporter

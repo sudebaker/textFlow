@@ -39,6 +39,7 @@ go build -o client .
 | `-o, --output <file>` | Ruta para guardar resultados JSON (requerido) |
 | `-u, --url <url>` | URL base de la API (default: `http://localhost:8080`) |
 | `-f, --inferences` | Habilitar generación de inferencias (requiere vLLM) |
+| `--inference-embeddings` | Generar embeddings vectoriales para inferencias (requiere `-f`) |
 | `-w, --webhook <url>` | URL de webhook para notificación de completado |
 | `--webhook-secret <secret>` | Secreto para firma de verificación del webhook |
 | `--sse` | Usar streaming SSE en lugar de polling |

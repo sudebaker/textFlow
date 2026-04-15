@@ -185,19 +185,20 @@ func printStatus(format string, args ...interface{}) {
 
 func main() {
 	var (
-		inputFile         string
-		outputFile        string
-		apiURL            string
-		showHelp          bool
-		inferencesEnabled bool
-		webhookURL        string
-		webhookSecret     string
-		useSSE            bool
-		useBatch          bool
-		batchFile         string
-		timeoutStr        string
-		resumeJobID       string
-		diarizeEnabled    bool
+		inputFile                  string
+		outputFile                 string
+		apiURL                     string
+		showHelp                   bool
+		inferencesEnabled          bool
+		inferenceEmbeddingsEnabled bool
+		webhookURL                 string
+		webhookSecret              string
+		useSSE                     bool
+		useBatch                   bool
+		batchFile                  string
+		timeoutStr                 string
+		resumeJobID                string
+		diarizeEnabled             bool
 	)
 
 	args := os.Args[1:]
@@ -231,6 +232,8 @@ func main() {
 			i++
 		case "-f", "--inferences":
 			inferencesEnabled = true
+		case "--inference-embeddings":
+			inferenceEmbeddingsEnabled = true
 		case "-w", "--webhook":
 			if i+1 >= len(args) {
 				fmt.Println("Error: -w/--webhook requires a value")
@@ -287,6 +290,13 @@ func main() {
 
 	if apiURL == "" {
 		apiURL = defaultAPIURL
+	}
+
+	// Validate inference-embeddings requires inferences
+	if inferenceEmbeddingsEnabled && !inferencesEnabled {
+		fmt.Println("Error: --inference-embeddings requires -f/--inferences flag")
+		printUsage()
+		os.Exit(1)
 	}
 
 	// Validate required arguments based on mode
@@ -386,7 +396,7 @@ func main() {
 
 		fmt.Printf("\nResults saved to: %s\n", outputFile)
 	} else {
-		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, webhookURL, webhookSecret, diarizeEnabled)
+		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, inferenceEmbeddingsEnabled, webhookURL, webhookSecret, diarizeEnabled)
 		if err != nil {
 			fmt.Printf("Error uploading document: %v\n", err)
 			os.Exit(1)
@@ -429,6 +439,7 @@ func printUsage() {
 	fmt.Println("  -o, --output <file>         Path to save results JSON (required)")
 	fmt.Println("  -u, --url <url>             API base URL (default: http://localhost:8080)")
 	fmt.Println("  -f, --inferences            Enable inference generation (requires vLLM)")
+	fmt.Println("  --inference-embeddings      Generate vector embeddings for inferences (requires -f)")
 	fmt.Println("  -w, --webhook <url>         Webhook URL for job completion notification")
 	fmt.Println("  --webhook-secret <secret>   Secret for webhook signature verification")
 	fmt.Println("  --diarize                  Enable speaker diarization for audio files (Whisper)")
@@ -443,6 +454,10 @@ func printUsage() {
 	fmt.Println("  client -i https://example.com/file.pdf -o output.json -w https://myapp.com/webhook")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json --sse")
 	fmt.Println("  client -i /path/to/large.pdf -o output.json --timeout 1h")
+	fmt.Println("")
+	fmt.Println("Inference Mode:")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json -f")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json -f --inference-embeddings")
 	fmt.Println("")
 	fmt.Println("Audio Files (MP3, WAV, M4A, OGG):")
 	fmt.Println("  client -i /path/to/audio.mp3 -o output.json")
@@ -460,7 +475,7 @@ func printUsage() {
 	fmt.Println("  client -b documents.json -o results.json -w https://myapp.com/webhook")
 }
 
-func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool) (string, error) {
+func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool) (string, error) {
 	if strings.HasPrefix(inputFile, "http://") || strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
@@ -471,7 +486,7 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 	if !strings.HasPrefix(inputFile, "http://") && !strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
-			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled)
+			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled, inferenceEmbeddingsEnabled)
 		}
 	}
 
@@ -504,7 +519,11 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 		WebhookSecret:  webhookSecret,
 	}
 	if inferencesEnabled {
-		reqBody.Features = []string{"inferences"}
+		if inferenceEmbeddingsEnabled {
+			reqBody.Features = []string{"inferences", "inference_embeddings"}
+		} else {
+			reqBody.Features = []string{"inferences"}
+		}
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -589,7 +608,7 @@ func downloadAndEncode(ctx context.Context, fileURL string) (string, string, err
 	return encoded, filename, nil
 }
 
-func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool) (string, error) {
+func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool) (string, error) {
 	fmt.Printf("Uploading %s file via multipart: %s\n", strings.TrimPrefix(ext, "."), filePath)
 
 	body := &bytes.Buffer{}
@@ -623,7 +642,11 @@ func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ex
 	}
 
 	if inferencesEnabled {
-		if err := writer.WriteField("features", "inferences"); err != nil {
+		featuresValue := "inferences"
+		if inferenceEmbeddingsEnabled {
+			featuresValue = "inferences,inference_embeddings"
+		}
+		if err := writer.WriteField("features", featuresValue); err != nil {
 			return "", fmt.Errorf("failed to write features field: %w", err)
 		}
 	}

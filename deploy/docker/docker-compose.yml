@@ -421,6 +421,7 @@ services:
     - RESULTS_PATH=/app/data/results
     volumes:
     - results-data:/app/data/results
+    - ${MODELS_PATH:?MODELS_PATH is not set}/bge-m3:/models/bge-m3:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -434,7 +435,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 120s
     networks:
     - datastore
     restart: unless-stopped

@@ -1337,7 +1337,8 @@ func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) 
 
 	// Whitelist of valid features
 	validFeatureSet := map[string]bool{
-		"inferences": true,
+		"inferences":           true,
+		"inference_embeddings": true,
 		// Future features: "classification": true, "extraction": true, etc.
 	}
 
@@ -1376,7 +1377,7 @@ func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) 
 		if !validFeatureSet[normalized] {
 			metrics.InvalidFeaturesTotal.WithLabelValues("unknown_feature").Inc()
 			logger.Warn().Str("feature", f).
-				Msg("Invalid feature requested, ignoring (valid: inferences)")
+				Msg("Invalid feature requested, ignoring (valid: inferences, inference_embeddings)")
 			continue
 		}
 

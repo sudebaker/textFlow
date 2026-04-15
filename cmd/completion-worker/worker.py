@@ -43,15 +43,33 @@ import time
 import redis
 import requests
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from prometheus_client import Counter, Histogram, start_http_server
 from rapidfuzz import fuzz
 from unidecode import unidecode
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
 from pkg.events_python import EventBus
 from app.config.settings import Settings
+
+try:
+    from sentence_transformers import SentenceTransformer
+    import torch
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"sentence-transformers not available: {e}")
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None
+    torch = None
 
 _settings = Settings()
 
@@ -62,10 +80,9 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
 FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
+EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
 # Prometheus metrics
 jobs_finalized_total = Counter(
@@ -120,6 +137,76 @@ class CompletionWorker:
         }
         # Spreadsheet pipeline (no embeddings, no metadata)
         self.spreadsheet_required_steps = {"extraction", "entities"}
+        # Initialize embedding service lazily (loaded on first use, not during startup)
+        self._embedding_service = None
+        self._embedding_service_loaded = False
+
+    def _get_embedding_service(self):
+        """Lazy loading of embedding service to avoid blocking startup."""
+        if self._embedding_service_loaded:
+            return self._embedding_service
+
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            logger.warning("sentence-transformers not available, inference embeddings disabled")
+            self._embedding_service_loaded = True
+            return None
+
+        try:
+            device = EMBEDDINGS_DEVICE if torch.cuda.is_available() else "cpu"
+            self._embedding_service = SentenceTransformer(
+                EMBEDDINGS_MODEL_PATH,
+                device=device
+            )
+            logger.info(f"Embedding service loaded with device={device}")
+        except Exception as e:
+            logger.warning(f"Failed to load embedding service: {e}")
+            self._embedding_service = None
+
+        self._embedding_service_loaded = True
+        return self._embedding_service
+
+    def _generate_inference_embeddings(
+        self, inferences_by_chunk: Dict[str, List[Dict]]
+    ) -> Dict[str, Dict[str, List[float]]]:
+        """Generate embeddings for inference texts.
+
+        Args:
+            inferences_by_chunk: Dict mapping chunk_id to list of inference dicts
+
+        Returns:
+            Dict mapping chunk_id to {inference_idx: embedding_vector}
+        """
+        if not self._get_embedding_service() or not inferences_by_chunk:
+            return {}
+
+        inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
+
+        for chunk_id, inferences in inferences_by_chunk.items():
+            if not inferences:
+                continue
+
+            texts = [inf.get("text", "") or "" for inf in inferences]
+            if not any(texts):
+                continue
+
+            try:
+                embeddings = self._get_embedding_service().encode(
+                    texts,
+                    batch_size=EMBEDDING_BATCH_SIZE,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                )
+
+                chunk_embeddings: Dict[str, List[float]] = {}
+                for idx, embedding in enumerate(embeddings):
+                    chunk_embeddings[f"inference_{idx}"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+
+                inference_embeddings[chunk_id] = chunk_embeddings
+                logger.debug(f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}")
+            except Exception as e:
+                logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
+
+        return inference_embeddings
 
     def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
         """Save finalized job results to JSON file.
@@ -690,6 +777,19 @@ class CompletionWorker:
                         )
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse micro_inferences JSON: {e}")
+
+            # --- Generate inference embeddings if not already in Redis ---
+            if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
+                logger.info("Generating inference embeddings on-the-fly...")
+                inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
+                if inference_embeddings_by_chunk:
+                    try:
+                        key = f"orchestrator:job:{job_id}:inference_embeddings"
+                        packed = msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True)
+                        self.redis_raw.set(key, packed)
+                        logger.info(f"Saved inference embeddings to Redis: {key}")
+                    except Exception as e:
+                        logger.warning(f"Failed to save inference embeddings to Redis: {e}")
 
             # --- Enrich chunks: embed embeddings, entity_ids, inferences ---
             enriched_chunks = []

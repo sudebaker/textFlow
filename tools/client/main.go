@@ -107,10 +107,11 @@ type EntityMinimal struct {
 }
 
 type InferenceItem struct {
-	Text       string   `json:"text"`
-	Confidence float32  `json:"confidence"`
-	EntityRefs []string `json:"entity_refs,omitempty"`
-	EntityID   string   `json:"entity_id,omitempty"`
+	Text       string    `json:"text"`
+	Confidence float32   `json:"confidence"`
+	EntityRefs []string  `json:"entity_refs,omitempty"`
+	EntityID   string    `json:"entity_id,omitempty"`
+	Embedding  []float32 `json:"embedding,omitempty"`
 }
 
 type MicroInference struct {

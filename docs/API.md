@@ -91,7 +91,7 @@ curl http://localhost:8080/health
 - `document_base64` (string, conditional): Base64-encoded document. Required if `document_url` is not provided.
 - `document_url` (string, conditional): URL to the document. Required if `document_base64` is not provided. Must be a valid HTTP/HTTPS URL.
 - `filename` (string, optional): Original filename for metadata tracking.
-- `features` (array, optional): Extra pipeline stages to enable. Currently supported: `"inferences"` (requires vLLM/inference-worker).
+- `features` (array, optional): Extra pipeline stages to enable. Supported: `"inferences"` (requires vLLM/inference-worker), `"inference_embeddings"` (generates vector embeddings for inferences, requires `"inferences"`).
 - `webhook_url` (string, optional): URL to notify when job completes.
 - `webhook_secret` (string, optional): Secret for `X-Signature-256` HMAC verification.
 
@@ -173,8 +173,9 @@ https://example.com/webhook
 
 **Parameters:**
 - `file` (file, required): The file to upload. See **Supported File Types** table above.
-- `features` (string, optional): Comma-separated list of extra pipeline features. Currently supported:
-   - `inferences` — Generate micro-inferences from extracted text using inference-worker (requires vLLM).
+- `features` (string, optional): Comma-separated list of extra pipeline features. Supported:
+   - `inferences` — Generate micro-inferences from extracted text (requires vLLM).
+   - `inference_embeddings` — Generate vector embeddings for inferences (requires `inferences`).
    - Max features per job and max characters per name are configurable (see **Data Constraints** section). Invalid features are silently ignored with a warning.
 - `diarize` (boolean, optional): **Audio files only.** When `true`, identifies speakers in audio transcription via Whisper's diarization. Default: `false`. Ignored for non-audio files.
 - `notify_webhook` (string, optional): Webhook URL to notify when job completes. If not provided, uses `WEBHOOK_URL` from server config.
@@ -228,6 +229,13 @@ curl -X POST http://localhost:8080/v1/documents/upload \
   -F "diarize=true" \
   -F "features=inferences" \
   -F "notify_webhook=https://myapp.com/webhook"
+```
+
+**Upload PDF with inferences and inference embeddings (slower, includes vectors):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@report.pdf" \
+  -F "features=inferences,inference_embeddings"
 ```
 
 **Upload PDF (basic processing, no extra features):**
@@ -415,6 +423,38 @@ When job completes with `features: ["inferences"]`, the `/v1/documents/{job_id}/
 }
 ```
 
+#### `inference_embeddings`
+Generates vector embeddings for each micro-inference text using BGE-M3. This enables semantic search and similarity matching on inference results.
+
+**Requirements:**
+- `inferences` feature must also be enabled (this feature has no effect without inferences)
+- BGE-M3 model mounted at `/models/bge-m3` in completion-worker container
+- completion-worker must have access to GPU or sufficient CPU resources
+
+**Pipeline Impact:**
+- Does NOT add a separate pipeline stage (embeddings are generated during job finalization)
+- Job flow remains: `extracting → embedding → entities → **inferences** → metadata → completed`
+- Increases finalization time by **10–15 minutes** depending on number of inferences
+
+**Output Format:**
+When job completes with `features: ["inferences", "inference_embeddings"]`, each inference in the `inferences` array includes an `embedding` field:
+
+```json
+{
+  "job_id": "job_xyz789abc",
+  "inferences": [
+    {
+      "text": "Document discusses quarterly revenue growth of 15%",
+      "confidence": 0.92,
+      "embedding": [-0.123, 0.456, -0.789, ...]  // 1024-dimensional vector
+    }
+  ]
+}
+```
+
+**Performance Note:**
+Embedding generation is CPU-intensive and runs during job finalization. For faster results without embeddings, use only `features=inferences`.
+
 **Feature Validation:**
 - Maximum **10 features per job** (configurable via `MAX_FEATURES_PER_JOB` env var)
 - Maximum **50 characters per feature name** (configurable via `MAX_FEATURE_NAME_LENGTH` env var)
@@ -431,6 +471,13 @@ When job completes with `features: ["inferences"]`, the `/v1/documents/{job_id}/
 curl -X POST http://localhost:8080/v1/documents/upload \
   -F "file=@document.pdf" \
   -F "features=inferences"
+```
+
+**Request with inferences and embeddings (slower, includes vectors):**
+```bash
+curl -X POST http://localhost:8080/v1/documents/upload \
+  -F "file=@document.pdf" \
+  -F "features=inferences,inference_embeddings"
 ```
 
 **Request with invalid feature (ignored, job processes normally):**

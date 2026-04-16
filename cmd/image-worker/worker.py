@@ -124,9 +124,17 @@ class ImageWorker:
                 }
                 if body.get("entity_types"):
                     job_message["entity_types"] = body["entity_types"]
+                if body.get("features"):
+                    job_message["features"] = body["features"]
+
+                # Determine target queues based on features
+                target_queues = ["embeddings", "entities", "metadata"]
+                features = body.get("features", [])
+                if "inferences" in features:
+                    target_queues.append("inferences")
 
                 job_message_json = json.dumps(job_message).encode()
-                for queue_name in ["embeddings", "entities", "metadata"]:
+                for queue_name in target_queues:
                     await self._channel.default_exchange.publish(
                         aio_pika.Message(
                             body=job_message_json,

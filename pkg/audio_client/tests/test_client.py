@@ -17,7 +17,7 @@ class TestWhisperClientPool:
         """Test default URL is used when env var not set."""
         with patch.dict("os.environ", {}, clear=False):
             client = WhisperClientPool()
-            assert "http://whisper:8080" in client._urls
+            assert "http://whisper:9666" in client._urls
 
     def test_custom_urls(self):
         """Test custom URLs from env var."""

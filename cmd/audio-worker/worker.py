@@ -45,11 +45,11 @@ class AudioWorker:
         self.event_bus = EventBus(self.redis_client)
         self.whisper_pool = WhisperClientPool()
         self.chunker = SegmentChunker()
+        self._channel = None
 
     async def _process_message_async(
         self,
         message: aio_pika.abc.AbstractIncomingMessage,
-        channel: aio_pika.abc.AbstractChannel,
     ) -> None:
         job_id = None
         async with message.process(requeue=False):
@@ -122,7 +122,7 @@ class AudioWorker:
 
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in ["embeddings", "entities", "metadata"]:
-                    await channel.default_exchange.publish(
+                    await self._channel.default_exchange.publish(
                         aio_pika.Message(
                             body=job_message_json,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
@@ -146,10 +146,10 @@ class AudioWorker:
 
     async def connect(self) -> aio_pika.abc.AbstractConnection:
         connection = await aio_pika.connect_robust(RABBITMQ_URL)
-        channel = await connection.channel()
-        await channel.set_qos(prefetch_count=PREFETCH_COUNT)
+        self._channel = await connection.channel()
+        await self._channel.set_qos(prefetch_count=PREFETCH_COUNT)
 
-        queue = await channel.declare_queue(QUEUE_NAME, durable=True)
+        queue = await self._channel.declare_queue(QUEUE_NAME, durable=True)
         await queue.consume(self._process_message_async)
 
         return connection

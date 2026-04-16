@@ -155,7 +155,8 @@ class TestInferenceWorker:
         }
 
         with patch("worker.LLM_URL", ""):
-            worker.process(ch, method, None, json.dumps(message).encode())
+            with patch("worker.BATCH_ENABLED", False):
+                worker.process(ch, method, None, json.dumps(message).encode())
 
         worker.event_bus.publish_job_inference_chunk_progress.assert_called_once_with(
             "job-123",
@@ -368,3 +369,132 @@ class TestInferenceWorker:
         key1 = worker._cache_key("hello world", "catastro")
         key2 = worker._cache_key("hello world", "notariado")
         assert key1 != key2
+
+
+class TestBatchProcessing:
+    """Tests for batch inference processing."""
+
+    @pytest.fixture
+    def worker(self):
+        with patch("redis.from_url"):
+            return InferenceWorker()
+
+    def test_batch_extracts_multiple_chunks(self, worker):
+        """Batch call processes multiple chunks in one LLM call."""
+        worker.llm_model_id = "test-model"
+        worker.llm_max_model_len = 8192
+
+        chunks = [
+            {"chunk_id": "chunk_001", "text": "Text about property values.", "source_type": "catastro", "entities": []},
+            {"chunk_id": "chunk_002", "text": "Text about bank accounts.", "source_type": "bancario", "entities": []},
+        ]
+
+        batch_response_content = json.dumps([
+            {"passage_id": "chunk_001", "facts": [{"text": "Property worth 500k", "confidence": 0.9, "entity_refs": ["500k"]}]},
+            {"passage_id": "chunk_002", "facts": [{"text": "Bank account details", "confidence": 0.85, "entity_refs": []}]},
+        ])
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.CACHE_ENABLED", False):
+                with patch("requests.post") as mock_post:
+                    mock_response = Mock()
+                    mock_response.raise_for_status = Mock()
+                    mock_response.json.return_value = {
+                        "choices": [{"message": {"content": batch_response_content}}]
+                    }
+                    mock_post.return_value = mock_response
+
+                    results = worker.extract_inferences_batch(chunks)
+
+                    assert len(results) == 2
+                    assert "chunk_001" in results
+                    assert "chunk_002" in results
+                    assert len(results["chunk_001"]) == 1
+                    assert results["chunk_001"][0]["text"] == "Property worth 500k"
+                    mock_post.assert_called_once()
+
+    def test_batch_fallback_on_llm_failure(self, worker):
+        """When batch LLM call fails, falls back to individual processing."""
+        worker.llm_model_id = "test-model"
+        worker.llm_max_model_len = 4096
+
+        chunks = [
+            {"chunk_id": "chunk_001", "text": "Short text.", "source_type": "generico", "entities": []},
+        ]
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("requests.post") as mock_post:
+                mock_post.side_effect = requests.RequestException("Connection refused")
+
+                with pytest.raises(requests.RequestException):
+                    worker.extract_inferences_batch(chunks)
+
+    def test_parse_batch_response_handles_partial(self, worker):
+        """Batch parser handles missing passage_ids gracefully."""
+        raw_content = '[{"passage_id": "chunk_001", "facts": [{"text": "Fact 1", "confidence": 0.9, "entity_refs": []}]}, {"passage_id": "chunk_003", "facts": []}]'
+
+        results = worker._parse_batch_response(raw_content, ["chunk_001", "chunk_002", "chunk_003"])
+
+        assert len(results) == 3
+        assert len(results["chunk_001"]) == 1
+        assert len(results["chunk_002"]) == 0
+        assert len(results["chunk_003"]) == 0
+
+    def test_parse_batch_response_handles_empty(self, worker):
+        """Batch parser handles empty or invalid responses."""
+        results = worker._parse_batch_response("", ["chunk_001"])
+        assert len(results) == 1
+        assert results["chunk_001"] == []
+
+    def test_batch_buffer_accumulation(self, worker):
+        """Buffer accumulates messages and flushes when full."""
+        with patch("worker.BATCH_ENABLED", True):
+            with patch("worker.BATCH_SIZE", 2):
+                assert len(worker._batch_buffer) == 0
+
+    def test_process_single_mode_disabled(self, worker):
+        """When batch is disabled, process() calls _process_single."""
+        worker.llm_model_id = "test-model"
+        worker.llm_max_model_len = 4096
+        worker.redis_client = Mock()
+
+        with patch("worker.BATCH_ENABLED", False):
+            with patch.object(worker, "_process_single") as mock_single:
+                ch = Mock()
+                method = Mock()
+                method.delivery_tag = "tag1"
+                message = json.dumps({
+                    "job_id": "test-job",
+                    "chunk_id": 1,
+                    "chunk_text": "Test text",
+                    "entities": [],
+                    "source_type": "generico",
+                    "total_chunks": 1,
+                }).encode()
+
+                worker.process(ch, method, None, message)
+                mock_single.assert_called_once()
+
+    def test_process_batch_mode_accumulates(self, worker):
+        """When batch is enabled, process() accumulates in buffer."""
+        worker.llm_model_id = "test-model"
+        worker.llm_max_model_len = 4096
+        worker.redis_client = Mock()
+
+        with patch("worker.BATCH_ENABLED", True):
+            with patch("worker.BATCH_SIZE", 10):
+                ch = Mock()
+                method = Mock()
+                method.delivery_tag = "tag1"
+                message = json.dumps({
+                    "job_id": "test-job",
+                    "chunk_id": 1,
+                    "chunk_text": "Test text for accumulation",
+                    "entities": [],
+                    "source_type": "generico",
+                    "total_chunks": 5,
+                }).encode()
+
+                initial_len = len(worker._batch_buffer)
+                worker.process(ch, method, None, message)
+                assert len(worker._batch_buffer) == initial_len + 1

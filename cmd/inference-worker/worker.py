@@ -56,6 +56,7 @@ import logging
 import time
 import re
 import hashlib
+import threading
 import redis
 import pika
 import requests
@@ -89,10 +90,14 @@ MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks
 MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
 CACHE_TTL_SECONDS = int(os.getenv("INFERENCE_CACHE_TTL", "86400"))
 CACHE_ENABLED = os.getenv("INFERENCE_CACHE_ENABLED", "true").lower() == "true"
+BATCH_ENABLED = os.getenv("INFERENCE_BATCH_ENABLED", "true").lower() == "true"
+BATCH_SIZE = max(2, min(10, int(os.getenv("INFERENCE_BATCH_SIZE", "5"))))
+BATCH_TIMEOUT_MS = max(100, min(2000, int(os.getenv("INFERENCE_BATCH_TIMEOUT_MS", "500"))))
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
 job_duration = Histogram("inference_worker_job_duration_seconds", "Job duration")
+batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
 
 
 class InferenceWorker:
@@ -148,6 +153,10 @@ class InferenceWorker:
         """
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
+
+        # Batch processing buffer
+        self._batch_buffer: List[Dict[str, Any]] = []
+        self._batch_lock = threading.Lock()
 
         # Discover model at startup (once, cached)
         if LLM_URL:
@@ -554,7 +563,405 @@ Respond with ONLY the JSON array:"""
             logger.error(f"Error extracting inferences: {e}")
             return []
 
+    def extract_inferences_batch(
+        self,
+        chunks_data: List[Dict[str, Any]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Extract inferences from multiple chunks in a single LLM call.
+
+        Sends all chunks to the LLM at once with a batch prompt.
+        Falls back to individual processing if the batch call fails.
+
+        Args:
+            chunks_data: List of dicts, each with chunk_id, text, source_type, entities
+
+        Returns:
+            Dict mapping chunk_id -> list of inference dicts
+        """
+        if not LLM_URL or not self.llm_model_id:
+            return {c["chunk_id"]: [] for c in chunks_data}
+
+        results: Dict[str, List[Dict[str, Any]]] = {
+            c["chunk_id"]: [] for c in chunks_data
+        }
+        if not chunks_data:
+            return results
+
+        try:
+            passages = []
+            for chunk in chunks_data:
+                word_count = len(chunk["text"].split())
+                if word_count < 200:
+                    max_facts = MAX_INFERENCES_SHORT
+                elif word_count < 500:
+                    max_facts = MAX_INFERENCES_MEDIUM
+                else:
+                    max_facts = MAX_INFERENCES_LONG
+                passages.append({
+                    "passage_id": str(chunk["chunk_id"]),
+                    "text": chunk["text"],
+                    "max_facts": max_facts,
+                })
+
+            passages_text = "\n\n---\n\n".join(
+                f'PASSAGE {p["passage_id"]} (extract up to {p["max_facts"]} facts):\n{p["text"]}'
+                for p in passages
+            )
+
+            system_prompt = """You are a precise fact-extraction engine. You will receive multiple text passages, each identified by a passage_id.
+
+Rules:
+- For EACH passage, extract the most important facts as SYNTHESIZED, CONDENSED statements.
+- Each fact must be independently understandable without reading the original text.
+- Mention specific values, names, dates, or amounts whenever they are in the text.
+- Do NOT include vague or generic statements.
+- Respond ONLY with a valid JSON array. No explanation. No text outside the JSON.
+
+Each object in the array must have:
+- "passage_id": the passage identifier (string)
+- "facts": array of fact objects, each with "text", "confidence" (0.0-1.0), "entity_refs" (list of strings)"""
+
+            user_prompt = f"""Extract facts from these {len(passages)} passages:
+
+{passages_text}
+
+Respond with ONLY the JSON array:"""
+
+            max_tokens = max(500, (self.llm_max_model_len or 4096) - 1500)
+
+            payload = {
+                "model": self.llm_model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.1,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+
+            response = requests.post(
+                f"{LLM_URL}/v1/chat/completions",
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            completion_text = (
+                result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            )
+
+            batch_results = self._parse_batch_response(
+                completion_text, [c["chunk_id"] for c in chunks_data]
+            )
+            results.update(batch_results)
+            return results
+
+        except Exception as e:
+            logger.error(f"Batch extraction failed ({len(chunks_data)} chunks): {e}")
+            raise
+
+    def _parse_batch_response(
+        self, content: str, expected_chunk_ids: List
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Parse batch LLM response and map results to individual chunk_ids.
+
+        Returns dict mapping chunk_id -> list of validated inferences.
+        """
+        results: Dict[str, List[Dict[str, Any]]] = {
+            str(cid): [] for cid in expected_chunk_ids
+        }
+
+        try:
+            # Clean markdown code blocks
+            content = re.sub(r"```.*?\n", "", content, flags=re.DOTALL)
+            content = re.sub(r"```", "", content)
+
+            # Try direct JSON parse first (most common case)
+            data = None
+
+            # Method 1: Direct parse of cleaned content
+            try:
+                data = json.loads(content.strip())
+                if not isinstance(data, list):
+                    data = None
+            except json.JSONDecodeError:
+                pass
+
+            # Method 2: Extract JSON array using bracket counting
+            if data is None:
+                json_str = self._extract_outermost_array(content)
+                if json_str:
+                    try:
+                        data = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        pass
+
+            if data is None:
+                logger.warning("No JSON array found in batch response")
+                return results
+
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                passage_id = str(item.get("passage_id", ""))
+                facts = item.get("facts", [])
+
+                if passage_id not in results:
+                    continue
+
+                validated = []
+                for fact in facts:
+                    if isinstance(fact, dict) and "text" in fact:
+                        conf = float(fact.get("confidence", 0.5))
+                        entity_refs = fact.get("entity_refs", fact.get("entities", []))
+                        if conf >= MIN_CONFIDENCE_THRESHOLD:
+                            validated.append({
+                                "text": fact["text"],
+                                "confidence": conf,
+                                "entity_refs": entity_refs if isinstance(entity_refs, list) else [],
+                            })
+                results[passage_id] = validated
+
+            found = [cid for cid in results if results[cid]]
+            logger.info(
+                f"Batch parsed: {len(found)}/{len(expected_chunk_ids)} chunks have results"
+            )
+            return results
+
+        except Exception as e:
+            logger.error(f"Error parsing batch response: {e}")
+            return results
+
     def process(self, ch, method, properties, body):
+        """
+        Process an inference job from RabbitMQ inferences queue.
+
+        When batch processing is enabled, messages are accumulated in a buffer
+        and processed together when the buffer is full or a timeout expires.
+        When batch processing is disabled, each message is processed individually.
+        """
+        if not BATCH_ENABLED:
+            self._process_single(ch, method, properties, body)
+            return
+
+        # Batch mode: accumulate message in buffer
+        try:
+            message = json.loads(body)
+            chunk_text = message.get("chunk_text", "")
+            if not chunk_text:
+                jobs_total.labels(status="no_text").inc()
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                return
+
+            with self._batch_lock:
+                self._batch_buffer.append({
+                    "ch": ch,
+                    "method": method,
+                    "body": body,
+                    "message": message,
+                })
+
+                if len(self._batch_buffer) >= BATCH_SIZE:
+                    batch = self._batch_buffer[:]
+                    self._batch_buffer.clear()
+                    self._process_batch(batch)
+                    return
+
+            # Buffer not full yet - will be flushed by timer or next message
+        except Exception as e:
+            logger.error(f"Error in batch accumulation: {e}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+    def flush_batch_buffer(self):
+        """Flush any pending messages in the batch buffer. Called by pika call_later callback."""
+        with self._batch_lock:
+            if not self._batch_buffer:
+                return
+            batch = self._batch_buffer[:]
+            self._batch_buffer.clear()
+
+        if batch:
+            logger.info(f"Timer flush: processing {len(batch)} buffered messages")
+            try:
+                self._process_batch(batch)
+            except Exception as e:
+                logger.error(f"Error in timer flush batch: {e}")
+
+    
+
+    def _process_batch(self, batch: List[Dict[str, Any]]):
+        """
+        Process a batch of accumulated messages using a single LLM call.
+
+        For each chunk in the batch:
+        1. Check cache (skip LLM if hit)
+        2. Group uncached chunks for batch LLM call
+        3. Fallback to individual processing if batch fails
+        """
+        start_time = time.time()
+        batch_counter.labels(type="batch_start").inc()
+        logger.info(f"Processing batch of {len(batch)} chunks")
+
+        # Separate cached vs uncached
+        cached_results = {}
+        uncached_chunks = []
+        uncached_indices = []
+
+        for i, item in enumerate(batch):
+            msg = item["message"]
+            chunk_text = msg.get("chunk_text", "")
+            source_type = msg.get("source_type", "generico")
+            chunk_id = msg.get("chunk_id")
+
+            cache_key = self._cache_key(chunk_text, source_type)
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                validated = [
+                    {
+                        "text": inf.get("text", ""),
+                        "confidence": float(inf.get("confidence", 0.5)),
+                        "entity_refs": inf.get("entity_refs", []),
+                    }
+                    for inf in cached
+                    if isinstance(inf, dict) and "text" in inf
+                    and float(inf.get("confidence", 0.5)) >= MIN_CONFIDENCE_THRESHOLD
+                ]
+                cached_results[str(chunk_id)] = validated
+                batch_counter.labels(type="cache_hit").inc()
+            else:
+                uncached_chunks.append({
+                    "chunk_id": str(chunk_id),
+                    "text": chunk_text,
+                    "source_type": source_type,
+                    "entities": msg.get("entities", []),
+                })
+                uncached_indices.append(i)
+
+        # Process uncached chunks via batch LLM call
+        if uncached_chunks:
+            try:
+                batch_results = self.extract_inferences_batch(uncached_chunks)
+                for chunk in uncached_chunks:
+                    cid = chunk["chunk_id"]
+                    cache_key = self._cache_key(chunk["text"], chunk["source_type"])
+                    raw = batch_results.get(cid, [])
+                    self._set_cached(cache_key, raw)
+                cached_results.update(batch_results)
+                batch_counter.labels(type="batch_success").inc()
+            except Exception as e:
+                logger.warning(f"Batch LLM call failed, falling back to individual: {e}")
+                batch_counter.labels(type="batch_fallback").inc()
+                # Fallback: process each uncached chunk individually
+                for chunk in uncached_chunks:
+                    try:
+                        inferences = self.extract_inferences(
+                            chunk_text=chunk["text"],
+                            entities=chunk.get("entities", []),
+                            source_type=chunk.get("source_type", "generico"),
+                        )
+                        cached_results[chunk["chunk_id"]] = inferences
+                    except Exception as individual_error:
+                        logger.error(f"Individual fallback also failed: {individual_error}")
+                        cached_results[chunk["chunk_id"]] = []
+
+        # Save results for each chunk in batch
+        for item in batch:
+            msg = item["message"]
+            ch = item["ch"]
+            method = item["method"]
+            job_id = msg.get("job_id")
+            chunk_id = msg.get("chunk_id")
+            total_chunks = msg.get("total_chunks", 1)
+
+            inferences = cached_results.get(str(chunk_id), [])
+
+            chunk_result = {
+                "chunk_id": chunk_id,
+                "inferences": inferences,
+            }
+
+            inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
+            self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
+            self.redis_client.expire(inferences_raw_key, 86400)
+
+            remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
+            remaining = self.redis_client.decr(remaining_key)
+
+            logger.info(
+                f"Inference completed for job: {job_id}, chunk: {chunk_id}, "
+                f"inferences: {len(inferences)}, remaining chunks: {remaining}"
+            )
+
+            if remaining <= 0:
+                self._assemble_final_results(job_id)
+                jobs_total.labels(status="success").inc()
+            else:
+                chunks_done = total_chunks - remaining
+                self.event_bus.publish_job_inference_chunk_progress(
+                    job_id, chunks_done=chunks_done, chunks_total=total_chunks
+                )
+                jobs_total.labels(status="chunk_processed").inc()
+
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        duration = time.time() - start_time
+        job_duration.observe(duration)
+
+    def _assemble_final_results(self, job_id: str):
+        """Assemble final inference results when all chunks complete."""
+        assembly_lock_key = f"orchestrator:job:{job_id}:inferences:assembly_lock"
+        acquired = self.redis_client.setnx(assembly_lock_key, "1")
+        self.redis_client.expire(assembly_lock_key, 3600)
+
+        if not acquired:
+            logger.warning(f"Assembly lock already held for job {job_id}, skipping")
+            return
+
+        try:
+            inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
+            raw_results = self.redis_client.lrange(inferences_raw_key, 0, -1)
+
+            assembled = []
+            for raw_json in raw_results:
+                try:
+                    chunk_data = json.loads(raw_json)
+                    assembled.append(chunk_data)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse intermediate result: {e}")
+
+            assembled.sort(key=lambda x: x.get("chunk_id") or 0)
+
+            final_key = f"orchestrator:job:{job_id}:micro_inferences"
+            self.redis_client.set(final_key, json.dumps(assembled))
+
+            remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
+            self.redis_client.delete(inferences_raw_key)
+            self.redis_client.delete(remaining_key)
+
+            self.redis_client.hset(
+                f"orchestrator:job:{job_id}:steps", "inferences", "completed"
+            )
+
+            self.event_bus.publish_job_progress(job_id, 80, "inferences")
+
+            logger.info(
+                f"Inferences finalized for job: {job_id}, "
+                f"total chunks: {len(assembled)}, "
+                f"total inferences: {sum(len(c['inferences']) for c in assembled)}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error assembling final inferences: {e}")
+            self.redis_client.hset(
+                f"orchestrator:job:{job_id}:steps", "inferences", "failed"
+            )
+            jobs_total.labels(status="assembly_error").inc()
+
+    def _process_single(self, ch, method, properties, body):
         """
         Process an inference job from RabbitMQ inferences queue.
 
@@ -882,17 +1289,55 @@ def main():
 
     worker = InferenceWorker()
 
+    if BATCH_ENABLED:
+        logger.info(
+            f"Batch mode ENABLED: batch_size={BATCH_SIZE}, "
+            f"timeout={BATCH_TIMEOUT_MS}ms, cache={'ON' if CACHE_ENABLED else 'OFF'}"
+        )
+    else:
+        logger.info(f"Batch mode DISABLED, cache={'ON' if CACHE_ENABLED else 'OFF'}")
+
     while not _stopping:
         try:
             with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
+                # Clear batch buffer on reconnect — stale channel/delivery_tag refs
+                # are invalid after a new connection. Unacked messages are requeued
+                # by RabbitMQ automatically when the old connection drops.
+                if BATCH_ENABLED:
+                    with worker._batch_lock:
+                        worker._batch_buffer.clear()
+
                 logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
                 declare_queue(channel, QUEUE_NAME)
 
-                # Set prefetch count for backpressure control
-                prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
+                if BATCH_ENABLED:
+                    prefetch_count = int(os.getenv("PREFETCH_COUNT", str(BATCH_SIZE * 2)))
+                else:
+                    prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
                 channel.basic_qos(prefetch_count=prefetch_count)
                 logger.info(f"Set prefetch_count to {prefetch_count}")
+
+                # Schedule recurring flush timer using pika's call_later.
+                # Runs on the same thread as message callbacks — no race conditions
+                # with channel operations. Reschedules itself on each tick.
+                if BATCH_ENABLED:
+                    def _schedule_flush():
+                        if _stopping:
+                            return
+                        try:
+                            worker.flush_batch_buffer()
+                        except Exception as e:
+                            logger.error(f"Error in flush callback: {e}")
+                        if not _stopping:
+                            try:
+                                connection.call_later(
+                                    BATCH_TIMEOUT_MS / 1000.0, _schedule_flush
+                                )
+                            except Exception:
+                                pass  # Connection may be closing
+
+                    connection.call_later(BATCH_TIMEOUT_MS / 1000.0, _schedule_flush)
 
                 channel.basic_consume(
                     queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False

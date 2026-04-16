@@ -616,8 +616,8 @@ class TestBatchProcessing:
 
                     worker.extract_inferences_batch(chunks)
                     call_kwargs = mock_post.call_args[1]
-                    # 10 chunks * 15s = 150s, capped at 120s
-                    assert call_kwargs["timeout"] == 120
+                    # 10 chunks * 60s = 600s, capped at 180s
+                    assert call_kwargs["timeout"] == 180
 
     def test_cache_key_includes_inference_limits(self, worker):
         """Cache key changes when MAX_INFERENCES_SHORT/MEDIUM/LONG change."""
@@ -700,3 +700,55 @@ class TestBatchProcessing:
 
             worker.process(ch, method, None, message)
             ch.basic_nack.assert_called_once_with(delivery_tag="tag1", requeue=False)
+
+    def test_single_llm_retry_on_timeout(self, worker):
+        """Single LLM call retries on timeout and succeeds on second attempt."""
+        worker.llm_model_id = "test-model"
+        worker.llm_max_model_len = 4096
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.CACHE_ENABLED", False):
+                with patch("worker.LLM_TIMEOUT", 60):
+                    with patch("worker.LLM_RETRIES", 2):
+                        with patch("worker.LLM_RETRY_BACKOFF", 0.01):
+                            with patch("requests.post") as mock_post:
+                                mock_response = Mock()
+                                mock_response.raise_for_status = Mock()
+                                mock_response.json.return_value = {
+                                    "choices": [{"message": {"content": '[{"text": "fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                                }
+                                mock_post.side_effect = [
+                                    requests.Timeout("Connection timed out"),
+                                    mock_response,
+                                ]
+
+                                result = worker.extract_inferences("test text", [], "generico")
+                                assert len(result) == 1
+                                assert mock_post.call_count == 2
+
+    def test_batch_llm_retry_on_timeout(self, worker):
+        """Batch LLM call retries on timeout."""
+        worker.llm_model_id = "test-model"
+        worker.llm_max_model_len = 4096
+
+        chunks = [
+            {"chunk_id": "chunk_0", "text": "Text 0", "source_type": "generico", "entities": []},
+        ]
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.CACHE_ENABLED", False):
+                with patch("worker.LLM_RETRIES", 2):
+                    with patch("worker.LLM_RETRY_BACKOFF", 0.01):
+                        with patch("requests.post") as mock_post:
+                            mock_response = Mock()
+                            mock_response.raise_for_status = Mock()
+                            mock_response.json.return_value = {
+                                "choices": [{"message": {"content": "[]"}}]
+                            }
+                            mock_post.side_effect = [
+                                requests.Timeout("Connection timed out"),
+                                mock_response,
+                            ]
+
+                            worker.extract_inferences_batch(chunks)
+                            assert mock_post.call_count == 2

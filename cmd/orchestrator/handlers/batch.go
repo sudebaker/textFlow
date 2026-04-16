@@ -55,6 +55,29 @@ func validateWebhookURL(webhookURL string) error {
 	return nil
 }
 
+// validFeatures is the whitelist of allowed feature names.
+// Must be kept in sync with the whitelist in cmd/orchestrator/main.go validateFeatures().
+var validFeatures = map[string]bool{
+	"inferences":           true,
+	"inference_embeddings": true,
+}
+
+// validateFeatureList validates and normalizes a list of feature names.
+// Invalid features are filtered out. Returns the cleaned list.
+func validateFeatureList(features []string) []string {
+	validated := []string{}
+	seen := map[string]bool{}
+	for _, f := range features {
+		normalized := strings.TrimSpace(strings.ToLower(f))
+		if normalized == "" || !validFeatures[normalized] || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		validated = append(validated, normalized)
+	}
+	return validated
+}
+
 func CreateBatchHandler(c *gin.Context) {
 	var req BatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -74,6 +97,9 @@ func CreateBatchHandler(c *gin.Context) {
 			return
 		}
 	}
+
+	// Validate and normalize features
+	validatedFeatures := validateFeatureList(req.Features)
 
 	if len(req.Documents) > 100 {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
@@ -131,6 +157,11 @@ func CreateBatchHandler(c *gin.Context) {
 			redisInst.SetJobStatus(ctx, jobID, models.StatusPending)
 			redisInst.SetJobCreated(ctx, jobID)
 
+			// Store features in Redis for completion-worker
+			if len(validatedFeatures) > 0 {
+				redisInst.SetJobFeatures(ctx, jobID, validatedFeatures)
+			}
+
 			redisclient.GetClient().HSet(ctx, redisclient.Key("job", jobID, "meta"), "batch_id", batchID)
 			redisclient.GetClient().SAdd(ctx, batchJobsKey, jobID)
 			redisclient.GetClient().Expire(ctx, batchJobsKey, 24*time.Hour)
@@ -142,7 +173,7 @@ func CreateBatchHandler(c *gin.Context) {
 			jobMsg := &models.JobMessage{
 				JobID:    jobID,
 				Filename: doc.Filename,
-				Features: req.Features,
+				Features: validatedFeatures,
 			}
 
 			mqBroker.PublishJobMessage(ctx, jobMsg)

@@ -1073,23 +1073,13 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate features BEFORE marking job as created (SEC-002 fix)
-	// Read features from form (e.g., "inferences")
-	// Features allow optional pipeline stages to be enabled per-job
-	// Valid features: "inferences" (micro-inference generation)
+	// Validate features from form (e.g., "inferences")
 	featuresStr := c.PostForm("features")
 	var validatedFeatures []string
 	if featuresStr != "" {
-		var err error
-		validatedFeatures, err = validateFeatures(featuresStr, cfg)
-		if err != nil {
-			// Feature name too long
-			logger.Warn().Str("job_id", jobID).Err(err).Msg("Feature validation failed")
-			c.JSON(http.StatusBadRequest, models.ErrorResponse{
-				Error:  "invalid_features",
-				Detail: err.Error(),
-			})
-			return
+		validatedFeatures = validateFeatures(featuresStr)
+		if len(validatedFeatures) == 0 {
+			logger.Warn().Str("job_id", jobID).Str("features", featuresStr).Msg("No valid features found after validation")
 		}
 	}
 
@@ -1327,53 +1317,30 @@ func downloadHandler(c *gin.Context) {
 }
 
 // validateFeatures validates, deduplicates, and normalizes feature strings.
-// It enforces feature name length and total count limits.
-// Returns a slice of normalized (lowercase) valid features and an error if limits are exceeded.
-// Invalid features (not in whitelist) are silently ignored with a warning log + metric.
-// Returns an error if: any feature name exceeds MaxFeatureNameLen.
-// Invalid or duplicate features are silently filtered out — only whitelisted features are kept.
-func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) {
+// Only whitelisted features are kept. Invalid or duplicate features are silently filtered.
+func validateFeatures(featuresStr string) []string {
 	if featuresStr == "" {
-		return []string{}, nil
+		return nil
 	}
 
-	// Whitelist of valid features
 	validFeatureSet := map[string]bool{
 		"inferences":           true,
 		"inference_embeddings": true,
-		// Future features: "classification": true, "extraction": true, etc.
 	}
 
-	// Parse comma-separated list
 	rawFeatures := strings.Split(featuresStr, ",")
 
-	// Normalize and deduplicate
 	seenFeatures := make(map[string]bool)
 	validatedFeatures := []string{}
 
 	for _, f := range rawFeatures {
-		// Trim whitespace
 		f = strings.TrimSpace(f)
 		if f == "" {
 			continue
 		}
 
-		// Check feature name length (hard limit per feature)
-		if len(f) > cfg.MaxFeatureNameLen {
-			metrics.InvalidFeaturesTotal.WithLabelValues("too_long").Inc()
-			featurePreview := f
-			if len(featurePreview) > 20 {
-				featurePreview = featurePreview[:20] + "..."
-			}
-			logger.Warn().Str("feature", featurePreview).Int("length", len(f)).Int("max_length", cfg.MaxFeatureNameLen).
-				Msg("Feature name exceeds max length, skipping")
-			continue
-		}
-
-		// Normalize to lowercase
 		normalized := strings.ToLower(f)
 
-		// Check if feature is whitelisted
 		if !validFeatureSet[normalized] {
 			metrics.InvalidFeaturesTotal.WithLabelValues("unknown_feature").Inc()
 			logger.Warn().Str("feature", f).
@@ -1381,7 +1348,6 @@ func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) 
 			continue
 		}
 
-		// Deduplicate
 		if seenFeatures[normalized] {
 			metrics.InvalidFeaturesTotal.WithLabelValues("duplicate").Inc()
 			logger.Warn().Str("feature", normalized).
@@ -1393,5 +1359,5 @@ func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) 
 		validatedFeatures = append(validatedFeatures, normalized)
 	}
 
-	return validatedFeatures, nil
+	return validatedFeatures
 }

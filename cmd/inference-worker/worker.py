@@ -39,6 +39,13 @@ Environment Variables:
     - LLM_MODEL: Fallback model ID (optional, used if auto-discovery fails)
     - METRICS_PORT: Prometheus metrics port (default: 8006)
     - PREFETCH_COUNT: RabbitMQ prefetch count (default: 3)
+    - MAX_CHUNK_WORDS: Maximum chunk size in words before skipping (default: 5000)
+    - INFERENCE_BATCH_ENABLED: Enable batch processing (default: true)
+    - INFERENCE_BATCH_SIZE: Chunks per batch LLM call (default: 5, range: 2-10)
+    - INFERENCE_BATCH_TIMEOUT_MS: Flush timeout in ms (default: 500)
+    - INFERENCE_CACHE_ENABLED: Enable Redis cache (default: true)
+    - INFERENCE_CACHE_TTL: Cache TTL in seconds (default: 86400)
+    - INFERENCE_RAW_TTL: TTL for intermediate Redis results in seconds (default: 86400)
 
 Key Features:
     - Thinking-tag handling: Removes <think>...</think> blocks from LLM responses
@@ -90,9 +97,11 @@ MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks
 MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
 CACHE_TTL_SECONDS = int(os.getenv("INFERENCE_CACHE_TTL", "86400"))
 CACHE_ENABLED = os.getenv("INFERENCE_CACHE_ENABLED", "true").lower() == "true"
+RAW_TTL_SECONDS = int(os.getenv("INFERENCE_RAW_TTL", "86400"))
 BATCH_ENABLED = os.getenv("INFERENCE_BATCH_ENABLED", "true").lower() == "true"
 BATCH_SIZE = max(2, min(10, int(os.getenv("INFERENCE_BATCH_SIZE", "5"))))
 BATCH_TIMEOUT_MS = max(100, min(2000, int(os.getenv("INFERENCE_BATCH_TIMEOUT_MS", "500"))))
+MAX_CHUNK_WORDS = int(os.getenv("MAX_CHUNK_WORDS", "5000"))
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
@@ -282,10 +291,30 @@ class InferenceWorker:
         return None
 
     def _cache_key(self, chunk_text: str, source_type: str) -> str:
-        """Generate a deterministic cache key from chunk content, source type, and model."""
-        content = f"{chunk_text}:{source_type}:{self.llm_model_id or 'unknown'}"
+        """Generate a deterministic cache key from chunk content, source type, model, and config."""
+        content = (
+            f"{chunk_text}:{source_type}:{self.llm_model_id or 'unknown'}:"
+            f"{MIN_CONFIDENCE_THRESHOLD}:"
+            f"{MAX_INFERENCES_SHORT}:{MAX_INFERENCES_MEDIUM}:{MAX_INFERENCES_LONG}"
+        )
         text_hash = hashlib.sha256(content.encode()).hexdigest()
         return f"inference:cache:{text_hash}"
+
+    def _validate_cached_inferences(
+        self, cached: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Validate and filter cached inferences by confidence threshold."""
+        validated = []
+        for inf in cached:
+            if isinstance(inf, dict) and "text" in inf:
+                conf = float(inf.get("confidence", 0.5))
+                if conf >= MIN_CONFIDENCE_THRESHOLD:
+                    validated.append({
+                        "text": inf.get("text", ""),
+                        "confidence": conf,
+                        "entity_refs": inf.get("entity_refs", []),
+                    })
+        return validated
 
     def _get_cached(self, cache_key: str) -> Optional[List[Dict[str, Any]]]:
         """Retrieve cached inferences from Redis. Returns None on miss or error."""
@@ -409,16 +438,7 @@ class InferenceWorker:
         cache_key = self._cache_key(chunk_text, source_type)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            validated_cached = []
-            for inf in cached:
-                if isinstance(inf, dict) and "text" in inf:
-                    conf = float(inf.get("confidence", 0.5))
-                    if conf >= MIN_CONFIDENCE_THRESHOLD:
-                        validated_cached.append({
-                            "text": inf.get("text", ""),
-                            "confidence": conf,
-                            "entity_refs": inf.get("entity_refs", []),
-                        })
+            validated_cached = self._validate_cached_inferences(cached)
             logger.info(f"Returning {len(validated_cached)} cached inferences (filtered from {len(cached)})")
             return validated_cached
 
@@ -641,10 +661,12 @@ Respond with ONLY the JSON array:"""
                 "chat_template_kwargs": {"enable_thinking": False},
             }
 
+            batch_timeout = max(30, min(120, len(chunks_data) * 15))
+
             response = requests.post(
                 f"{LLM_URL}/v1/chat/completions",
                 json=payload,
-                timeout=60,
+                timeout=batch_timeout,
             )
             response.raise_for_status()
 
@@ -751,12 +773,32 @@ Respond with ONLY the JSON array:"""
         # Batch mode: accumulate message in buffer
         try:
             message = json.loads(body)
+
+            required_fields = ["job_id", "chunk_id", "chunk_text", "total_chunks"]
+            missing = [f for f in required_fields if f not in message]
+            if missing:
+                logger.error(f"Missing required fields: {missing}")
+                jobs_total.labels(status="invalid_message").inc()
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                return
+
             chunk_text = message.get("chunk_text", "")
             if not chunk_text:
                 jobs_total.labels(status="no_text").inc()
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
+            word_count = len(chunk_text.split())
+            if word_count > MAX_CHUNK_WORDS:
+                logger.warning(
+                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
+                    f"job={message.get('job_id')}, chunk={message.get('chunk_id')}"
+                )
+                jobs_total.labels(status="chunk_too_large").inc()
+                self._store_empty_result(ch, method, message)
+                return
+
+            batch_to_process = None
             with self._batch_lock:
                 self._batch_buffer.append({
                     "ch": ch,
@@ -766,12 +808,13 @@ Respond with ONLY the JSON array:"""
                 })
 
                 if len(self._batch_buffer) >= BATCH_SIZE:
-                    batch = self._batch_buffer[:]
+                    batch_to_process = self._batch_buffer[:]
                     self._batch_buffer.clear()
-                    self._process_batch(batch)
-                    return
 
-            # Buffer not full yet - will be flushed by timer or next message
+            # Process batch OUTSIDE the lock to avoid blocking new messages
+            if batch_to_process:
+                self._process_batch(batch_to_process)
+                return
         except Exception as e:
             logger.error(f"Error in batch accumulation: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
@@ -789,9 +832,49 @@ Respond with ONLY the JSON array:"""
             try:
                 self._process_batch(batch)
             except Exception as e:
-                logger.error(f"Error in timer flush batch: {e}")
+                logger.error(f"Timer flush failed: {e}")
+                for item in batch:
+                    try:
+                        item["ch"].basic_nack(
+                            delivery_tag=item["method"].delivery_tag,
+                            requeue=True
+                        )
+                    except Exception as nack_error:
+                        logger.warning(f"Failed to NACK message: {nack_error}")
 
-    
+    def _store_empty_result(self, ch, method, message):
+        """Store empty inference result and ACK the message. Used for skipped/oversized chunks."""
+        job_id = message.get("job_id")
+        chunk_id = message.get("chunk_id")
+        total_chunks = message.get("total_chunks", 1)
+
+        chunk_result = {
+            "chunk_id": chunk_id,
+            "inferences": [],
+        }
+
+        inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
+        self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
+        self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
+
+        remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
+        remaining = self.redis_client.decr(remaining_key)
+
+        logger.info(
+            f"Inference skipped for job: {job_id}, chunk: {chunk_id}, remaining: {remaining}"
+        )
+
+        if remaining <= 0:
+            self._assemble_final_results(job_id)
+            jobs_total.labels(status="success").inc()
+        else:
+            chunks_done = total_chunks - remaining
+            self.event_bus.publish_job_inference_chunk_progress(
+                job_id, chunks_done=chunks_done, chunks_total=total_chunks
+            )
+            jobs_total.labels(status="chunk_processed").inc()
+
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
     def _process_batch(self, batch: List[Dict[str, Any]]):
         """
@@ -820,16 +903,7 @@ Respond with ONLY the JSON array:"""
             cache_key = self._cache_key(chunk_text, source_type)
             cached = self._get_cached(cache_key)
             if cached is not None:
-                validated = [
-                    {
-                        "text": inf.get("text", ""),
-                        "confidence": float(inf.get("confidence", 0.5)),
-                        "entity_refs": inf.get("entity_refs", []),
-                    }
-                    for inf in cached
-                    if isinstance(inf, dict) and "text" in inf
-                    and float(inf.get("confidence", 0.5)) >= MIN_CONFIDENCE_THRESHOLD
-                ]
+                validated = self._validate_cached_inferences(cached)
                 cached_results[str(chunk_id)] = validated
                 batch_counter.labels(type="cache_hit").inc()
             else:
@@ -866,6 +940,7 @@ Respond with ONLY the JSON array:"""
                         cached_results[chunk["chunk_id"]] = inferences
                     except Exception as individual_error:
                         logger.error(f"Individual fallback also failed: {individual_error}")
+                        batch_counter.labels(type="individual_fallback_error").inc()
                         cached_results[chunk["chunk_id"]] = []
 
         # Save results for each chunk in batch
@@ -886,7 +961,7 @@ Respond with ONLY the JSON array:"""
 
             inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
             self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
-            self.redis_client.expire(inferences_raw_key, 86400)
+            self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
 
             remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
             remaining = self.redis_client.decr(remaining_key)
@@ -1071,6 +1146,16 @@ Respond with ONLY the JSON array:"""
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
+            word_count = len(chunk_text.split())
+            if word_count > MAX_CHUNK_WORDS:
+                logger.warning(
+                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
+                    f"job={job_id}, chunk={chunk_id}"
+                )
+                jobs_total.labels(status="chunk_too_large").inc()
+                self._store_empty_result(ch, method, message)
+                return
+
             # Extract inferences with entity context (no truncation)
             inferences = self.extract_inferences(
                 chunk_text=chunk_text, entities=entities, source_type=source_type
@@ -1086,7 +1171,7 @@ Respond with ONLY the JSON array:"""
             inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
             self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
             # TTL safety net: if assembly never completes, clean up after 24h
-            self.redis_client.expire(inferences_raw_key, 86400)
+            self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
 
             # Decrement atomic counter
             remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
@@ -1321,6 +1406,10 @@ def main():
                 # Schedule recurring flush timer using pika's call_later.
                 # Runs on the same thread as message callbacks — no race conditions
                 # with channel operations. Reschedules itself on each tick.
+                # NOTE: Timer drift is possible — the next flush is scheduled AFTER
+                # the current one completes. In practice, with batch_size=5 and
+                # typical LLM latency of 5-10s, drift is negligible (<500ms).
+                # For precise interval timing, use absolute timestamps.
                 if BATCH_ENABLED:
                     def _schedule_flush():
                         if _stopping:

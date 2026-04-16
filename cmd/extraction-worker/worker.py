@@ -1013,6 +1013,8 @@ class ExtractionWorker:
 
                 if body.get("entity_types"):
                     job_message["entity_types"] = body["entity_types"]
+                if body.get("features"):
+                    job_message["features"] = body["features"]
 
                 # Determine if this is a spreadsheet (reduce pipeline: entities only)
                 is_spreadsheet = False
@@ -1024,11 +1026,15 @@ class ExtractionWorker:
                         is_spreadsheet = True
 
                 # Route to appropriate queues
+                features = body.get("features") or []
                 if is_spreadsheet:
                     target_queues = ["entities"]
                     logger.info(f"Detected spreadsheet, routing to entities-only pipeline")
                 else:
                     target_queues = ["embeddings", "entities", "metadata"]
+
+                if "inferences" in features:
+                    target_queues.append("inferences")
 
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in target_queues:

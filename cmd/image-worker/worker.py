@@ -124,12 +124,12 @@ class ImageWorker:
                 }
                 if body.get("entity_types"):
                     job_message["entity_types"] = body["entity_types"]
-                if body.get("features"):
-                    job_message["features"] = body["features"]
+                features = body.get("features") or []
+                if features:
+                    job_message["features"] = features
 
                 # Determine target queues based on features
                 target_queues = ["embeddings", "entities", "metadata"]
-                features = body.get("features", [])
                 if "inferences" in features:
                     target_queues.append("inferences")
 

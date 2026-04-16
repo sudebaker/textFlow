@@ -509,6 +509,7 @@ func createJobHandler(c *gin.Context) {
 		DocumentBase64: req.DocumentBase64,
 		DocumentURL:    req.DocumentURL,
 		Filename:       req.Filename,
+		Features:       req.Features,
 	}
 
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
@@ -1111,12 +1112,12 @@ func uploadHandler(c *gin.Context) {
 	}
 
 	jobMsg := models.JobMessage{
-		JobID:         jobID,
-		DocumentPath:  filePath,
-		Filename:      filename,
-		MIMEType:      header.Header.Get("Content-Type"),
-		NotifyWebhook: notifyWebhook,
-		ContentType:   models.ContentTypeDocument,
+		JobID:        jobID,
+		DocumentPath: filePath,
+		Filename:     filename,
+		MIMEType:     header.Header.Get("Content-Type"),
+		ContentType:  models.ContentTypeDocument,
+		Features:     validatedFeatures,
 	}
 
 	// Determine content type and queue based on file extension

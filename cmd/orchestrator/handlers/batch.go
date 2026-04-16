@@ -142,6 +142,7 @@ func CreateBatchHandler(c *gin.Context) {
 			jobMsg := &models.JobMessage{
 				JobID:    jobID,
 				Filename: doc.Filename,
+				Features: req.Features,
 			}
 
 			mqBroker.PublishJobMessage(ctx, jobMsg)

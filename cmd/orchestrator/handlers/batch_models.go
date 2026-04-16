@@ -13,6 +13,7 @@ type BatchRequest struct {
 	MaxConcurrency int             `json:"max_concurrency,omitempty"`
 	WebhookURL     string          `json:"webhook_url,omitempty"`
 	WebhookSecret  string          `json:"webhook_secret,omitempty"`
+	Features       []string        `json:"features,omitempty"`
 }
 
 type BatchJobRef struct {

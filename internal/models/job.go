@@ -158,9 +158,9 @@ type JobMessage struct {
 	DocumentURL    string      `json:"document_url,omitempty"`
 	Filename       string      `json:"filename,omitempty"`
 	MIMEType       string      `json:"mime_type,omitempty"`
-	NotifyWebhook  string      `json:"notify_webhook,omitempty"`
 	ContentType    ContentType `json:"content_type,omitempty"`
 	Diarize        bool        `json:"diarize,omitempty"`
+	Features       []string    `json:"features,omitempty"`
 }
 
 // ContentType identifies the type of uploaded content.

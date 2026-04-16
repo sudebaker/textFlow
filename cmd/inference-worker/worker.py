@@ -55,6 +55,7 @@ import json
 import logging
 import time
 import re
+import hashlib
 import redis
 import pika
 import requests
@@ -86,6 +87,8 @@ MAX_INFERENCES_SHORT   = int(os.getenv("MAX_INFERENCES_SHORT",   "1"))  # chunks
 MAX_INFERENCES_MEDIUM  = int(os.getenv("MAX_INFERENCES_MEDIUM",  "2"))  # chunks 200-499 words
 MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks >= 500 words
 MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
+CACHE_TTL_SECONDS = int(os.getenv("INFERENCE_CACHE_TTL", "86400"))
+CACHE_ENABLED = os.getenv("INFERENCE_CACHE_ENABLED", "true").lower() == "true"
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
@@ -269,6 +272,35 @@ class InferenceWorker:
                     return text[start : i + 1]
         return None
 
+    def _cache_key(self, chunk_text: str, source_type: str) -> str:
+        """Generate a deterministic cache key from chunk content, source type, and model."""
+        content = f"{chunk_text}:{source_type}:{self.llm_model_id or 'unknown'}"
+        text_hash = hashlib.sha256(content.encode()).hexdigest()
+        return f"inference:cache:{text_hash}"
+
+    def _get_cached(self, cache_key: str) -> Optional[List[Dict[str, Any]]]:
+        """Retrieve cached inferences from Redis. Returns None on miss or error."""
+        if not CACHE_ENABLED:
+            return None
+        try:
+            cached = self.redis_client.get(cache_key)
+            if cached:
+                logger.info(f"Cache HIT for {cache_key[:50]}")
+                return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Cache read error: {e}")
+        return None
+
+    def _set_cached(self, cache_key: str, inferences: List[Dict[str, Any]]) -> None:
+        """Store inferences in Redis cache with TTL."""
+        if not CACHE_ENABLED:
+            return
+        try:
+            self.redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(inferences))
+            logger.debug(f"Cached {len(inferences)} inferences (TTL: {CACHE_TTL_SECONDS}s)")
+        except Exception as e:
+            logger.warning(f"Cache write error: {e}")
+
     def extract_inferences(
         self,
         chunk_text: str,
@@ -363,6 +395,23 @@ class InferenceWorker:
                 "No LLM configured or model discovery failed, skipping inferences"
             )
             return []
+
+        # Check cache before calling LLM
+        cache_key = self._cache_key(chunk_text, source_type)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            validated_cached = []
+            for inf in cached:
+                if isinstance(inf, dict) and "text" in inf:
+                    conf = float(inf.get("confidence", 0.5))
+                    if conf >= MIN_CONFIDENCE_THRESHOLD:
+                        validated_cached.append({
+                            "text": inf.get("text", ""),
+                            "confidence": conf,
+                            "entity_refs": inf.get("entity_refs", []),
+                        })
+            logger.info(f"Returning {len(validated_cached)} cached inferences (filtered from {len(cached)})")
+            return validated_cached
 
         # Dynamic max inferences based on chunk size (word count as proxy for length)
         word_count = len(chunk_text.split())
@@ -488,6 +537,9 @@ Respond with ONLY the JSON array:"""
                     )
 
             validated = [inf for inf in validated if inf["confidence"] >= MIN_CONFIDENCE_THRESHOLD]
+
+            # Cache raw inferences (before confidence filter) for reuse
+            self._set_cached(cache_key, inferences if isinstance(inferences, list) else [])
 
             logger.info(f"Extracted {len(validated)} inferences from chunk")
             return validated

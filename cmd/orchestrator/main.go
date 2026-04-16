@@ -1360,7 +1360,11 @@ func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) 
 		// Check feature name length (hard limit per feature)
 		if len(f) > cfg.MaxFeatureNameLen {
 			metrics.InvalidFeaturesTotal.WithLabelValues("too_long").Inc()
-			logger.Warn().Str("feature", f[:20]+"...").Int("length", len(f)).Int("max_length", cfg.MaxFeatureNameLen).
+			featurePreview := f
+			if len(featurePreview) > 20 {
+				featurePreview = featurePreview[:20] + "..."
+			}
+			logger.Warn().Str("feature", featurePreview).Int("length", len(f)).Int("max_length", cfg.MaxFeatureNameLen).
 				Msg("Feature name exceeds max length, skipping")
 			continue
 		}

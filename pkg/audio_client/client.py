@@ -18,7 +18,7 @@ class WhisperClientPool:
     """
 
     def __init__(self):
-        urls_env = os.getenv("WHISPER_URLS", "http://whisper:8080")
+        urls_env = os.getenv("WHISPER_URLS", "http://whisper:9666")
         self._urls = [u.strip() for u in urls_env.split(",") if u.strip()]
         self._index = 0
         self._lock = threading.Lock()

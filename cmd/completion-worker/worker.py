@@ -577,11 +577,19 @@ class CompletionWorker:
                 "application/zip",  # Excel files may show as ZIP
             ]
 
+            # Check if it's an audio job (has audio step instead of extraction)
+            is_audio = "audio" in completed_steps
+
             required_steps = (
                 self.spreadsheet_required_steps
                 if is_spreadsheet
                 else self.default_required_steps.copy()
             )
+
+            # Audio pipeline uses 'audio' step instead of 'extraction'
+            if is_audio and "extraction" in required_steps:
+                required_steps.discard("extraction")
+                required_steps.add("audio")
 
             # Add inferences if features were requested
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
@@ -841,6 +849,7 @@ class CompletionWorker:
                 "status": "completed",
                 "created_at": created_at,
                 "completed_at": completed_at,
+                "text": text,
                 "document_metadata": document_metadata,
                 "text_metadata": text_metadata,
                 "chunks": enriched_chunks,

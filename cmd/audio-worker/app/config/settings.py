@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     metrics_port: int = 8005
     max_audio_size_mb: int = 500
     prefetch_count: int = 2
-    whisper_urls: str = "http://whisper:9000"
+    whisper_urls: str = "http://whisper:9666"
     whisper_timeout: int = 300
     whisper_max_retries: int = 3
     audio_chunk_max_chars: int = 1500

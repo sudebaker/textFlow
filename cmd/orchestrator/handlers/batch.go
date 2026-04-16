@@ -56,7 +56,6 @@ func validateWebhookURL(webhookURL string) error {
 }
 
 // validFeatures is the whitelist of allowed feature names.
-// Must be kept in sync with the whitelist in cmd/orchestrator/main.go validateFeatures().
 var validFeatures = map[string]bool{
 	"inferences":           true,
 	"inference_embeddings": true,

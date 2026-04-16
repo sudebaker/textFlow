@@ -35,7 +35,7 @@ type Config struct {
 	ResultsPath        string        `env:"RESULTS_PATH" default:"/app/data/results"`
 	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
 	MaxDocumentSizeMB  int           `env:"MAX_DOCUMENT_SIZE_MB" default:"10"`
-	MaxFeaturesPerJob  int           `env:"MAX_FEATURES_PER_JOB" default:"10"`
+	MaxFeaturesPerJob  int           `env:"MAX_FEATURES_PER_JOB" default:"2"`
 	MaxFeatureNameLen  int           `env:"MAX_FEATURE_NAME_LENGTH" default:"50"`
 }
 

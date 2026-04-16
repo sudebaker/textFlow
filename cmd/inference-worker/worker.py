@@ -41,11 +41,14 @@ Environment Variables:
     - PREFETCH_COUNT: RabbitMQ prefetch count (default: 3)
     - MAX_CHUNK_WORDS: Maximum chunk size in words before skipping (default: 5000)
     - INFERENCE_BATCH_ENABLED: Enable batch processing (default: true)
-    - INFERENCE_BATCH_SIZE: Chunks per batch LLM call (default: 5, range: 2-10)
+    - INFERENCE_BATCH_SIZE: Chunks per batch LLM call (default: 3, range: 2-10)
     - INFERENCE_BATCH_TIMEOUT_MS: Flush timeout in ms (default: 500)
     - INFERENCE_CACHE_ENABLED: Enable Redis cache (default: true)
     - INFERENCE_CACHE_TTL: Cache TTL in seconds (default: 86400)
     - INFERENCE_RAW_TTL: TTL for intermediate Redis results in seconds (default: 86400)
+    - INFERENCE_LLM_TIMEOUT: LLM request timeout in seconds (default: 60)
+    - INFERENCE_LLM_RETRIES: Max retries on timeout/connection error (default: 2)
+    - INFERENCE_LLM_RETRY_BACKOFF: Base backoff in seconds, doubled per attempt (default: 2.0)
 
 Key Features:
     - Thinking-tag handling: Removes <think>...</think> blocks from LLM responses
@@ -99,9 +102,12 @@ CACHE_TTL_SECONDS = int(os.getenv("INFERENCE_CACHE_TTL", "86400"))
 CACHE_ENABLED = os.getenv("INFERENCE_CACHE_ENABLED", "true").lower() == "true"
 RAW_TTL_SECONDS = int(os.getenv("INFERENCE_RAW_TTL", "86400"))
 BATCH_ENABLED = os.getenv("INFERENCE_BATCH_ENABLED", "true").lower() == "true"
-BATCH_SIZE = max(2, min(10, int(os.getenv("INFERENCE_BATCH_SIZE", "5"))))
+BATCH_SIZE = max(2, min(10, int(os.getenv("INFERENCE_BATCH_SIZE", "3"))))
 BATCH_TIMEOUT_MS = max(100, min(2000, int(os.getenv("INFERENCE_BATCH_TIMEOUT_MS", "500"))))
 MAX_CHUNK_WORDS = int(os.getenv("MAX_CHUNK_WORDS", "5000"))
+LLM_TIMEOUT = int(os.getenv("INFERENCE_LLM_TIMEOUT", "60"))
+LLM_RETRIES = int(os.getenv("INFERENCE_LLM_RETRIES", "2"))
+LLM_RETRY_BACKOFF = float(os.getenv("INFERENCE_LLM_RETRY_BACKOFF", "2.0"))
 
 # Prometheus metrics
 jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
@@ -492,12 +498,33 @@ Respond with ONLY the JSON array:"""
                 "chat_template_kwargs": {"enable_thinking": False},
             }
 
-            response = requests.post(
-                f"{LLM_URL}/v1/chat/completions",
-                json=payload,
-                timeout=30,
-            )
-            response.raise_for_status()
+            response = None
+            last_error = None
+            for attempt in range(LLM_RETRIES):
+                try:
+                    response = requests.post(
+                        f"{LLM_URL}/v1/chat/completions",
+                        json=payload,
+                        timeout=LLM_TIMEOUT,
+                    )
+                    response.raise_for_status()
+                    break
+                except (requests.Timeout, requests.ConnectionError) as e:
+                    last_error = e
+                    if attempt < LLM_RETRIES - 1:
+                        wait = LLM_RETRY_BACKOFF * (2 ** attempt)
+                        logger.warning(
+                            f"LLM call attempt {attempt + 1}/{LLM_RETRIES} failed: {e}, "
+                            f"retrying in {wait:.1f}s"
+                        )
+                        time.sleep(wait)
+                    else:
+                        logger.error(
+                            f"LLM call failed after {LLM_RETRIES} attempts: {e}"
+                        )
+                        raise
+            if response is None:
+                raise last_error
 
             result = response.json()
             completion_text = (
@@ -661,14 +688,35 @@ Respond with ONLY the JSON array:"""
                 "chat_template_kwargs": {"enable_thinking": False},
             }
 
-            batch_timeout = max(30, min(120, len(chunks_data) * 15))
+            batch_timeout = max(LLM_TIMEOUT, min(180, len(chunks_data) * LLM_TIMEOUT))
 
-            response = requests.post(
-                f"{LLM_URL}/v1/chat/completions",
-                json=payload,
-                timeout=batch_timeout,
-            )
-            response.raise_for_status()
+            response = None
+            last_error = None
+            for attempt in range(LLM_RETRIES):
+                try:
+                    response = requests.post(
+                        f"{LLM_URL}/v1/chat/completions",
+                        json=payload,
+                        timeout=batch_timeout,
+                    )
+                    response.raise_for_status()
+                    break
+                except (requests.Timeout, requests.ConnectionError) as e:
+                    last_error = e
+                    if attempt < LLM_RETRIES - 1:
+                        wait = LLM_RETRY_BACKOFF * (2 ** attempt)
+                        logger.warning(
+                            f"Batch LLM attempt {attempt + 1}/{LLM_RETRIES} failed: {e}, "
+                            f"retrying in {wait:.1f}s"
+                        )
+                        time.sleep(wait)
+                    else:
+                        logger.error(
+                            f"Batch LLM failed after {LLM_RETRIES} attempts: {e}"
+                        )
+                        raise
+            if response is None:
+                raise last_error
 
             result = response.json()
             completion_text = (

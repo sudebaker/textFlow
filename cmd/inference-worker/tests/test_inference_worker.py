@@ -277,3 +277,94 @@ class TestInferenceWorker:
 
                     assert len(result) == 1
                     assert result[0]["text"] == "Exact threshold fact"
+
+    def test_cache_hit_returns_cached_inferences(self, worker):
+        """Cache hit bypasses LLM call and returns cached results"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        worker.redis_client = Mock()
+        cached_inferences = [
+            {"text": "Cached fact", "confidence": 0.9, "entity_refs": ["entity1"]},
+            {"text": "Low confidence cached", "confidence": 0.3, "entity_refs": []},
+        ]
+        worker.redis_client.get.return_value = json.dumps(cached_inferences)
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.CACHE_ENABLED", True):
+                with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
+                    with patch("requests.post") as mock_post:
+                        result = worker.extract_inferences(
+                            chunk_text="Some text", entities=[], source_type="generico"
+                        )
+
+                        mock_post.assert_not_called()
+                        assert len(result) == 1
+                        assert result[0]["text"] == "Cached fact"
+
+    def test_cache_miss_calls_llm(self, worker):
+        """Cache miss triggers LLM call and caches result"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        worker.redis_client = Mock()
+        worker.redis_client.get.return_value = None
+        worker.redis_client.setex = Mock()
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.CACHE_ENABLED", True):
+                with patch("requests.post") as mock_post:
+                    mock_response = Mock()
+                    mock_response.raise_for_status = Mock()
+                    mock_response.json.return_value = {
+                        "choices": [{"message": {"content": '[{"text": "New fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                    }
+                    mock_post.return_value = mock_response
+
+                    result = worker.extract_inferences(
+                        chunk_text="New text to process", entities=[], source_type="generico"
+                    )
+
+                    mock_post.assert_called_once()
+                    assert len(result) == 1
+                    assert result[0]["text"] == "New fact"
+                    worker.redis_client.setex.assert_called_once()
+
+    def test_cache_disabled_skips_redis(self, worker):
+        """When cache is disabled, no Redis operations are performed"""
+        worker.llm_model_id = "qwen3.5-2b"
+        worker.llm_max_model_len = 4096
+        worker.redis_client = Mock()
+
+        with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.CACHE_ENABLED", False):
+                with patch("requests.post") as mock_post:
+                    mock_response = Mock()
+                    mock_response.raise_for_status = Mock()
+                    mock_response.json.return_value = {
+                        "choices": [{"message": {"content": '[{"text": "Fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                    }
+                    mock_post.return_value = mock_response
+
+                    result = worker.extract_inferences(
+                        chunk_text="Text without cache", entities=[], source_type="generico"
+                    )
+
+                    worker.redis_client.get.assert_not_called()
+                    worker.redis_client.setex.assert_not_called()
+
+    def test_cache_key_deterministic(self, worker):
+        """Same text + source_type produces same cache key"""
+        key1 = worker._cache_key("hello world", "catastro")
+        key2 = worker._cache_key("hello world", "catastro")
+        assert key1 == key2
+
+    def test_cache_key_differs_for_different_text(self, worker):
+        """Different text produces different cache key"""
+        key1 = worker._cache_key("hello world", "catastro")
+        key2 = worker._cache_key("goodbye world", "catastro")
+        assert key1 != key2
+
+    def test_cache_key_differs_for_different_source(self, worker):
+        """Different source_type produces different cache key"""
+        key1 = worker._cache_key("hello world", "catastro")
+        key2 = worker._cache_key("hello world", "notariado")
+        assert key1 != key2

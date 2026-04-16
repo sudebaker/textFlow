@@ -507,7 +507,7 @@ services:
     - backend
     - datastore
     volumes:
-    - /tmp/textflow-uploads:/app/data/uploads:ro
+    - uploads-data:/app/data/uploads
     extra_hosts:
     - host.docker.internal:host-gateway
     environment:
@@ -532,6 +532,33 @@ services:
     depends_on:
     - rabbitmq
     - redis
+  whisper:
+    build:
+      context: ../../../whisper-service
+      dockerfile: Dockerfile
+    container_name: textflow-whisper
+    networks:
+    - backend
+    volumes:
+    - ../../../whisper-service/models_cache/whisper:/root/.cache/whisper:ro
+    environment:
+    - DEVICE=${WHISPER_DEVICE:-cpu}
+    - COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+    - MODEL_SIZE=${WHISPER_MODEL:-large-v2}
+    - LANGUAGE=
+    - PORT=8080
+    - CACHE_DIR=/root/.cache
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
   audio-worker:
     build:
       context: ../..
@@ -540,13 +567,11 @@ services:
     - backend
     - datastore
     volumes:
-    - /tmp/textflow-uploads:/app/data/uploads:ro
-    extra_hosts:
-    - host.docker.internal:host-gateway
+    - uploads-data:/app/data/uploads
     environment:
     - RABBITMQ_URL=${RABBITMQ_URL}
     - REDIS_URL=${REDIS_URL}
-    - WHISPER_URLS=${WHISPER_URLS:-http://host.docker.internal:9001}
+    - WHISPER_URLS=${WHISPER_URLS:-http://whisper:8080}
     - WHISPER_TIMEOUT=${WHISPER_TIMEOUT:-300}
     - WHISPER_MAX_RETRIES=${WHISPER_MAX_RETRIES:-3}
     - AUDIO_QUEUE=audio
@@ -567,6 +592,7 @@ services:
     depends_on:
     - rabbitmq
     - redis
+    - whisper
 networks:
   docker_default:
     external: true

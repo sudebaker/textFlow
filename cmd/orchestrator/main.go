@@ -1082,7 +1082,7 @@ func uploadHandler(c *gin.Context) {
 		var err error
 		validatedFeatures, err = validateFeatures(featuresStr, cfg)
 		if err != nil {
-			// Hard limit exceeded (too many features or too long feature name)
+			// Feature name too long
 			logger.Warn().Str("job_id", jobID).Err(err).Msg("Feature validation failed")
 			c.JSON(http.StatusBadRequest, models.ErrorResponse{
 				Error:  "invalid_features",
@@ -1329,7 +1329,8 @@ func downloadHandler(c *gin.Context) {
 // It enforces feature name length and total count limits.
 // Returns a slice of normalized (lowercase) valid features and an error if limits are exceeded.
 // Invalid features (not in whitelist) are silently ignored with a warning log + metric.
-// Returns an error if: total features exceed MaxFeaturesPerJob, or any feature name exceeds MaxFeatureNameLen.
+// Returns an error if: any feature name exceeds MaxFeatureNameLen.
+// Invalid or duplicate features are silently filtered out — only whitelisted features are kept.
 func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) {
 	if featuresStr == "" {
 		return []string{}, nil
@@ -1344,12 +1345,6 @@ func validateFeatures(featuresStr string, cfg *config.Config) ([]string, error) 
 
 	// Parse comma-separated list
 	rawFeatures := strings.Split(featuresStr, ",")
-
-	// Check total count before processing (hard limit)
-	if len(rawFeatures) > cfg.MaxFeaturesPerJob {
-		metrics.InvalidFeaturesTotal.WithLabelValues("too_many").Inc()
-		return nil, fmt.Errorf("too many features: %d requested, max %d allowed", len(rawFeatures), cfg.MaxFeaturesPerJob)
-	}
 
 	// Normalize and deduplicate
 	seenFeatures := make(map[string]bool)

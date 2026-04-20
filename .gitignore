@@ -1,46 +1,19 @@
-# Entornos
-.venv/
-**/.venv/
-node_modules/
-**/node_modules/
-
-# Modelos / binarios grandes
-/models/
-**/*.safetensors
-**/*.pt
-**/*.bin
-**/*.onnx
-
-# Builds
-dist/
-build/
-out/
-.next/
-.vite/
-coverage/
-
-# Cachés
-.ruff_cache/
-__pycache__/
-**/*.pyc
-.go/pkg/mod/
-
-# Otros             # Go/Python binaries built locally, not source
-deploy/.env             # Ignore .env files but track docker-compose.yml
-deploy/.env.local
-deploy/.env.*.local
-data/
-
-# Git worktrees
-.worktrees/
-bin/*
-tools/client/client
-tools/client/client_test_build
-
-# E2E test artifacts
-tests/e2e/results/
-tests/e2e/datasets/
-tests/e2e/*.log
-tests/e2e/*.csv
-tests/e2e/*.json
-tests/e2e/*.txt
+```
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
+# Dependencies
+vendor/
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+# Environment
+.env
+.env.local
+.env.*
+# Editors
+.vscode/
+.idea/
+```

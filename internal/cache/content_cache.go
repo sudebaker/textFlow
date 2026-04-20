@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 )
 
 // ContentCache provides a Redis-backed caching layer for expensive computations
@@ -24,6 +25,7 @@ type ContentCache struct {
 	client     *redis.Client
 	logger     zerolog.Logger
 	defaultTTL time.Duration
+	sf         singleflight.Group
 }
 
 // NewContentCache creates a new ContentCache with the given Redis client and default TTL.
@@ -41,15 +43,16 @@ func NewContentCache(client *redis.Client, defaultTTL time.Duration) *ContentCac
 	}
 }
 
-// GetOrCompute implements a cache-aside (lazy-loading) pattern: retrieves a cached
-// value if available, otherwise computes it by invoking the provided function and
-// stores the result for future use.
+// GetOrCompute implements a cache-aside (lazy-loading) pattern with singleflight
+// protection: retrieves a cached value if available, otherwise computes it by
+// invoking the provided function and stores the result for future use.
 //
 // The cache key is derived from the input key using SHA-256 hashing. If a cached
 // value exists and is successfully unmarshaled, it is returned immediately without
-// invoking compute(). If no cached value exists or unmarshaling fails, the compute
-// function is called synchronously without holding any lock (not a critical section).
-// The computed result is then JSON-marshaled and stored in Redis with the default TTL.
+// invoking compute(). If no cached value exists, singleflight ensures that only
+// ONE computation runs even if multiple goroutines request the same key concurrently,
+// preventing the "thundering herd" problem where 100 requests could trigger 100
+// expensive computations.
 //
 // Parameters:
 //   - ctx: Context for Redis operations
@@ -60,8 +63,8 @@ func NewContentCache(client *redis.Client, defaultTTL time.Duration) *ContentCac
 //   - The cached or newly computed value
 //   - An error if the compute function fails, JSON marshaling fails, or Redis operations fail
 //
-// Note: The compute function is called without synchronization, so the cache
-// is suitable for idempotent operations only.
+// Note: Singleflight deduplication applies only while compute() is running.
+// Once the result is cached, subsequent calls retrieve it directly from Redis.
 func (c *ContentCache) GetOrCompute(ctx context.Context, key string, compute func() (interface{}, error)) (interface{}, error) {
 	hash := c.computeHash(key)
 	cacheKey := fmt.Sprintf("content:%s", hash)
@@ -74,19 +77,31 @@ func (c *ContentCache) GetOrCompute(ctx context.Context, key string, compute fun
 		}
 	}
 
-	result, err := compute()
+	// Use singleflight to prevent thundering herd: only one compute() executes
+	// per unique key, even with concurrent requests
+	v, err, _ := c.sf.Do(hash, func() (interface{}, error) {
+		result, err := compute()
+		if err != nil {
+			return nil, err
+		}
+
+		data, err := json.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+
+		if err := c.client.Set(ctx, cacheKey, data, c.defaultTTL).Err(); err != nil {
+			return nil, fmt.Errorf("failed to cache result: %w", err)
+		}
+
+		return result, nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	c.client.Set(ctx, cacheKey, data, c.defaultTTL)
-
-	return result, nil
+	return v, nil
 }
 
 // Get retrieves a cached value without computing it.

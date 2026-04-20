@@ -210,7 +210,11 @@ func (cb *CircuitBreaker) executeRequest(ctx context.Context, fn func() error) e
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				done <- fmt.Errorf("panic: %v", r)
+				select {
+				case done <- fmt.Errorf("panic: %v", r):
+				default:
+					// Channel may already have a value or be closed, ignore
+				}
 			}
 		}()
 		done <- fn()

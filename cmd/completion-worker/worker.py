@@ -124,9 +124,23 @@ class CompletionWorker:
         Raises:
             redis.ConnectionError: If Redis connection cannot be established.
         """
-        self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        self.redis_client = redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_keepalive=True,
+            socket_connect_timeout=5,
+            socket_timeout=None,
+            health_check_interval=30,
+        )
         # Raw client (no decode_responses) for binary keys like MsgPack embeddings
-        self.redis_raw = redis.from_url(REDIS_URL, decode_responses=False)
+        self.redis_raw = redis.from_url(
+            REDIS_URL,
+            decode_responses=False,
+            socket_keepalive=True,
+            socket_connect_timeout=5,
+            socket_timeout=None,
+            health_check_interval=30,
+        )
         self.event_bus = EventBus(self.redis_client)
         # Default required steps for full pipeline
         self.default_required_steps = {

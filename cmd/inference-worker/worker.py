@@ -485,7 +485,8 @@ Respond with ONLY the JSON array:"""
 
             # Calculate max_tokens dynamically from discovered max_model_len
             # Estimate: overhead = system_prompt (150) + user_prompt (300) + margin (450)
-            max_tokens = max(200, (self.llm_max_model_len or 4096) - 900)
+            # Cap at 4096 to avoid exceeding available context (vLLM enforces prompt+output <= max_model_len)
+            max_tokens = max(200, min((self.llm_max_model_len or 4096) - 900, 4096))
 
             payload = {
                 "model": self.llm_model_id,
@@ -675,7 +676,9 @@ Each object in the array must have:
 
 Respond with ONLY the JSON array:"""
 
-            max_tokens = max(500, (self.llm_max_model_len or 4096) - 1500)
+            # Cap per-chunk output at 800 tokens, total at 8192,
+            # and never exceed available context (vLLM enforces prompt+output <= max_model_len)
+            max_tokens = max(500, min(len(chunks_data) * 800, (self.llm_max_model_len or 4096) - 2000, 8192))
 
             payload = {
                 "model": self.llm_model_id,

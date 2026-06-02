@@ -36,6 +36,7 @@ type Config struct {
 	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
 	MaxDocumentSizeMB  int           `env:"MAX_DOCUMENT_SIZE_MB" default:"10"`
 	MaxFeaturesPerJob  int           `env:"MAX_FEATURES_PER_JOB" default:"2"`
+	RabbitMQPoolSize   int           `env:"RABBITMQ_POOL_SIZE" default:"5"`
 }
 
 func (c *Config) Validate() error {

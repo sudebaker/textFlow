@@ -356,8 +356,6 @@ services:
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=8081
-    ports:
-    - 8081:8081
     networks:
     - backend
     restart: unless-stopped

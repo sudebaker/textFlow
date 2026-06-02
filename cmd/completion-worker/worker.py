@@ -176,7 +176,7 @@ class CompletionWorker:
         Returns:
             Dict mapping chunk_id to {inference_idx: embedding_vector}
         """
-        if not self._get_embedding_service() or not inferences_by_chunk:
+        if not inferences_by_chunk:
             return {}
 
         inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
@@ -786,32 +786,18 @@ class CompletionWorker:
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse micro_inferences JSON: {e}")
 
-            # --- Generate inference embeddings ONLY if feature is enabled ---
-            # Read features from Redis to check if inference_embeddings is enabled
-            features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
-            features = []
-            if features_json:
-                try:
-                    features = json.loads(features_json)
-                except Exception:
-                    pass
-
-            inference_embeddings_enabled = "inference_embeddings" in features and "inferences" in features
-
-            if inference_embeddings_enabled:
-                if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
-                    logger.info("Feature 'inference_embeddings' enabled, generating embeddings...")
-                    inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
-                    if inference_embeddings_by_chunk:
-                        try:
-                            key = f"orchestrator:job:{job_id}:inference_embeddings"
-                            packed = msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True)
-                            self.redis_raw.set(key, packed)
-                            logger.info(f"Saved inference embeddings to Redis: {key}")
-                        except Exception as e:
-                            logger.warning(f"Failed to save inference embeddings to Redis: {e}")
-            else:
-                logger.debug(f"Feature 'inference_embeddings' not enabled, skipping embedding generation")
+            # --- Generate inference embeddings automatically if inferences exist ---
+            if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
+                logger.info(f"Generating inference embeddings for job: {job_id}")
+                inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
+                if inference_embeddings_by_chunk:
+                    try:
+                        key = f"orchestrator:job:{job_id}:inference_embeddings"
+                        packed = msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True)
+                        self.redis_raw.set(key, packed)
+                        logger.info(f"Saved inference embeddings to Redis: {key}")
+                    except Exception as e:
+                        logger.warning(f"Failed to save inference embeddings to Redis: {e}")
 
             # --- Enrich chunks: embed embeddings, entity_ids, inferences ---
             enriched_chunks = []

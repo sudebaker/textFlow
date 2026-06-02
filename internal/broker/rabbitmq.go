@@ -31,6 +31,7 @@ const (
 type RabbitMQBroker struct {
 	conn           *amqp.Connection
 	channel        *amqp.Channel
+	pool           *ChannelPool
 	config         *config.Config
 	logger         zerolog.Logger
 	mu             sync.RWMutex
@@ -106,6 +107,18 @@ func New(cfg *config.Config) (*RabbitMQBroker, error) {
 		broker.Close()
 		return nil, err
 	}
+
+	poolSize := cfg.RabbitMQPoolSize
+	if poolSize < 1 {
+		poolSize = DefaultPoolSize
+	}
+
+	pool, err := NewChannelPool(conn, poolSize, logger)
+	if err != nil {
+		broker.Close()
+		return nil, fmt.Errorf("failed to create channel pool: %w", err)
+	}
+	broker.pool = pool
 
 	return broker, nil
 }
@@ -250,22 +263,40 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	retryWithBackoff := func(attempt int) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * time.Second):
+			return nil
+		}
+	}
+
 	for attempt := 0; attempt < 3; attempt++ {
 		b.mu.RLock()
-		if b.channel == nil {
-			b.mu.RUnlock()
-			b.logger.Warn().Msgf("Channel is nil, triggering reconnect (attempt %d/3)", attempt+1)
+		pool := b.pool
+		b.mu.RUnlock()
+
+		if pool == nil {
+			b.logger.Warn().Msgf("Channel pool is nil, triggering reconnect (attempt %d/3)", attempt+1)
 			b.reconnect()
-			// Context-aware sleep: respect context cancellation during backoff
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
-			case <-time.After(time.Duration(attempt+1) * time.Second):
+			if err := retryWithBackoff(attempt); err != nil {
+				return fmt.Errorf("context cancelled during retry: %w", err)
 			}
 			continue
 		}
 
-		err = b.channel.Publish(
+		pc, err := pool.Get()
+		if err != nil {
+			b.logger.Warn().Err(err).Msgf("Failed to get pool channel (attempt %d/3)", attempt+1)
+			b.reconnect()
+			if err := retryWithBackoff(attempt); err != nil {
+				return fmt.Errorf("context cancelled during retry: %w", err)
+			}
+			continue
+		}
+
+		ack, err := pc.PublishWithConfirm(
 			"",    // exchange
 			queue, // routing key
 			false, // mandatory
@@ -277,23 +308,29 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 				Timestamp:    time.Now(),
 			},
 		)
-		b.mu.RUnlock()
 
 		if err != nil {
 			metrics.RabbitMQErrors.Inc()
-			b.logger.Warn().Err(err).Msgf("Publish failed, attempting reconnection (attempt %d/3)", attempt+1)
+			b.logger.Warn().Err(err).Msgf("Publish confirm failed (attempt %d/3)", attempt+1)
 			b.reconnect()
-			// Context-aware sleep: respect context cancellation during backoff
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
-			case <-time.After(time.Duration(attempt+1) * time.Second):
+			if err := retryWithBackoff(attempt); err != nil {
+				return fmt.Errorf("context cancelled during retry: %w", err)
+			}
+			continue
+		}
+
+		if !ack {
+			metrics.RabbitMQErrors.Inc()
+			b.logger.Warn().Msgf("Publish nack received (attempt %d/3)", attempt+1)
+			b.reconnect()
+			if err := retryWithBackoff(attempt); err != nil {
+				return fmt.Errorf("context cancelled during retry: %w", err)
 			}
 			continue
 		}
 
 		metrics.QueuePublishTotal.WithLabelValues(queue).Inc()
-		b.logger.Debug().Msgf("Message published to queue: %s", queue)
+		b.logger.Debug().Msgf("Message published to queue: %s with confirm ack", queue)
 		return nil
 	}
 
@@ -423,17 +460,25 @@ func (b *RabbitMQBroker) Consume(queue string, handler func([]byte) error) error
 func (b *RabbitMQBroker) GetQueueInfo(queue string) (*QueueInfo, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		b.mu.RLock()
-		if b.channel == nil {
-			b.mu.RUnlock()
-			b.logger.Warn().Msgf("Channel is nil, triggering reconnect (attempt %d/3)", attempt+1)
+		pool := b.pool
+		b.mu.RUnlock()
+
+		if pool == nil {
+			b.logger.Warn().Msgf("Channel pool is nil, triggering reconnect (attempt %d/3)", attempt+1)
 			b.reconnect()
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 			continue
 		}
 
-		queueInfo, err := b.channel.QueueInspect(queue)
-		b.mu.RUnlock()
+		pc, err := pool.Get()
+		if err != nil {
+			b.logger.Warn().Err(err).Msgf("Failed to get pool channel for QueueInspect (attempt %d/3)", attempt+1)
+			b.reconnect()
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
 
+		queueInfo, err := pc.QueueInspect(queue)
 		if err != nil {
 			b.logger.Warn().Err(err).Msgf("GetQueueInfo failed, attempting reconnection (attempt %d/3)", attempt+1)
 			b.reconnect()
@@ -489,6 +534,9 @@ func (b *RabbitMQBroker) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.pool != nil {
+		b.pool.Close()
+	}
 	if b.channel != nil {
 		b.channel.Close()
 	}
@@ -550,7 +598,11 @@ func (b *RabbitMQBroker) reconnect() {
 		}
 
 		b.mu.Lock()
+		if b.pool != nil {
+			b.pool.Close()
+		}
 		b.channel = nil
+		b.pool = nil
 		b.mu.Unlock()
 
 		// Context-aware sleep: respect stopChan during backoff
@@ -587,8 +639,23 @@ func (b *RabbitMQBroker) reconnect() {
 			continue
 		}
 
+		newPool, err := NewChannelPool(conn, b.config.RabbitMQPoolSize, b.logger)
+		if err != nil {
+			channel.Close()
+			conn.Close()
+			b.mu.Unlock()
+			b.logger.Warn().Err(err).Msgf("Failed to create channel pool on reconnection attempt %d/%d", attempts+1, MaxReconnectAttempts)
+			attempts++
+			backoff = time.Duration(float64(backoff) * 1.5)
+			if backoff > MaxBackoff {
+				backoff = MaxBackoff
+			}
+			continue
+		}
+
 		b.conn = conn
 		b.channel = channel
+		b.pool = newPool
 		b.mu.Unlock()
 
 		notifyClose := b.conn.NotifyClose(make(chan *amqp.Error))

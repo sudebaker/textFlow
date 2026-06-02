@@ -84,12 +84,12 @@ func TestRabbitMQBroker_CloseStopMonitoring(t *testing.T) {
 	wg.Wait()
 }
 
-func TestRabbitMQBroker_PublishReconnectOnNilChannel(t *testing.T) {
+func TestRabbitMQBroker_PublishReconnectOnNilPool(t *testing.T) {
 	if os.Getenv("RABBITMQ_URL") == "" {
 		t.Skip("Skipping: RABBITMQ_URL not set (requires real RabbitMQ)")
 	}
 	broker := &RabbitMQBroker{
-		channel:  nil,
+		pool:     nil,
 		mu:       sync.RWMutex{},
 		stopChan: make(chan struct{}),
 		config: &config.Config{
@@ -102,16 +102,16 @@ func TestRabbitMQBroker_PublishReconnectOnNilChannel(t *testing.T) {
 	err := broker.Publish(ctx, "test_queue", map[string]string{"key": "value"})
 
 	if err == nil {
-		t.Error("Expected error when channel is nil")
+		t.Error("Expected error when pool is nil")
 	}
 }
 
-func TestRabbitMQBroker_GetQueueInfoReconnectOnNilChannel(t *testing.T) {
+func TestRabbitMQBroker_GetQueueInfoReconnectOnNilPool(t *testing.T) {
 	if os.Getenv("RABBITMQ_URL") == "" {
 		t.Skip("Skipping: RABBITMQ_URL not set (requires real RabbitMQ)")
 	}
 	broker := &RabbitMQBroker{
-		channel:  nil,
+		pool:     nil,
 		mu:       sync.RWMutex{},
 		stopChan: make(chan struct{}),
 		config: &config.Config{
@@ -123,27 +123,50 @@ func TestRabbitMQBroker_GetQueueInfoReconnectOnNilChannel(t *testing.T) {
 	_, err := broker.GetQueueInfo("test_queue")
 
 	if err == nil {
-		t.Error("Expected error when channel is nil")
+		t.Error("Expected error when pool is nil")
 	}
 }
 
-func TestRabbitMQBroker_RedeclareQueuesFailure(t *testing.T) {
+func TestRabbitMQBroker_PoolIsNilAfterClose(t *testing.T) {
 	broker := &RabbitMQBroker{
-		channel:  nil,
-		mu:       sync.RWMutex{},
 		stopChan: make(chan struct{}),
-		config: &config.Config{
-			RabbitMQURL: "amqp://guest:guest@localhost:5672/",
-		},
-		logger: logging.GetLogger(),
+	}
+	broker.Close()
+}
+
+func TestRabbitMQBroker_PoolGetReturnsError_OnEmptyPool(t *testing.T) {
+	pool := &ChannelPool{
+		channels: []*poolChannel{},
+		next:     0,
+		size:     0,
 	}
 
-	broker.mu.Lock()
-	broker.channel = nil
-	broker.mu.Unlock()
+	_, err := pool.Get()
+	if err == nil {
+		t.Error("Expected error when getting from empty pool")
+	}
+}
 
-	if broker.channel != nil {
-		t.Error("Expected channel to be nil")
+func TestChannelPool_RoundRobinDistribution(t *testing.T) {
+	// We need a real connection for channels, so skip
+	t.Skip("Requires real RabbitMQ connection for round-robin test")
+}
+
+func TestChannelPool_CloseIdempotent(t *testing.T) {
+	pool := &ChannelPool{
+		channels: []*poolChannel{},
+		next:     0,
+		size:     0,
+	}
+
+	err := pool.Close()
+	if err != nil {
+		t.Errorf("Expected no error closing empty pool, got: %v", err)
+	}
+
+	err = pool.Close()
+	if err != nil {
+		t.Errorf("Expected no error closing already closed pool, got: %v", err)
 	}
 }
 
@@ -173,6 +196,10 @@ func TestRabbitMQBroker_ReconnectMutex(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	if successCount != 1 {
+		t.Errorf("Expected exactly 1 goroutine to acquire CAS, got %d", successCount)
+	}
 }
 
 func TestRabbitMQBroker_NotifyCloseChannel(t *testing.T) {

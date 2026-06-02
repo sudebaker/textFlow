@@ -55,7 +55,7 @@ services:
       dockerfile: cmd/orchestrator/Dockerfile
     container_name: textflow-orchestrator
     ports:
-    - 8080:8080
+    - 8081:8080
     networks:
     - frontend
     - backend
@@ -425,6 +425,8 @@ services:
     - LOG_LEVEL=debug
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
+    - CUDA_VISIBLE_DEVICES=0
+    - NVIDIA_VISIBLE_DEVICES=0
     volumes:
     - results-data:/app/data/results
     - ${MODELS_PATH:?MODELS_PATH is not set}/bge-m3:/models/bge-m3:ro
@@ -449,7 +451,12 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 1G
+          memory: 2G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   redis-exporter:
     image: oliver006/redis_exporter:v1.67.0
     container_name: textflow-redis-exporter

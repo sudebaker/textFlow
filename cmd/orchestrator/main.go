@@ -1324,8 +1324,7 @@ func validateFeatures(featuresStr string) []string {
 	}
 
 	validFeatureSet := map[string]bool{
-		"inferences":           true,
-		"inference_embeddings": true,
+		"inferences": true,
 	}
 
 	rawFeatures := strings.Split(featuresStr, ",")
@@ -1344,7 +1343,7 @@ func validateFeatures(featuresStr string) []string {
 		if !validFeatureSet[normalized] {
 			metrics.InvalidFeaturesTotal.WithLabelValues("unknown_feature").Inc()
 			logger.Warn().Str("feature", f).
-				Msg("Invalid feature requested, ignoring (valid: inferences, inference_embeddings)")
+				Msg("Invalid feature requested, ignoring (valid: inferences)")
 			continue
 		}
 

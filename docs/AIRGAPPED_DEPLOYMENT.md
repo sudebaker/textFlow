@@ -135,7 +135,7 @@ make install-remote HOST=user@10.0.0.5
 4. Creates `.env` from `config/.env.example` and enforces air-gapped variables
 5. Creates Docker named volumes (`redis-data`, `rabbitmq-data`) and bind-mount directories
 6. Starts the stack: `docker compose -f config/docker-compose.yml -f config/docker-compose.gpu.yml up -d`
-7. Polls `http://localhost:8080/health` for up to 60 seconds
+7. Polls `http://localhost:9080/health` for up to 60 seconds
 
 Expected output at the end of a successful install:
 
@@ -146,8 +146,8 @@ Expected output at the end of a successful install:
 
   Service              URL
   -------------------- ----------------------------
-  Orchestrator API     http://localhost:8080
-  Orchestrator health  http://localhost:8080/health
+  Orchestrator API     http://localhost:9080
+  Orchestrator health  http://localhost:9080/health
   Docling              http://localhost:8000
   RabbitMQ management  http://localhost:15672
 ```
@@ -159,10 +159,10 @@ Expected output at the end of a successful install:
 docker compose -f config/docker-compose.yml ps
 
 # Confirm the orchestrator is healthy
-curl http://localhost:8080/health
+curl http://localhost:9080/health
 
 # Submit a test document (actual endpoint is POST /api/v1/documents/process)
-curl -X POST http://localhost:8080/api/v1/documents/process \
+curl -X POST http://localhost:9080/api/v1/documents/process \
   -H "Content-Type: application/json" \
   -d '{"document_url": "http://example.com/test.pdf"}'
 

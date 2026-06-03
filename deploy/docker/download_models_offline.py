@@ -19,19 +19,14 @@ from pathlib import Path
 
 MODEL_REQUIRED_FILE_GROUPS = {
     "urchade/gliner_small-v2.1": [
-        ("config.json",),
         ("gliner_config.json",),
-        ("tokenizer_config.json",),
-        ("special_tokens_map.json",),
-        ("spm.model", "tokenizer.json", "vocab.txt"),
-        ("model.safetensors", "pytorch_model.bin"),
+        ("pytorch_model.bin", "model.safetensors"),
     ],
     "microsoft/deberta-v3-small": [
         ("config.json",),
         ("tokenizer_config.json",),
-        ("special_tokens_map.json",),
         ("spm.model", "tokenizer.json", "vocab.txt"),
-        ("model.safetensors", "pytorch_model.bin"),
+        ("pytorch_model.bin", "model.safetensors"),
     ],
     "BAAI/bge-m3": [
         ("config.json",),

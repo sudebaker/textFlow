@@ -89,7 +89,7 @@ Todos los servicios deben estar en estado **Up** o **Healthy**.
 
 ```bash
 # Comprobar salud del orquestador
-curl http://localhost:8080/health
+curl http://localhost:9080/health
 
 # Respuesta esperada: {"status":"healthy"}
 ```
@@ -98,16 +98,16 @@ curl http://localhost:8080/health
 
 ```bash
 # Subir un documento
-curl -X POST http://localhost:8080/v1/documents/upload \
+curl -X POST http://localhost:9080/v1/documents/upload \
   -F "file=@tu_documento.pdf"
 
 # Respuesta: {"job_id": "xxxxx-xxxxx-xxxxx"}
 
 # Obtener estado del trabajo
-curl http://localhost:8080/v1/documents/xxxxx-xxxxx-xxxxx
+curl http://localhost:9080/v1/documents/xxxxx-xxxxx-xxxxx
 
 # Obtener resultados (cuando esté "completed")
-curl http://localhost:8080/v1/documents/xxxxx-xxxxx-xxxxx | jq '.results'
+curl http://localhost:9080/v1/documents/xxxxx-xxxxx-xxxxx | jq '.results'
 ```
 
 ## 📊 Monitoreo
@@ -126,7 +126,7 @@ docker compose logs -f embeddings-worker
 
 ### Métricas Prometheus
 
-- Orquestador: http://localhost:8080/metrics
+- Orquestador: http://localhost:9080/metrics
 - Embeddings: http://localhost:8001/metrics
 - Entidades: http://localhost:8002/metrics
 

@@ -24,7 +24,7 @@ make infra-up
 make docker-up
 
 # 5. Verificar salud
-curl http://localhost:8080/health
+curl http://localhost:9080/health
 ```
 
 ---
@@ -156,7 +156,7 @@ textflow/
 ### Subir y procesar un documento
 
 ```bash
-curl -X POST http://localhost:8080/v1/documents/upload \
+curl -X POST http://localhost:9080/v1/documents/upload \
   -F "file=@documento.pdf" \
   -F "features=inferences"
 ```
@@ -164,26 +164,26 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 ### Verificar estado del job
 
 ```bash
-curl http://localhost:8080/v1/documents/{job_id}
+curl http://localhost:9080/v1/documents/{job_id}
 # Respuesta: {"job_id":"abc-123","status":"completed","current_step":"metadata"}
 ```
 
 ### Descargar resultados
 
 ```bash
-curl http://localhost:8080/v1/documents/{job_id}/download | gunzip > resultados.json
+curl http://localhost:9080/v1/documents/{job_id}/download | gunzip > resultados.json
 ```
 
 ### Streaming con SSE
 
 ```bash
-curl -N http://localhost:8080/v1/jobs/{job_id}/stream
+curl -N http://localhost:9080/v1/jobs/{job_id}/stream
 ```
 
 ### Batch processing
 
 ```bash
-curl -X POST http://localhost:8080/v1/documents/batch \
+curl -X POST http://localhost:9080/v1/documents/batch \
   -H "Content-Type: application/json" \
   -d '{"documents":[{"text":"..."},{"text":"..."}]}'
 ```
@@ -303,7 +303,7 @@ models/
 ### Health endpoint
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:9080/health
 # {
 #   "status": "up",
 #   "components": {
@@ -316,7 +316,7 @@ curl http://localhost:8080/health
 ### Métricas Prometheus
 
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:9080/metrics
 ```
 
 Métricas disponibles:

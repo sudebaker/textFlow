@@ -55,7 +55,7 @@ services:
       dockerfile: cmd/orchestrator/Dockerfile
     container_name: textflow-orchestrator
     ports:
-    - 8081:8080
+    - 9080:8080
     networks:
     - frontend
     - backend

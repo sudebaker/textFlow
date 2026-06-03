@@ -191,7 +191,7 @@ wait_for_health() {
 
   while (( attempt <= max_attempts )); do
     local response
-    response=$(curl -sf http://localhost:8080/health 2>/dev/null || true)
+    response=$(curl -sf http://localhost:9080/health 2>/dev/null || true)
     if echo "$response" | grep -qE '"status"\s*:\s*"(healthy|ok)"'; then
       log "✓ Orchestrator is healthy"
       return 0
@@ -217,14 +217,14 @@ print_status() {
   echo ""
   echo "  Service              URL"
   echo "  -------------------- ----------------------------"
-  echo "  Orchestrator API     http://localhost:8080"
-  echo "  Orchestrator health  http://localhost:8080/health"
+  echo "  Orchestrator API     http://localhost:9080"
+  echo "  Orchestrator health  http://localhost:9080/health"
   echo "  Docling              http://localhost:8000"
   echo "  RabbitMQ management  http://localhost:15672"
   echo ""
   echo "Verify the stack:"
   echo "  docker compose -f config/docker-compose.yml ps"
-  echo "  curl http://localhost:8080/health"
+  echo "  curl http://localhost:9080/health"
   echo ""
 }
 

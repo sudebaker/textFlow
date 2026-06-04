@@ -691,7 +691,7 @@ Respond with ONLY the JSON array:"""
                 "chat_template_kwargs": {"enable_thinking": False},
             }
 
-            batch_timeout = max(LLM_TIMEOUT, min(180, len(chunks_data) * LLM_TIMEOUT))
+            batch_timeout = max(LLM_TIMEOUT, min(LLM_TIMEOUT * 3, len(chunks_data) * LLM_TIMEOUT))
 
             response = None
             last_error = None

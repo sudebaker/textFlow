@@ -1179,32 +1179,55 @@ func getJobProgress(ctx context.Context, apiURL string, jobID string) (*JobProgr
 func downloadResults(ctx context.Context, apiURL string, jobID string, outputFile string) error {
 	fmt.Println("Downloading results...")
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL+"/v1/documents/"+jobID+"/download", nil)
-	if err != nil {
-		return err
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to get results: status %d", resp.StatusCode)
-	}
-
 	var result JobResults
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
+	var lastErr error
+
+	for retry := 0; retry < 5; retry++ {
+		if retry > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(retry) * time.Second):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL+"/v1/documents/"+jobID+"/download", nil)
+		if err != nil {
+			return err
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("failed to get results: status %d", resp.StatusCode)
+			continue
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+
+		// Validate that we have at least one of: text or chunks
+		if len(result.Chunks) == 0 && result.Text == "" {
+			lastErr = fmt.Errorf("no results found for job %s: no chunks or text extracted", jobID)
+			continue
+		}
+
+		lastErr = nil
+		break
 	}
 
-	// Validate that we have at least one of: text or chunks
-	// The 'text' field is optional (only present if it was extracted).
-	// Results with chunks but no full text are valid (e.g., document with separate chunks).
-	if len(result.Chunks) == 0 && result.Text == "" {
-		return fmt.Errorf("no results found for job %s: no chunks or text extracted", jobID)
+	if lastErr != nil {
+		return lastErr
 	}
 
 	for i, chunk := range result.Chunks {

@@ -250,8 +250,10 @@ class CompletionWorker:
         try:
             os.makedirs(RESULTS_PATH, exist_ok=True)
             file_path = os.path.join(RESULTS_PATH, f"{job_id}.json")
-            with open(file_path, "w", encoding="utf-8") as f:
+            temp_path = file_path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
+            os.rename(temp_path, file_path)
             logger.info(f"Results saved to {file_path}")
             return True
         except Exception as e:
@@ -878,11 +880,11 @@ class CompletionWorker:
                 f"orchestrator:job:{job_id}:meta", "completed_at", str(int(time.time()))
             )
 
+            self.save_results_to_file(job_id, results)
+
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:status", "status", "completed"
             )
-
-            self.save_results_to_file(job_id, results)
             self.send_webhook(job_id, "completed", None)
             self._check_and_notify_batch(job_id, "completed")
 

@@ -529,7 +529,7 @@ class CompletionWorker:
         meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
         created_at = meta.get("created_at")
         if created_at:
-            return datetime.fromtimestamp(int(created_at)).isoformat()
+            return datetime.fromtimestamp(int(created_at)).isoformat() + "Z"
         return None
 
     def check_job_completion(self, job_id: str):
@@ -725,8 +725,8 @@ class CompletionWorker:
             inference_embeddings_raw = self.redis_raw.get(f"orchestrator:job:{job_id}:inference_embeddings")
 
             created_at_timestamp = int(meta.get("created_at", time.time()))
-            created_at = datetime.fromtimestamp(created_at_timestamp).isoformat()
-            completed_at = datetime.fromtimestamp(int(time.time())).isoformat()
+            created_at = datetime.fromtimestamp(created_at_timestamp).isoformat() + "Z"
+            completed_at = datetime.fromtimestamp(int(time.time())).isoformat() + "Z"
 
             if status_data and status_data.get("status") == "completed":
                 logger.info(f"Job {job_id} already finalized, skipping")

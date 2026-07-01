@@ -21,9 +21,6 @@ const (
 	MaxBackoff             = 60 * time.Second
 	ChannelMonitorInterval = 5 * time.Second
 
-	// DelayedExchangeName is the name of the rabbitmq_delayed_message_exchange
-	// used for non-blocking retry backoff in Python workers.
-	// Requires the rabbitmq_delayed_message_exchange plugin to be enabled.
 	DelayedExchangeName = "document_processor_delayed"
 )
 
@@ -85,14 +82,10 @@ func New(cfg *config.Config) (*RabbitMQBroker, error) {
 	}
 
 	if err := broker.declareDelayedExchange(); err != nil {
-		// Non-fatal: log a warning but continue. Workers fall back to
-		// basic_nack(requeue=True) when the delayed exchange is absent.
 		broker.logger.Warn().Err(err).Msg(
 			"Failed to declare delayed exchange — plugin may not be enabled; " +
 				"workers will fall back to blocking retry",
 		)
-		// AMQP closes the channel on a 406 PRECONDITION_FAILED error.
-		// Reopen it so subsequent declarations (queues, DLX bindings) can proceed.
 		newCh, chErr := conn.Channel()
 		if chErr != nil {
 			broker.Close()
@@ -124,44 +117,40 @@ func New(cfg *config.Config) (*RabbitMQBroker, error) {
 	return broker, nil
 }
 
-// declareDLX declares the Dead Letter Exchange and Dead Letter Queue
 func (b *RabbitMQBroker) declareDLX() error {
-	// 1. Declare Dead Letter Exchange
 	err := b.channel.ExchangeDeclare(
-		"document_processor_dlx", // name
-		"topic",                  // type
-		true,                     // durable
-		false,                    // auto-delete
-		false,                    // internal
-		false,                    // no-wait
-		nil,                      // arguments
+		"document_processor_dlx",
+		"topic",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to declare DLX exchange: %w", err)
 	}
 	b.logger.Info().Msg("Dead Letter Exchange declared: document_processor_dlx")
 
-	// 2. Declare Dead Letter Queue (where failed messages will go)
 	_, err = b.channel.QueueDeclare(
-		"dead_letters", // name
-		true,           // durable
-		false,          // delete when unused
-		false,          // exclusive
-		false,          // no-wait
-		nil,            // arguments
+		"dead_letters",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to declare DLQ: %w", err)
 	}
 	b.logger.Info().Msg("Dead Letter Queue declared: dead_letters")
 
-	// 3. Bind DLQ to DLX with wildcard routing key to catch all failed messages
 	err = b.channel.QueueBind(
-		"dead_letters",           // queue name
-		"*_failed",               // routing key pattern
-		"document_processor_dlx", // exchange
-		false,                    // no-wait
-		nil,                      // arguments
+		"dead_letters",
+		"*_failed",
+		"document_processor_dlx",
+		false,
+		nil,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to bind DLQ to DLX: %w", err)
@@ -171,22 +160,14 @@ func (b *RabbitMQBroker) declareDLX() error {
 	return nil
 }
 
-// declareDelayedExchange declares the x-delayed-message exchange used by Python
-// workers for non-blocking retry backoff. Requires the
-// rabbitmq_delayed_message_exchange plugin. Returns an error if the plugin is
-// not installed; callers should treat this as non-fatal and fall back to
-// blocking retry.
 func (b *RabbitMQBroker) declareDelayedExchange() error {
-	// Declare the delayed exchange. The "x-delayed-message" type requires the
-	// rabbitmq_delayed_message_exchange plugin. The underlying routing type is
-	// "direct" so messages are routed by their routing key (queue name).
 	err := b.channel.ExchangeDeclare(
-		DelayedExchangeName, // name
-		"x-delayed-message", // type (plugin-specific)
-		true,                // durable
-		false,               // auto-delete
-		false,               // internal
-		false,               // no-wait
+		DelayedExchangeName,
+		"x-delayed-message",
+		true,
+		false,
+		false,
+		false,
 		amqp.Table{
 			"x-delayed-type": "direct",
 		},
@@ -196,10 +177,6 @@ func (b *RabbitMQBroker) declareDelayedExchange() error {
 	}
 	b.logger.Info().Msgf("Delayed exchange declared: %s", DelayedExchangeName)
 
-	// Bind each work queue to the delayed exchange using the queue name as
-	// routing key. This allows Python workers to publish a retry message to
-	// the delayed exchange with routing_key=<original_queue> and have it
-	// delivered after x-delay milliseconds.
 	queues := []string{
 		b.config.ExtractQueue,
 		b.config.EmbeddingsQueue,
@@ -240,10 +217,10 @@ func (b *RabbitMQBroker) declareQueues() error {
 func (b *RabbitMQBroker) declareQueue(name string) error {
 	_, err := b.channel.QueueDeclare(
 		name,
-		true,  // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
+		true,
+		false,
+		false,
+		false,
 		amqp.Table{
 			"x-dead-letter-exchange":    "document_processor_dlx",
 			"x-dead-letter-routing-key": name + "_failed",
@@ -265,112 +242,6 @@ func (b *RabbitMQBroker) PublishJobMessage(ctx context.Context, jobMsg *models.J
 	return b.Publish(ctx, queue, jobMsg)
 }
 
-// ConsumeWithContext starts consuming messages with context cancelation support
-func (b *RabbitMQBroker) ConsumeWithContext(ctx context.Context, queue string, handler func([]byte) error) error {
-	b.mu.RLock()
-	if b.channel == nil {
-		b.mu.RUnlock()
-		return fmt.Errorf("channel is nil, cannot start consumer")
-	}
-
-	msgs, err := b.channel.Consume(
-		queue,
-		"",    // consumer tag
-		false, // auto-ack
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
-		nil,
-	)
-	b.mu.RUnlock()
-
-	if err != nil {
-		return fmt.Errorf("failed to start consuming queue %s: %w", queue, err)
-	}
-
-	go func() {
-		defer func() {
-			b.logger.Info().Str("queue", queue).Msg("Consumer stopped")
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				b.logger.Info().Str("queue", queue).Msg("Context cancelled, stopping consumer")
-				return
-
-			case msg, ok := <-msgs:
-				if !ok {
-					b.logger.Warn().Str("queue", queue).Msg("Message channel closed, attempting to reconnect consumer...")
-					b.reconnect()
-					b.startConsumer(ctx, queue, handler)
-					return
-				}
-
-				if err := handler(msg.Body); err != nil {
-					b.logger.Error().Err(err).Str("queue", queue).Msg("Error processing message")
-					msg.Nack(false, false)
-				} else {
-					msg.Ack(false)
-				}
-			}
-		}
-	}()
-
-	return nil
-}
-
-func (b *RabbitMQBroker) startConsumer(ctx context.Context, queue string, handler func([]byte) error) {
-	b.mu.RLock()
-	if b.channel == nil {
-		b.mu.RUnlock()
-		b.logger.Error().Str("queue", queue).Msg("Cannot start consumer: channel is nil")
-		return
-	}
-
-	msgs, err := b.channel.Consume(
-		queue,
-		"",    // consumer tag
-		false, // auto-ack
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
-		nil,
-	)
-	b.mu.RUnlock()
-
-	if err != nil {
-		b.logger.Error().Err(err).Str("queue", queue).Msg("Failed to restart consumer")
-		return
-	}
-
-	go func() {
-		defer func() {
-			b.logger.Info().Str("queue", queue).Msg("Consumer restarted and stopped")
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-msgs:
-				if !ok {
-					return
-				}
-
-				if err := handler(msg.Body); err != nil {
-					b.logger.Error().Err(err).Str("queue", queue).Msg("Error processing message")
-					msg.Nack(false, false)
-				} else {
-					msg.Ack(false)
-				}
-			}
-		}
-	}()
-}
-
-// Consume is deprecated, use ConsumeWithContext instead
-// Maintained for backwards compatibility
 func (b *RabbitMQBroker) Consume(queue string, handler func([]byte) error) error {
 	return b.ConsumeWithContext(context.Background(), queue, handler)
 }
@@ -415,7 +286,6 @@ func (b *RabbitMQBroker) GetQueueInfo(queue string) (*QueueInfo, error) {
 	return nil, fmt.Errorf("failed to get queue info for %s after 3 attempts", queue)
 }
 
-// UpdateQueueMetrics updates Prometheus metrics for all queues
 func (b *RabbitMQBroker) UpdateQueueMetrics() error {
 	queues := []string{
 		b.config.ExtractQueue,
@@ -432,7 +302,6 @@ func (b *RabbitMQBroker) UpdateQueueMetrics() error {
 			continue
 		}
 
-		// Update queue depth metric
 		metrics.QueueDepth.WithLabelValues(queue).Set(float64(info.Messages))
 	}
 
@@ -495,124 +364,4 @@ func (b *RabbitMQBroker) startMonitoring() {
 			}
 		}
 	}()
-}
-
-func (b *RabbitMQBroker) reconnect() {
-	// Use CompareAndSwap for lock-free atomic operation
-	// Only proceed if we successfully transition from false to true
-	if !b.isReconnecting.CompareAndSwap(false, true) {
-		// Already reconnecting, skip
-		return
-	}
-
-	backoff := InitialBackoff
-	attempts := 0
-
-	for attempts < MaxReconnectAttempts {
-		select {
-		case <-b.stopChan:
-			b.isReconnecting.Store(false)
-			return
-		default:
-		}
-
-		b.mu.Lock()
-		if b.pool != nil {
-			b.pool.Close()
-		}
-		b.channel = nil
-		b.pool = nil
-		b.mu.Unlock()
-
-		// Context-aware sleep: respect stopChan during backoff
-		select {
-		case <-b.stopChan:
-			b.isReconnecting.Store(false)
-			return
-		case <-time.After(backoff):
-		}
-
-		b.mu.Lock()
-		conn, err := amqp.Dial(b.config.RabbitMQURL)
-		if err != nil {
-			b.mu.Unlock()
-			b.logger.Warn().Err(err).Msgf("Reconnection attempt %d/%d failed", attempts+1, MaxReconnectAttempts)
-			attempts++
-			backoff = time.Duration(float64(backoff) * 1.5)
-			if backoff > MaxBackoff {
-				backoff = MaxBackoff
-			}
-			continue
-		}
-
-		channel, err := conn.Channel()
-		if err != nil {
-			conn.Close()
-			b.mu.Unlock()
-			b.logger.Warn().Err(err).Msgf("Failed to open channel on reconnection attempt %d/%d", attempts+1, MaxReconnectAttempts)
-			attempts++
-			backoff = time.Duration(float64(backoff) * 1.5)
-			if backoff > MaxBackoff {
-				backoff = MaxBackoff
-			}
-			continue
-		}
-
-		newPool, err := NewChannelPool(conn, b.config.RabbitMQPoolSize, b.logger)
-		if err != nil {
-			channel.Close()
-			conn.Close()
-			b.mu.Unlock()
-			b.logger.Warn().Err(err).Msgf("Failed to create channel pool on reconnection attempt %d/%d", attempts+1, MaxReconnectAttempts)
-			attempts++
-			backoff = time.Duration(float64(backoff) * 1.5)
-			if backoff > MaxBackoff {
-				backoff = MaxBackoff
-			}
-			continue
-		}
-
-		b.conn = conn
-		b.channel = channel
-		b.pool = newPool
-		b.mu.Unlock()
-
-		notifyClose := b.conn.NotifyClose(make(chan *amqp.Error))
-		b.closedChan = notifyClose
-
-		if err := b.redeclareQueues(); err != nil {
-			b.logger.Error().Err(err).Msg("Failed to redeclare queues after reconnection")
-			attempts++
-			backoff = time.Duration(float64(backoff) * 1.5)
-			if backoff > MaxBackoff {
-				backoff = MaxBackoff
-			}
-			continue
-		}
-
-		metrics.RabbitMQReconnects.Inc()
-		b.logger.Info().Msg("Successfully reconnected to RabbitMQ and redeclared queues")
-		b.isReconnecting.Store(false)
-		return
-	}
-
-	b.isReconnecting.Store(false)
-	metrics.RabbitMQReconnectErrors.Inc()
-	b.logger.Error().Msgf("Failed to reconnect after %d attempts", MaxReconnectAttempts)
-}
-
-func (b *RabbitMQBroker) redeclareQueues() error {
-	if err := b.declareDLX(); err != nil {
-		return fmt.Errorf("failed to redeclare DLX: %w", err)
-	}
-	if err := b.declareDelayedExchange(); err != nil {
-		// Non-fatal on reconnect too
-		b.logger.Warn().Err(err).Msg(
-			"Failed to redeclare delayed exchange after reconnect — plugin may not be enabled",
-		)
-	}
-	if err := b.declareQueues(); err != nil {
-		return fmt.Errorf("failed to redeclare queues: %w", err)
-	}
-	return nil
 }

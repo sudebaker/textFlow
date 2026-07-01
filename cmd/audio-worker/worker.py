@@ -1,56 +1,45 @@
 import asyncio
 import json
 import logging
-import os
-from typing import Optional
 
-import aio_pika
-import redis
-from prometheus_client import Counter, Histogram, start_http_server
+from pydantic_settings import BaseSettings
 
 from pkg.audio_client.client import WhisperClientPool
-from pkg.audio_client.exceptions import WhisperServiceError
-from pkg.events_python import EventBus
-from pkg.logging_python import setup_logging
-from pkg.worker_common.security import register_signal_handlers, validate_upload_path
+from pkg.worker_common.async_base import BaseAsyncWorker
+from pkg.worker_common.security import validate_upload_path
 from segment_chunker import SegmentChunker
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
-QUEUE_NAME = os.getenv("AUDIO_QUEUE", "audio")
-METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
-MAX_AUDIO_SIZE_MB = int(os.getenv("MAX_AUDIO_SIZE_MB", "500"))
-PREFETCH_COUNT = int(os.getenv("PREFETCH_COUNT", "2"))
-UPLOAD_PATH = os.getenv("UPLOAD_PATH", "/app/data/uploads")
 
-AUDIO_JOBS_TOTAL = Counter("audio_jobs_total", "Total audio processing jobs", ["status"])
-AUDIO_PROCESSING_TIME = Histogram("audio_processing_seconds", "Audio processing time")
+class Settings(BaseSettings):
+    redis_url: str = "redis://localhost:6379"
+    rabbitmq_url: str = "amqp://localhost:5672/"
+    queue_name: str = "audio"
+    metrics_port: int = 8005
+    max_audio_size_mb: int = 500
+    prefetch_count: int = 2
+    upload_path: str = "/app/data/uploads"
+    whisper_urls: str = "http://whisper:9666"
+    whisper_timeout: int = 300
+    whisper_max_retries: int = 3
+
+    class Config:
+        env_prefix = "AUDIO_"
 
 
-class AudioWorker:
-    """Async RabbitMQ consumer for audio transcription pipeline.
-
-    Transcribes audio via external Whisper service, builds chunks,
-    stores text in Redis, and publishes to downstream queues.
-
-    Uses aio_pika (async) because Whisper calls can take up to 300s.
-    Blocking a pika synchronous consumer for that duration is unacceptable.
-    """
-
+class AudioWorker(BaseAsyncWorker):
     def __init__(self):
-        self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        self.event_bus = EventBus(self.redis_client)
+        super().__init__(
+            worker_name="audio-worker",
+            queue_name="audio",
+            metrics_port=Settings().metrics_port,
+        )
+        self.settings = Settings()
         self.whisper_pool = WhisperClientPool()
         self.chunker = SegmentChunker()
-        self._channel = None
 
-    async def _process_message_async(
-        self,
-        message: aio_pika.abc.AbstractIncomingMessage,
-    ) -> None:
+    async def _process_message_async(self, message):
         job_id = None
         async with message.process(requeue=False):
             try:
@@ -62,14 +51,17 @@ class AudioWorker:
                 )
 
                 document_path = body["document_path"]
-                document_path = validate_upload_path(document_path, UPLOAD_PATH)
+                document_path = validate_upload_path(
+                    document_path, self.settings.upload_path
+                )
                 with open(document_path, "rb") as f:
                     audio_bytes = f.read()
 
                 size_mb = len(audio_bytes) / (1024 * 1024)
-                if size_mb > MAX_AUDIO_SIZE_MB:
+                if size_mb > self.settings.max_audio_size_mb:
                     raise ValueError(
-                        f"Audio file size {size_mb:.1f}MB exceeds limit of {MAX_AUDIO_SIZE_MB}MB"
+                        f"Audio file size {size_mb:.1f}MB exceeds "
+                        f"limit of {self.settings.max_audio_size_mb}MB"
                     )
 
                 loop = asyncio.get_event_loop()
@@ -123,7 +115,6 @@ class AudioWorker:
                 if features:
                     job_message["features"] = features
 
-                # Determine target queues based on features
                 target_queues = ["embeddings", "entities", "metadata"]
                 if "inferences" in features:
                     target_queues.append("inferences")
@@ -131,50 +122,25 @@ class AudioWorker:
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in target_queues:
                     await self._channel.default_exchange.publish(
-                        aio_pika.Message(
-                            body=job_message_json,
-                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                            content_type="application/json",
-                        ),
+                        self._make_message(job_message_json),
                         routing_key=queue_name,
                     )
 
                 self.event_bus.publish_job_progress(job_id, 25, "processing")
-                AUDIO_JOBS_TOTAL.labels(status="completed").inc()
+                self.jobs_completed += 1
 
             except Exception as e:
                 if job_id:
                     self.redis_client.hset(
                         f"orchestrator:job:{job_id}:status", "status", "failed"
                     )
-                    self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
+                    self.redis_client.set(
+                        f"orchestrator:job:{job_id}:error", str(e)
+                    )
                     self.event_bus.publish_job_failed(job_id, str(e))
-                    AUDIO_JOBS_TOTAL.labels(status="failed").inc()
+                    self.jobs_failed += 1
                 raise
-
-    async def connect(self) -> aio_pika.abc.AbstractConnection:
-        connection = await aio_pika.connect_robust(RABBITMQ_URL)
-        self._channel = await connection.channel()
-        await self._channel.set_qos(prefetch_count=PREFETCH_COUNT)
-
-        queue = await self._channel.declare_queue(QUEUE_NAME, durable=True)
-        await queue.consume(self._process_message_async)
-
-        return connection
-
-
-async def main():
-    setup_logging("audio-worker")
-
-    worker = AudioWorker()
-    connection = await worker.connect()
-    register_signal_handlers(connection)
-
-    start_http_server(METRICS_PORT)
-    logger.info(f"Audio worker started on queue {QUEUE_NAME}, metrics on port {METRICS_PORT}")
-
-    await asyncio.Future()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    AudioWorker().start()

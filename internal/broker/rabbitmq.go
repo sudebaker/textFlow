@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -32,6 +31,7 @@ type RabbitMQBroker struct {
 	conn           *amqp.Connection
 	channel        *amqp.Channel
 	pool           *ChannelPool
+	pub            *publisher
 	config         *config.Config
 	logger         zerolog.Logger
 	mu             sync.RWMutex
@@ -119,6 +119,7 @@ func New(cfg *config.Config) (*RabbitMQBroker, error) {
 		return nil, fmt.Errorf("failed to create channel pool: %w", err)
 	}
 	broker.pool = pool
+	broker.pub = newPublisher(pool, logger)
 
 	return broker, nil
 }
@@ -252,91 +253,7 @@ func (b *RabbitMQBroker) declareQueue(name string) error {
 }
 
 func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message interface{}) error {
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled before publish: %w", ctx.Err())
-	default:
-	}
-
-	body, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	retryWithBackoff := func(attempt int) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * time.Second):
-			return nil
-		}
-	}
-
-	for attempt := 0; attempt < 3; attempt++ {
-		b.mu.RLock()
-		pool := b.pool
-		b.mu.RUnlock()
-
-		if pool == nil {
-			b.logger.Warn().Msgf("Channel pool is nil, triggering reconnect (attempt %d/3)", attempt+1)
-			b.reconnect()
-			if err := retryWithBackoff(attempt); err != nil {
-				return fmt.Errorf("context cancelled during retry: %w", err)
-			}
-			continue
-		}
-
-		pc, err := pool.Checkout(CheckoutTimeout)
-		if err != nil {
-			b.logger.Warn().Err(err).Msgf("Failed to checkout pool channel (attempt %d/3)", attempt+1)
-			b.reconnect()
-			if err := retryWithBackoff(attempt); err != nil {
-				return fmt.Errorf("context cancelled during retry: %w", err)
-			}
-			continue
-		}
-
-		ack, err := pc.PublishWithConfirm(
-			"",    // exchange
-			queue, // routing key
-			false, // mandatory
-			false, // immediate
-			amqp.Publishing{
-				ContentType:  "application/json",
-				Body:         body,
-				DeliveryMode: amqp.Persistent,
-				Timestamp:    time.Now(),
-			},
-		)
-		pool.Return(pc)
-
-		if err != nil {
-			metrics.RabbitMQErrors.Inc()
-			b.logger.Warn().Err(err).Msgf("Publish confirm failed (attempt %d/3)", attempt+1)
-			b.reconnect()
-			if err := retryWithBackoff(attempt); err != nil {
-				return fmt.Errorf("context cancelled during retry: %w", err)
-			}
-			continue
-		}
-
-		if !ack {
-			metrics.RabbitMQErrors.Inc()
-			b.logger.Warn().Msgf("Publish nack received (attempt %d/3)", attempt+1)
-			b.reconnect()
-			if err := retryWithBackoff(attempt); err != nil {
-				return fmt.Errorf("context cancelled during retry: %w", err)
-			}
-			continue
-		}
-
-		metrics.QueuePublishTotal.WithLabelValues(queue).Inc()
-		b.logger.Debug().Msgf("Message published to queue: %s with confirm ack", queue)
-		return nil
-	}
-
-	metrics.RabbitMQErrors.Inc()
-	return fmt.Errorf("failed to publish message to queue %s after 3 attempts", queue)
+	return b.pub.publishJSON(ctx, queue, message)
 }
 
 func (b *RabbitMQBroker) PublishJobMessage(ctx context.Context, jobMsg *models.JobMessage) error {

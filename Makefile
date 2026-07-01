@@ -100,6 +100,10 @@ test-python: ## Run all Python tests
 	@echo -e "${YELLOW}Running Python tests...${NC}"
 	pytest cmd/*/tests -v
 
+test-broker: ## Run broker integration tests with temporary RabbitMQ container
+	@echo -e "${YELLOW}Running broker integration tests...${NC}"
+	@bash scripts/test_broker.sh
+
 # =============================================================================
 # Quality
 # =============================================================================

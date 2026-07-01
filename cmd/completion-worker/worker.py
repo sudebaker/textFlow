@@ -1,50 +1,25 @@
 #!/usr/bin/env python3
 """Completion Worker: Final aggregator in the textFlow pipeline.
 
-This module monitors job completion across all workers via Redis pub/sub and
-aggregates their results into a single finalized JSON structure. It acts as the
-final step in the document processing pipeline, waiting for all required workers
-(extraction, embeddings, entities, metadata) to complete before writing results
-to file and notifying via webhook.
-
-Key responsibilities:
-  - Subscribe to job:events channel via Redis pub/sub
-  - Monitor completion status of all pipeline workers for each job
-  - Deduplicate entities and aggregate results from all workers
-  - Finalize jobs by saving results to /results/{job_id}.json
-  - Send webhook notifications when jobs complete or fail
-  - Support different pipeline types (default full pipeline vs. spreadsheet)
-
-Environment variables:
-  - REDIS_URL: Redis connection URL (default: redis://localhost:6379)
-  - WEBHOOK_URL: Optional webhook endpoint for job completion notifications
-  - RESULTS_PATH: Directory to save final JSON results (default: /app/data/results)
-  - API_BASE_URL: Base URL for download links in webhook (default: http://localhost:8080)
-  - METRICS_PORT: Prometheus metrics port (default: 8005)
-
-Metrics:
-  - completion_worker_jobs_finalized_total: Counter of finalized jobs by status
-  - completion_worker_job_finalization_duration_seconds: Histogram of finalization time
-
-Pipeline variants:
-  - Full pipeline (default): extraction, embeddings, entities, metadata
-  - Spreadsheet pipeline: extraction, entities (skips embeddings/metadata)
-  - With inferences: Adds 'inferences' to required_steps if feature was requested
+Subscribes to job:events via Redis pub/sub and aggregates results from all
+pipeline workers. Finalizes jobs by saving results to /results/{job_id}.json
+and sending webhook notifications.
 """
 
-import os
-import sys
-import json
 import hashlib
 import hmac
+import json
 import logging
-import msgpack
+import os
+import sys
 import time
-import redis
-import requests
 from datetime import datetime
-from typing import Dict, Any, Optional, List
-from prometheus_client import Counter, Histogram, start_http_server
+from typing import Any, Dict, List, Optional
+
+import msgpack
+import requests
+from prometheus_client import Counter, Histogram
+from pydantic_settings import BaseSettings
 from rapidfuzz import fuzz
 from unidecode import unidecode
 
@@ -58,8 +33,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
-from pkg.events_python import EventBus
-from app.config.settings import Settings
+from pkg.worker_common.pubsub_base import BasePubSubWorker
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -71,20 +45,24 @@ except ImportError as e:
     SentenceTransformer = None
     torch = None
 
-_settings = Settings()
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
-METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
-FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
+class Settings(BaseSettings):
+    redis_url: str = "redis://localhost:6379"
+    fuzzy_match_threshold: float = 0.85
+    webhook_url: str = ""
+    results_path: str = "/app/data/results"
+    api_base_url: str = "http://localhost:8080"
+    metrics_port: int = 8005
+    embeddings_model_path: str = "/models/bge-m3"
+    embeddings_device: str = "cuda"
+    embedding_batch_size: int = 32
 
-EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
-EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+    class Config:
+        env_prefix = ""
 
-# Prometheus metrics
+
+settings = Settings()
+
 jobs_finalized_total = Counter(
     "completion_worker_jobs_finalized_total", "Total jobs finalized", ["status"]
 )
@@ -94,162 +72,75 @@ job_finalization_duration = Histogram(
 )
 
 
-class CompletionWorker:
-    """Aggregates job results and finalizes document processing.
-
-    This worker subscribes to job progress events via Redis pub/sub and monitors
-    the completion status of all required pipeline steps. Once all required steps
-    for a job are complete, it aggregates their results, saves to file, and sends
-    webhook notifications.
-
-    Attributes:
-        redis_client: Redis client for pub/sub and data retrieval.
-        event_bus: EventBus instance for publishing job completion/failure events.
-        default_required_steps: Set of steps required for full pipeline jobs
-            (extraction, embeddings, entities, metadata).
-        spreadsheet_required_steps: Set of steps required for spreadsheet jobs
-            (extraction, entities only).
-    """
-
+class CompletionWorker(BasePubSubWorker):
     def __init__(self):
-        """Initialize the completion worker with Redis connection and event bus.
-
-        Sets up Redis client for pub/sub subscriptions and data retrieval, and
-        defines which pipeline steps are required for different document types.
-        Different pipeline variants have different required steps:
-          - Full pipeline (default): extraction, embeddings, entities, metadata
-          - Spreadsheet: extraction, entities (skips embeddings/metadata)
-          - With inferences: Adds 'inferences' to required_steps if feature requested
-
-        Raises:
-            redis.ConnectionError: If Redis connection cannot be established.
-        """
-        self.redis_client = redis.from_url(
-            REDIS_URL,
-            decode_responses=True,
-            socket_keepalive=True,
-            socket_connect_timeout=5,
-            socket_timeout=None,
-            health_check_interval=30,
+        super().__init__(
+            worker_name="completion-worker",
+            metrics_port=settings.metrics_port,
         )
-        # Raw client (no decode_responses) for binary keys like MsgPack embeddings
-        self.redis_raw = redis.from_url(
-            REDIS_URL,
-            decode_responses=False,
-            socket_keepalive=True,
-            socket_connect_timeout=5,
-            socket_timeout=None,
-            health_check_interval=30,
-        )
-        self.event_bus = EventBus(self.redis_client)
-        # Default required steps for full pipeline
         self.default_required_steps = {
             "extraction",
             "embeddings",
             "entities",
             "metadata",
         }
-        # Spreadsheet pipeline (no embeddings, no metadata)
         self.spreadsheet_required_steps = {"extraction", "entities"}
-        # Initialize embedding service lazily (loaded on first use, not during startup)
         self._embedding_service = None
         self._embedding_service_loaded = False
 
     def _get_embedding_service(self):
-        """Lazy loading of embedding service to avoid blocking startup."""
         if self._embedding_service_loaded:
             return self._embedding_service
-
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             logger.warning("sentence-transformers not available, inference embeddings disabled")
             self._embedding_service_loaded = True
             return None
-
         try:
-            device = EMBEDDINGS_DEVICE if torch.cuda.is_available() else "cpu"
+            device = settings.embeddings_device if torch.cuda.is_available() else "cpu"
             self._embedding_service = SentenceTransformer(
-                EMBEDDINGS_MODEL_PATH,
-                device=device
+                settings.embeddings_model_path,
+                device=device,
             )
             logger.info(f"Embedding service loaded with device={device}")
         except Exception as e:
             logger.warning(f"Failed to load embedding service: {e}")
             self._embedding_service = None
-
         self._embedding_service_loaded = True
         return self._embedding_service
 
     def _generate_inference_embeddings(
         self, inferences_by_chunk: Dict[str, List[Dict]]
     ) -> Dict[str, Dict[str, List[float]]]:
-        """Generate embeddings for inference texts.
-
-        Args:
-            inferences_by_chunk: Dict mapping chunk_id to list of inference dicts
-
-        Returns:
-            Dict mapping chunk_id to {inference_idx: embedding_vector}
-        """
         if not inferences_by_chunk:
             return {}
-
         inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
-
         for chunk_id, inferences in inferences_by_chunk.items():
             if not inferences:
                 continue
-
             texts = [inf.get("text", "") or "" for inf in inferences]
             if not any(texts):
                 continue
-
             try:
                 embeddings = self._get_embedding_service().encode(
                     texts,
-                    batch_size=EMBEDDING_BATCH_SIZE,
+                    batch_size=settings.embedding_batch_size,
                     show_progress_bar=False,
                     convert_to_numpy=True,
                 )
-
                 chunk_embeddings: Dict[str, List[float]] = {}
                 for idx, embedding in enumerate(embeddings):
-                    chunk_embeddings[f"inference_{idx}"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
-
+                    chunk_embeddings[f"inference_{idx}"] = (
+                        embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
+                    )
                 inference_embeddings[chunk_id] = chunk_embeddings
-                logger.debug(f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}")
             except Exception as e:
                 logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
-
         return inference_embeddings
 
     def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
-        """Save finalized job results to JSON file.
-
-        Writes the complete aggregated results to /results/{job_id}.json with
-        proper UTF-8 encoding and pretty-printing (indent=2) for readability.
-        Automatically creates the RESULTS_PATH directory if it doesn't exist.
-
-        This operation is idempotent and can be safely called multiple times
-        for the same job (it will overwrite the previous file).
-
-        Args:
-            job_id: Unique identifier of the job.
-            results: Dictionary containing aggregated JobResults with keys:
-                - job_id, status, created_at, completed_at
-                - document_metadata, text_metadata
-                - chunks, embeddings, entities
-                - (optional) source_classification, micro_inferences
-
-        Returns:
-            True if file was saved successfully, False if an exception occurred.
-            Exceptions are logged but not raised.
-
-        Raises:
-            Does not raise exceptions; logs errors and returns False instead.
-        """
         try:
-            os.makedirs(RESULTS_PATH, exist_ok=True)
-            file_path = os.path.join(RESULTS_PATH, f"{job_id}.json")
+            os.makedirs(settings.results_path, exist_ok=True)
+            file_path = os.path.join(settings.results_path, f"{job_id}.json")
             temp_path = file_path + ".tmp"
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
@@ -263,73 +154,25 @@ class CompletionWorker:
     def send_webhook(
         self, job_id: str, status: str, error: Optional[str] = None
     ) -> bool:
-        """Send webhook notification when job completes or fails.
-
-        Posts a notification to the configured WEBHOOK_URL with job completion
-        or failure details. The webhook is only sent if WEBHOOK_URL environment
-        variable is set or per-job webhook is configured; if not configured,
-        this method returns False silently.
-
-        Per-job webhooks are read from Redis :meta hash (webhook_url, webhook_secret).
-        Falls back to global WEBHOOK_URL if no per-job webhook is set.
-
-        When webhook_secret is present, computes HMAC-SHA256 signature using:
-            signature = hmac.new(secret.encode(), json.dumps(payload).encode(), hashlib.sha256).hexdigest()
-        Adds headers X-Webhook-Signature and X-Webhook-Timestamp.
-
-        Webhook payload structure:
-            {
-                "job_id": str,
-                "status": "completed" | "failed",
-                "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
-                "completed_at": str (ISO 8601 format),
-                "error": str (only if status="failed")
-            }
-
-        This operation is idempotent (can be called multiple times for same job).
-        Failures are logged but do not prevent job finalization.
-
-        Args:
-            job_id: Unique identifier of the job.
-            status: Job status ("completed" or "failed").
-            error: Optional error message to include in webhook payload
-                (only applicable if status="failed").
-
-        Returns:
-            True if webhook was sent successfully or WEBHOOK_URL not configured.
-            False if webhook_url is set but the HTTP request failed.
-
-        Raises:
-            Does not raise exceptions; logs errors and returns False instead.
-
-        Note:
-            - Webhook timeout is 10 seconds
-            - HTTP errors are logged at ERROR level
-            - Optional WEBHOOK_URL env var or per-job webhook determines if webhooks are enabled
-        """
-        webhook_url = WEBHOOK_URL
+        webhook_url = settings.webhook_url
         webhook_secret = ""
-
         if job_id:
             meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
             job_webhook_url = meta.get("webhook_url", "")
             if job_webhook_url:
                 webhook_url = job_webhook_url
                 webhook_secret = meta.get("webhook_secret", "")
-
         if not webhook_url:
             return False
-
         try:
             payload = {
                 "job_id": job_id,
                 "status": status,
-                "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+                "download_url": f"{settings.api_base_url}/v1/documents/{job_id}/download",
                 "completed_at": datetime.utcnow().isoformat() + "Z",
             }
             if error:
                 payload["error"] = error
-
             headers = {"Content-Type": "application/json"}
             if webhook_secret:
                 timestamp = str(int(time.time()))
@@ -337,11 +180,10 @@ class CompletionWorker:
                 signature = hmac.new(
                     webhook_secret.encode(),
                     payload_json.encode(),
-                    hashlib.sha256
+                    hashlib.sha256,
                 ).hexdigest()
                 headers["X-Webhook-Signature"] = signature
                 headers["X-Webhook-Timestamp"] = timestamp
-
             response = requests.post(
                 webhook_url,
                 json=payload,
@@ -356,22 +198,19 @@ class CompletionWorker:
             return False
 
     def _check_and_notify_batch(self, job_id: str, status: str):
-        """Check if job is part of a batch and notify when batch completes."""
         batch_id = self.redis_client.hget(
             f"orchestrator:job:{job_id}:meta", "batch_id"
         )
         if not batch_id:
             return
-
         batch_id = batch_id.decode() if isinstance(batch_id, bytes) else batch_id
         batch_done_key = f"orchestrator:batch:{batch_id}:done_count"
-
         done = self.redis_client.incr(batch_done_key)
         if done == 1:
             self.redis_client.expire(batch_done_key, 24 * 60 * 60)
-
-        total = int(self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "total") or 0)
-
+        total = int(
+            self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "total") or 0
+        )
         if done >= total:
             webhook_url = self.redis_client.hget(
                 f"orchestrator:batch:{batch_id}:meta", "webhook_url"
@@ -380,36 +219,44 @@ class CompletionWorker:
                 f"orchestrator:batch:{batch_id}:meta", "webhook_secret"
             )
             if webhook_url:
-                webhook_url = webhook_url.decode() if isinstance(webhook_url, bytes) else webhook_url
-                webhook_secret = webhook_secret.decode() if isinstance(webhook_secret, bytes) else webhook_secret
+                webhook_url = (
+                    webhook_url.decode() if isinstance(webhook_url, bytes) else webhook_url
+                )
+                webhook_secret = (
+                    webhook_secret.decode() if isinstance(webhook_secret, bytes) else webhook_secret
+                )
                 self._send_batch_webhook(batch_id, status, webhook_url, webhook_secret)
 
-    def _send_batch_webhook(self, batch_id: str, final_status: str, webhook_url: str, webhook_secret: Optional[str] = None):
-        """Send batch completion webhook."""
+    def _send_batch_webhook(
+        self,
+        batch_id: str,
+        final_status: str,
+        webhook_url: str,
+        webhook_secret: Optional[str] = None,
+    ):
         try:
             jobs = self.redis_client.smembers(f"orchestrator:batch:{batch_id}:jobs")
             job_statuses = []
             completed = failed = 0
-
             for job_id in jobs:
                 job_id = job_id.decode() if isinstance(job_id, bytes) else job_id
                 if not job_id:
                     continue
-                status = self.redis_client.hget(f"orchestrator:job:{job_id}:status", "status")
+                status = self.redis_client.hget(
+                    f"orchestrator:job:{job_id}:status", "status"
+                )
                 status = status.decode() if isinstance(status, bytes) else status
                 job_statuses.append({"id": job_id, "status": status})
                 if status == "completed":
                     completed += 1
                 else:
                     failed += 1
-
             if failed == len(jobs):
                 batch_status = "failed"
             elif failed > 0:
                 batch_status = "partial"
             else:
                 batch_status = "completed"
-
             payload = {
                 "batch_id": batch_id,
                 "status": batch_status,
@@ -418,16 +265,14 @@ class CompletionWorker:
                 "failed": failed,
                 "jobs": job_statuses,
             }
-
             headers = {"Content-Type": "application/json"}
             if webhook_secret:
                 signature = hmac.new(
                     webhook_secret.encode(),
                     json.dumps(payload).encode(),
-                    hashlib.sha256
+                    hashlib.sha256,
                 ).hexdigest()
                 headers["X-Webhook-Signature"] = f"sha256={signature}"
-
             response = requests.post(webhook_url, json=payload, timeout=10, headers=headers)
             response.raise_for_status()
             logger.info(f"Batch webhook sent for {batch_id}")
@@ -435,26 +280,6 @@ class CompletionWorker:
             logger.error(f"Failed to send batch webhook: {e}")
 
     def deduplicate_entities(self, entities: list) -> dict:
-        """Deduplicate entities using fuzzy text matching, keeping highest confidence.
-
-        Two entities merge when they share the same label AND their normalized texts
-        are similar enough (fuzz.ratio >= FUZZY_MATCH_THRESHOLD).  Normalization uses
-        unidecode + lower + strip so accented variants ("Educación" / "Educacion")
-        are treated as identical.
-
-        The threshold is read from FUZZY_MATCH_THRESHOLD env var (default 0.85).
-
-        Args:
-            entities: List of entity dicts, each expected to have:
-                - entity_id (optional): stable 12-char hex ID
-                - label, text, confidence
-
-        Returns:
-            Dict keyed by entity_id → {label, text, confidence}.
-            Per-chunk fields (chunk_id, start, end) are preserved as start_offset,
-            end_offset, chunk_id in the merged entity.
-            Falls back to generating entity_id from label:text if field missing.
-        """
         if not entities:
             return {}
 
@@ -465,9 +290,7 @@ class CompletionWorker:
             key = f"{label}:{_normalize(text)}"
             return hashlib.sha256(key.encode()).hexdigest()[:12]
 
-        # result maps entity_id → {label, text, confidence}
         result: dict = {}
-        # norm_index maps entity_id → normalized text (for similarity lookup)
         norm_index: dict = {}
 
         for ent in entities:
@@ -475,17 +298,14 @@ class CompletionWorker:
             text = ent.get("text", "")
             confidence = ent.get("confidence", 0.0)
             norm_text = _normalize(text)
-
-            # Find an existing entry with same label and similar enough text
             matched_id = None
             for existing_id, existing_norm in norm_index.items():
                 if result[existing_id]["label"] != label:
                     continue
                 similarity = fuzz.ratio(norm_text, existing_norm) / 100.0
-                if similarity >= FUZZY_MATCH_THRESHOLD:
+                if similarity >= settings.fuzzy_match_threshold:
                     matched_id = existing_id
                     break
-
             if matched_id:
                 if confidence > result[matched_id].get("confidence", 0):
                     result[matched_id] = {
@@ -510,24 +330,12 @@ class CompletionWorker:
                 norm_index[eid] = norm_text
 
         logger.info(
-            f"Deduplicated entities: {len(entities)} raw → {len(result)} unique"
-            f" (threshold={FUZZY_MATCH_THRESHOLD})"
+            f"Deduplicated entities: {len(entities)} raw → {len(result)} unique "
+            f"(threshold={settings.fuzzy_match_threshold})"
         )
         return result
 
     def get_job_creation_time(self, job_id: str) -> Optional[str]:
-        """Retrieve the ISO 8601 creation timestamp for a job.
-
-        Fetches the job's created_at timestamp from Redis metadata and converts
-        it to ISO 8601 format for inclusion in final results.
-
-        Args:
-            job_id: Unique identifier of the job.
-
-        Returns:
-            ISO 8601 formatted timestamp string (e.g., "2024-03-27T10:30:45"),
-            or None if metadata not found or created_at is not set.
-        """
         meta = self.redis_client.hgetall(f"orchestrator:job:{job_id}:meta")
         created_at = meta.get("created_at")
         if created_at:
@@ -535,48 +343,13 @@ class CompletionWorker:
         return None
 
     def check_job_completion(self, job_id: str):
-        """Poll Redis to check if all required pipeline steps are completed.
-
-        Determines which steps are required based on document type and features:
-          - Full pipeline (default): extraction, embeddings, entities, metadata
-          - Spreadsheet: extraction, entities (MIME type check)
-          - With inferences: Adds 'inferences' if feature was requested
-
-        If all required steps have completed status, triggers finalize_job()
-        to aggregate results and save to file.
-
-        Document type detection:
-            Spreadsheets detected by MIME type:
-            - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-            - application/vnd.ms-excel
-            - text/csv
-            - application/zip (Excel files may show as ZIP)
-
-        Feature detection:
-            If job:features JSON contains "inferences" key, adds it to
-            required_steps set.
-
-        Args:
-            job_id: Unique identifier of the job.
-
-        Returns:
-            None. This method is fire-and-forget; if completion is detected,
-            it calls finalize_job() as a side effect.
-
-        Raises:
-            Does not raise exceptions; errors are logged and processing continues.
-        """
         try:
             steps = self.redis_client.hgetall(f"orchestrator:job:{job_id}:steps")
-
             completed_steps = set()
             for step, status in steps.items():
                 if status == "completed":
                     completed_steps.add(step)
-
             logger.info(f"Job {job_id} completed steps: {completed_steps}")
-
-            # Determine required steps based on document type and features
             document_metadata_json = self.redis_client.get(
                 f"orchestrator:job:{job_id}:metadata:document"
             )
@@ -584,122 +357,42 @@ class CompletionWorker:
                 json.loads(document_metadata_json) if document_metadata_json else {}
             )
             mime_type = document_metadata.get("mime_type", "")
-
-            # Check if it's a spreadsheet
             is_spreadsheet = "spreadsheet" in mime_type.lower() or mime_type in [
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "application/vnd.ms-excel",
                 "text/csv",
-                "application/zip",  # Excel files may show as ZIP
+                "application/zip",
             ]
-
-            # Check if it's an audio job (has audio step instead of extraction)
             is_audio = "audio" in completed_steps
-
             required_steps = (
                 self.spreadsheet_required_steps
                 if is_spreadsheet
                 else self.default_required_steps.copy()
             )
-
-            # Audio pipeline uses 'audio' step instead of 'extraction'
             if is_audio and "extraction" in required_steps:
                 required_steps.discard("extraction")
                 required_steps.add("audio")
-
-            # Add inferences if features were requested
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
-            logger.debug(f"Job {job_id}: features_json={features_json}")
             if features_json:
                 try:
                     features = json.loads(features_json)
                     if "inferences" in features:
                         required_steps.add("inferences")
-                        logger.info(
-                            f"Job {job_id}: added 'inferences' to required_steps"
-                        )
                 except Exception as e:
                     logger.warning(f"Failed to parse features: {e}")
-
             logger.info(
                 f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "
                 f"required steps: {required_steps}"
             )
-
             if required_steps.issubset(completed_steps):
                 self.finalize_job(job_id)
-
         except Exception as e:
             logger.error(f"Error checking job completion: {e}")
 
     def finalize_job(self, job_id: str):
-        """Aggregate all worker results and finalize a completed job.
-
-        This is the final aggregation step that brings together results from
-        all workers (extraction, embeddings, entities, metadata, inferences).
-
-        Process:
-            1. Fetch all job data from Redis in a single pipeline operation
-            2. Check if job is not already finalized (idempotent check)
-            3. Parse and aggregate results from each worker:
-               - Deduplicate entities (keep highest confidence)
-               - Normalize embeddings with model metadata
-               - Parse optional source_classification and micro_inferences
-            4. Save aggregated results to file (/results/{job_id}.json)
-            5. Send webhook notification (if configured)
-            6. Mark job status as "completed" in Redis
-            7. Publish job_completed event
-
-        Error handling:
-            On any exception during finalization:
-            - Job status marked as "failed"
-            - Error message stored in Redis
-            - Webhook notification sent with error details
-            - Metrics recorded for failure case
-
-        Redis keys read:
-            - orchestrator:job:{job_id}:meta (job metadata)
-            - orchestrator:job:{job_id}:status (current status)
-            - orchestrator:job:{job_id}:text (raw text)
-            - orchestrator:job:{job_id}:metadata:document (MIME type, etc.)
-            - orchestrator:job:{job_id}:metadata:text (text metadata)
-            - orchestrator:job:{job_id}:chunks (extracted chunks)
-            - orchestrator:job:{job_id}:embeddings (vector embeddings)
-            - orchestrator:job:{job_id}:entities_raw (raw entities before dedup)
-            - orchestrator:job:{job_id}:source_classification (document classification)
-            - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)
-
-        Redis keys written:
-            - orchestrator:job:{job_id}:results (final aggregated results)
-            - orchestrator:job:{job_id}:meta (add completed_at timestamp)
-            - orchestrator:job:{job_id}:status (mark status="completed")
-            - orchestrator:job:{job_id}:error (on failure only)
-
-        Args:
-            job_id: Unique identifier of the job.
-
-        Returns:
-            None.
-
-        Raises:
-            Does not raise exceptions. All errors are caught, logged, and
-            converted to job failure status.
-
-        Side effects:
-            - Writes /results/{job_id}.json file
-            - Sends webhook notification (if WEBHOOK_URL configured)
-            - Publishes job_completed or job_failed event
-            - Updates Prometheus metrics
-
-        Note:
-            Idempotent: If job is already marked as "completed" status,
-            function returns early without re-processing.
-        """
         finalization_start_time = time.time()
         try:
             logger.info(f"Finalizing job: {job_id}")
-
-            # Use Redis pipeline to fetch all required data in a single round-trip
             pipe = self.redis_client.pipeline()
             pipe.hgetall(f"orchestrator:job:{job_id}:meta")
             pipe.hgetall(f"orchestrator:job:{job_id}:status")
@@ -721,54 +414,40 @@ class CompletionWorker:
                 source_classification_json,
                 micro_inferences_json,
             ) = pipe.execute()
-
-            # Embeddings are stored as MsgPack binary — use raw client (no decode_responses)
-            embeddings_raw_bytes = self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings")
-            inference_embeddings_raw = self.redis_raw.get(f"orchestrator:job:{job_id}:inference_embeddings")
-
+            embeddings_raw_bytes = self.redis_raw.get(
+                f"orchestrator:job:{job_id}:embeddings"
+            )
+            inference_embeddings_raw = self.redis_raw.get(
+                f"orchestrator:job:{job_id}:inference_embeddings"
+            )
             created_at_timestamp = int(meta.get("created_at", time.time()))
             created_at = datetime.fromtimestamp(created_at_timestamp).isoformat() + "Z"
             completed_at = datetime.fromtimestamp(int(time.time())).isoformat() + "Z"
-
             if status_data and status_data.get("status") == "completed":
                 logger.info(f"Job {job_id} already finalized, skipping")
                 return
-
             text = text or ""
-
             document_metadata = (
                 json.loads(document_metadata_json) if document_metadata_json else {}
             )
-
             text_metadata = json.loads(text_metadata_json) if text_metadata_json else {}
-
             chunks = json.loads(chunks_json) if chunks_json else []
-
-            # --- Embeddings: {chunk_id: [float]} ---
             embeddings_by_chunk: dict = {}
             if embeddings_raw_bytes:
                 raw = msgpack.unpackb(embeddings_raw_bytes, raw=False)
-                # raw is {chunk_id: [float]} — filter out any non-list values
                 embeddings_by_chunk = {k: v for k, v in raw.items() if isinstance(v, list)}
-
-            # --- Inference Embeddings: {chunk_id: {inference_idx: [float]}} ---
             inference_embeddings_by_chunk: dict = {}
             if inference_embeddings_raw:
                 raw = msgpack.unpackb(inference_embeddings_raw, raw=False)
                 inference_embeddings_by_chunk = {
                     k: v for k, v in raw.items() if isinstance(v, dict)
                 }
-
-            # --- Entities: deduplicate → global dict {entity_id: {label, text, confidence}} ---
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
             entities_dict = self.deduplicate_entities(entities_raw) if entities_raw else {}
-
             logger.info(
                 f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)"
             )
-
-            # --- Build per-chunk entity_ids index ---
-            entity_ids_by_chunk: dict = {}  # {chunk_id: [entity_id]}
+            entity_ids_by_chunk: dict = {}
             for ent in entities_raw:
                 cid = ent.get("chunk_id")
                 eid = ent.get("entity_id")
@@ -776,17 +455,13 @@ class CompletionWorker:
                     entity_ids_by_chunk.setdefault(cid, [])
                     if eid not in entity_ids_by_chunk[cid]:
                         entity_ids_by_chunk[cid].append(eid)
-
-            # --- Micro-inferences: parse and index by chunk_id ---
-            inferences_by_chunk: dict = {}  # {chunk_id: [inference]}
+            inferences_by_chunk: dict = {}
             source_classification = None
-
             try:
                 if source_classification_json:
                     source_classification = json.loads(source_classification_json)
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse source_classification JSON: {e}")
-
             try:
                 if micro_inferences_json:
                     micro_inferences_list = json.loads(micro_inferences_json)
@@ -795,35 +470,34 @@ class CompletionWorker:
                             cid = item.get("chunk_id")
                             if cid:
                                 inferences_by_chunk[cid] = item.get("inferences", [])
-                    else:
-                        logger.warning(
-                            f"micro_inferences is not a list, got {type(micro_inferences_list)}"
-                        )
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse micro_inferences JSON: {e}")
-
-            # --- Generate inference embeddings automatically if inferences exist ---
-            if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
+            if (
+                not inference_embeddings_by_chunk
+                and inferences_by_chunk
+                and self._get_embedding_service()
+            ):
                 logger.info(f"Generating inference embeddings for job: {job_id}")
-                inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
+                inference_embeddings_by_chunk = self._generate_inference_embeddings(
+                    inferences_by_chunk
+                )
                 if inference_embeddings_by_chunk:
                     try:
                         key = f"orchestrator:job:{job_id}:inference_embeddings"
-                        packed = msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True)
+                        packed = msgpack.packb(
+                            inference_embeddings_by_chunk, use_bin_type=True
+                        )
                         self.redis_raw.set(key, packed)
-                        logger.info(f"Saved inference embeddings to Redis: {key}")
                     except Exception as e:
-                        logger.warning(f"Failed to save inference embeddings to Redis: {e}")
-
-            # --- Enrich chunks: embed embeddings, entity_ids, inferences ---
+                        logger.warning(
+                            f"Failed to save inference embeddings to Redis: {e}"
+                        )
             enriched_chunks = []
             for chunk in chunks:
                 cid = chunk.get("chunk_id", "")
-                enriched = dict(chunk)  # shallow copy — preserve all existing fields
+                enriched = dict(chunk)
                 enriched["embeddings"] = embeddings_by_chunk.get(cid, [])
                 enriched["entity_ids"] = entity_ids_by_chunk.get(cid, [])
-
-                # Enrich each inference with its embedding
                 inferences = inferences_by_chunk.get(cid, [])
                 chunk_inf_emb = inference_embeddings_by_chunk.get(cid, {})
                 for idx, inf in enumerate(inferences):
@@ -832,20 +506,8 @@ class CompletionWorker:
                     if emb_key in chunk_inf_emb:
                         inf_copy["embedding"] = chunk_inf_emb[emb_key]
                     inferences[idx] = inf_copy
-
-                if inferences and chunk_inf_emb:
-                    expected = len(inferences)
-                    actual = len(chunk_inf_emb)
-                    if expected != actual:
-                        logger.warning(
-                            f"Embedding count mismatch for chunk {cid}: "
-                            f"expected {expected}, got {actual}"
-                        )
-
                 enriched["inferences"] = inferences
                 enriched_chunks.append(enriched)
-
-            # --- Final result ---
             results = {
                 "job_id": job_id,
                 "status": "completed",
@@ -857,43 +519,36 @@ class CompletionWorker:
                 "chunks": enriched_chunks,
                 "entities": entities_dict,
             }
-
             if source_classification is not None:
                 results["source_classification"] = source_classification
-
-            # Log completion stats
             total_inferences = sum(len(c.get("inferences", [])) for c in enriched_chunks)
             log_message = (
                 f"Job {job_id} finalized: chunks={len(enriched_chunks)}, "
                 f"entities={len(entities_dict)}, inferences={total_inferences}"
             )
             if source_classification:
-                log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
+                log_message += (
+                    f", source_type={source_classification.get('document_type', 'unknown')}"
+                )
             logger.info(log_message)
-
             self.redis_client.set(
                 f"orchestrator:job:{job_id}:results",
                 json.dumps(results, ensure_ascii=False),
             )
-
             self.redis_client.hset(
-                f"orchestrator:job:{job_id}:meta", "completed_at", str(int(time.time()))
+                f"orchestrator:job:{job_id}:meta",
+                "completed_at",
+                str(int(time.time())),
             )
-
             self.save_results_to_file(job_id, results)
-
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:status", "status", "completed"
             )
             self.send_webhook(job_id, "completed", None)
             self._check_and_notify_batch(job_id, "completed")
-
             self.event_bus.publish_job_completed(job_id)
-
-            # Record metrics
             job_finalization_duration.observe(time.time() - finalization_start_time)
             jobs_finalized_total.labels(status="success").inc()
-
         except Exception as e:
             logger.error(f"Error finalizing job: {e}", exc_info=True)
             self.redis_client.hset(
@@ -904,153 +559,22 @@ class CompletionWorker:
             )
             self.send_webhook(job_id, "failed", str(e))
             self.event_bus.publish_job_failed(job_id, str(e))
-
-            # Record failure metrics
             job_finalization_duration.observe(time.time() - finalization_start_time)
             jobs_finalized_total.labels(status="error").inc()
 
-    def handle_event(self, message):
-        """Process incoming job progress event from Redis pub/sub.
-
-        This is the event handler called by Redis pub/sub listener for each
-        message on the job:events channel. It parses the event, extracts the
-        job_id and event_type, and triggers job completion checks if the
-        event is of type "job_progress".
-
-        Event structure:
-            {
-                "type": "message" (Redis pub/sub message type),
-                "data": JSON string containing:
-                    {
-                        "event_type": "job_progress" | other,
-                        "job_id": str,
-                        ...other fields...
-                    }
-            }
-
-        Behavior:
-            - Ignores non-"message" type events (e.g., "subscribe" confirmations)
-            - For "job_progress" events, calls check_job_completion(job_id)
-            - Logs event receipt for debugging
-
-        Args:
-            message: Dictionary from Redis pub/sub listener with keys:
-                - type: "message" | "subscribe" | "unsubscribe"
-                - channel: "job:events"
-                - data: JSON string containing event details
-
-        Returns:
-            None.
-
-        Raises:
-            Does not raise exceptions. Parsing errors are logged and ignored.
-
-        Note:
-            Exceptions during parsing or check_job_completion are caught
-            and logged at ERROR level without stopping the pub/sub listener.
-        """
+    def handle_event(self, message: Dict) -> None:
         try:
             if message["type"] != "message":
                 return
-
             event = json.loads(message["data"])
             event_type = event.get("event_type")
             job_id = event.get("job_id")
-
             logger.info(f"Received event: {event_type} for job {job_id}")
-
             if event_type == "job_progress" and job_id:
                 self.check_job_completion(job_id)
-
         except Exception as e:
             logger.error(f"Error handling event: {e}")
 
-    def start(self):
-        """Start the completion worker and listen for job progress events.
-
-        Main entry point for the worker. Subscribes to the job:events Redis
-        pub/sub channel and begins processing job progress notifications.
-
-        This method runs indefinitely and implements exponential backoff
-        reconnection logic to handle Redis connection failures gracefully:
-            - Initial backoff: 1 second
-            - Exponential increase with each reconnection
-            - Maximum backoff cap: 60 seconds
-
-        Connection failures are logged but do not halt the worker; instead,
-        the worker waits and reconnects automatically.
-
-        Process:
-            1. Connect to Redis and subscribe to job:events channel
-            2. For each message received, call handle_event()
-            3. On connection error, close pubsub connection and wait
-            4. Reconnect with exponential backoff
-
-        Returns:
-            Never returns under normal operation; runs indefinitely.
-
-        Raises:
-            Does not raise exceptions. All errors are logged and handled
-            with automatic reconnection.
-
-        Side effects:
-            - Logs "Completion worker started, listening for job events..."
-            - Logs connection errors and reconnection delays
-            - Calls handle_event() for each incoming message
-        """
-        backoff_time = 1
-        max_backoff_time = 60
-
-        while True:
-            try:
-                pubsub = self.redis_client.pubsub()
-                pubsub.subscribe("job:events")
-
-                logger.info("Completion worker started, listening for job events...")
-
-                for message in pubsub.listen():
-                    self.handle_event(message)
-
-            except Exception as e:
-                logger.error(f"Error in completion worker pubsub: {e}", exc_info=True)
-                try:
-                    pubsub.close()
-                except Exception:
-                    pass
-
-                # Exponential backoff with max cap
-                logger.info(f"Reconnecting in {backoff_time} seconds...")
-                time.sleep(backoff_time)
-                backoff_time = min(backoff_time * 2, max_backoff_time)
-
-
-def main():
-    """Entry point for the completion worker service.
-
-    Initializes Prometheus metrics server and starts the CompletionWorker
-    to listen for job progress events.
-
-    Prometheus metrics are exposed on METRICS_PORT (default 8005) at:
-        http://localhost:8005/metrics
-
-    Returns:
-        Never returns; runs indefinitely until process is terminated.
-
-    Raises:
-        Does not raise exceptions. All errors are handled within
-        CompletionWorker.start() with automatic reconnection logic.
-    """
-    # Start Prometheus metrics server
-    logger.info(f"Starting metrics server on port {METRICS_PORT}")
-    start_http_server(METRICS_PORT)
-
-    worker = CompletionWorker()
-    worker.start()
-
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    main()
+    CompletionWorker().start()

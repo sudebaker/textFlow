@@ -8,6 +8,7 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/rs/zerolog"
 	"textflow/internal/config"
 	"textflow/pkg/logging"
 )
@@ -134,34 +135,58 @@ func TestRabbitMQBroker_PoolIsNilAfterClose(t *testing.T) {
 	broker.Close()
 }
 
-func TestRabbitMQBroker_PoolGetReturnsError_OnEmptyPool(t *testing.T) {
-	pool := &ChannelPool{
-		channels: []*poolChannel{},
-		next:     0,
-		size:     0,
+func TestRabbitMQBroker_CheckoutTimeout_OnEmptyPool(t *testing.T) {
+	url := os.Getenv("RABBITMQ_URL")
+	if url == "" {
+		t.Skip("RABBITMQ_URL not set")
+	}
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		t.Skipf("cannot connect to RabbitMQ: %v", err)
+	}
+	defer conn.Close()
+
+	pool, err := NewChannelPool(conn, 2, zerolog.New(nil))
+	if err != nil {
+		t.Fatalf("NewChannelPool: %v", err)
+	}
+	defer pool.Close()
+
+	pc1, _ := pool.Checkout(2 * time.Second)
+	pc2, _ := pool.Checkout(2 * time.Second)
+
+	_, err = pool.Checkout(50 * time.Millisecond)
+	if err == nil {
+		t.Error("Expected timeout error when all channels are checked out")
 	}
 
-	_, err := pool.Get()
-	if err == nil {
-		t.Error("Expected error when getting from empty pool")
-	}
+	pool.Return(pc1)
+	pool.Return(pc2)
 }
 
 func TestChannelPool_RoundRobinDistribution(t *testing.T) {
-	// We need a real connection for channels, so skip
 	t.Skip("Requires real RabbitMQ connection for round-robin test")
 }
 
 func TestChannelPool_CloseIdempotent(t *testing.T) {
-	pool := &ChannelPool{
-		channels: []*poolChannel{},
-		next:     0,
-		size:     0,
+	url := os.Getenv("RABBITMQ_URL")
+	if url == "" {
+		t.Skip("RABBITMQ_URL not set")
+	}
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		t.Skipf("cannot connect to RabbitMQ: %v", err)
+	}
+	defer conn.Close()
+
+	pool, err := NewChannelPool(conn, 2, zerolog.New(nil))
+	if err != nil {
+		t.Fatalf("NewChannelPool: %v", err)
 	}
 
-	err := pool.Close()
+	err = pool.Close()
 	if err != nil {
-		t.Errorf("Expected no error closing empty pool, got: %v", err)
+		t.Errorf("Expected no error closing pool, got: %v", err)
 	}
 
 	err = pool.Close()

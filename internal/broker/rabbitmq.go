@@ -286,9 +286,9 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 			continue
 		}
 
-		pc, err := pool.Get()
+		pc, err := pool.Checkout(CheckoutTimeout)
 		if err != nil {
-			b.logger.Warn().Err(err).Msgf("Failed to get pool channel (attempt %d/3)", attempt+1)
+			b.logger.Warn().Err(err).Msgf("Failed to checkout pool channel (attempt %d/3)", attempt+1)
 			b.reconnect()
 			if err := retryWithBackoff(attempt); err != nil {
 				return fmt.Errorf("context cancelled during retry: %w", err)
@@ -308,6 +308,7 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 				Timestamp:    time.Now(),
 			},
 		)
+		pool.Return(pc)
 
 		if err != nil {
 			metrics.RabbitMQErrors.Inc()
@@ -470,15 +471,16 @@ func (b *RabbitMQBroker) GetQueueInfo(queue string) (*QueueInfo, error) {
 			continue
 		}
 
-		pc, err := pool.Get()
+		pc, err := pool.Checkout(CheckoutTimeout)
 		if err != nil {
-			b.logger.Warn().Err(err).Msgf("Failed to get pool channel for QueueInspect (attempt %d/3)", attempt+1)
+			b.logger.Warn().Err(err).Msgf("Failed to checkout pool channel for QueueInspect (attempt %d/3)", attempt+1)
 			b.reconnect()
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 			continue
 		}
 
 		queueInfo, err := pc.QueueInspect(queue)
+		pool.Return(pc)
 		if err != nil {
 			b.logger.Warn().Err(err).Msgf("GetQueueInfo failed, attempting reconnection (attempt %d/3)", attempt+1)
 			b.reconnect()

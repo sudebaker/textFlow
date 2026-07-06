@@ -35,7 +35,8 @@ from typing import Any, Dict, List, Optional
 
 import redis
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
-from fastapi import FastAPI, JSONResponse
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
@@ -79,18 +80,19 @@ class BaseAsyncWorker:
         self._init_health_server()
 
     def _init_metrics(self) -> None:
+        metrics_prefix = self.worker_name.replace("-", "_")
         self.jobs_total = Counter(
-            f"{self.worker_name}_jobs_total",
+            f"{metrics_prefix}_jobs_total",
             "Total jobs processed",
             ["status"],
         )
         self.job_duration = Histogram(
-            f"{self.worker_name}_job_duration_seconds",
+            f"{metrics_prefix}_job_duration_seconds",
             "Job duration in seconds",
             buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
         )
         self.gpu_available = Gauge(
-            f"{self.worker_name}_gpu_available", "GPU availability", ["device"]
+            f"{metrics_prefix}_gpu_available", "GPU availability", ["device"]
         )
 
     def _init_health_server(self) -> None:
@@ -265,8 +267,8 @@ class BaseAsyncWorker:
                             logger.error(f"Job {job_id} failed permanently: {e}")
                             if job_id:
                                 try:
-                                    self.redis_client.set(
-                                        f"orchestrator:job:{job_id}:status", "failed"
+                                    self.redis_client.hset(
+                                        f"orchestrator:job:{job_id}:status", "status", "failed"
                                     )
                                     self.redis_client.set(
                                         f"orchestrator:job:{job_id}:error", str(e)

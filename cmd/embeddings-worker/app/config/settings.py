@@ -127,13 +127,7 @@ class Settings(BaseSettings):
             return "cuda"
         return "cpu"
 
-    def is_gpu_enabled(self) -> bool:
-        """Check if GPU is enabled."""
-        return self.cuda_visible_devices is not None
 
-    def get_collection_name_pattern(self) -> str:
-        """Get the regex pattern for collection name validation."""
-        return r"^[a-zA-Z0-9_-]+$"
 
 
 @lru_cache()

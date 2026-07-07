@@ -33,7 +33,7 @@ import logging
 import sys
 import hashlib
 import mimetypes
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, Optional
 
 sys.path.insert(0, "/app")
@@ -86,7 +86,7 @@ class MetadataWorker(BaseWorker):
         self, text: str, document_url: Optional[str] = None
     ) -> Dict:
         metadata = {
-            "extracted_at": datetime.utcnow().isoformat(),
+            "extracted_at": datetime.now(UTC).isoformat(),
             "text_length": len(text),
             "word_count": len(text.split()),
             "line_count": text.count("\n") + 1,

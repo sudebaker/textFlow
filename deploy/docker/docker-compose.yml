@@ -4,9 +4,7 @@ services:
     image: rabbitmq:3.13-management
     container_name: textflow-rabbitmq
     command: 'sh -c "rabbitmq-plugins enable rabbitmq_delayed_message_exchange ||
-      true && rabbitmq-server"
-
-      '
+      true && rabbitmq-server"'
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}

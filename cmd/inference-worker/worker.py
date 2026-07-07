@@ -249,8 +249,7 @@ Respond with ONLY the JSON array:"""
         return validated
 
     def process_message(self, message: Dict) -> Dict:
-        if BATCH_ENABLED:
-            return self._process_batch_message(message)
+        """Single-message processing entry point used by BaseWorker."""
         return self._process_single_message(message)
 
     def _process_single_message(self, message: Dict) -> Dict:
@@ -291,28 +290,53 @@ Respond with ONLY the JSON array:"""
 
         return {"inferences": inferences, "remaining": remaining}
 
-    def _process_batch_message(self, message: Dict) -> Dict:
+    def _process_batch_message(self, item: Dict) -> None:
+        """Buffer a single message for batch processing. Called from run() batch mode."""
         with self._batch_lock:
-            self._batch_buffer.append(message)
+            self._batch_buffer.append(item)
             if len(self._batch_buffer) >= BATCH_SIZE:
                 batch = self._batch_buffer[:]
                 self._batch_buffer.clear()
-                self._process_batch(batch)
-                return {"batch_processed": len(batch)}
-            return {"buffered": len(self._batch_buffer)}
+                self._flush_batch_buffer(batch)
 
     def flush_batch_buffer(self):
+        """Public API to flush any buffered messages (e.g. on shutdown)."""
         with self._batch_lock:
             if not self._batch_buffer:
                 return
             batch = self._batch_buffer[:]
             self._batch_buffer.clear()
-        if batch:
-            self._process_batch(batch)
+        self._flush_batch_buffer(batch)
 
-    def _process_batch(self, batch: List[Dict]):
+    def _flush_batch_buffer(self, batch: List[Dict]):
+        """Process a batch and ACK/NACK delivery metadata atomically.
+
+        On success: ACK all messages.
+        On failure: NACK with requeue=False so RabbitMQ dead-letters the whole batch.
+        We do not requeue because _process_batch performs per-item side effects
+        (Redis rpush/decr) that would be duplicated on retry.
+        """
+        try:
+            self._process_batch([item["message"] for item in batch])
+        except Exception as e:
+            logger.error(f"Batch processing failed: {e}")
+            for item in batch:
+                try:
+                    item["ch"].basic_nack(
+                        delivery_tag=item["method"].delivery_tag, requeue=False
+                    )
+                except Exception:
+                    pass
+            return
+
         for item in batch:
-            msg = item
+            try:
+                item["ch"].basic_ack(delivery_tag=item["method"].delivery_tag)
+            except Exception:
+                pass
+
+    def _process_batch(self, messages: List[Dict]):
+        for msg in messages:
             job_id = msg.get("job_id")
             chunk_id = msg.get("chunk_id")
             chunk_text = msg.get("chunk_text", "")
@@ -394,7 +418,6 @@ Respond with ONLY the JSON array:"""
 
         self.logger.info(f"Starting Inference Worker (batch mode: size={BATCH_SIZE}, timeout={BATCH_TIMEOUT_MS}ms)")
 
-        import threading
         from prometheus_client import start_http_server
         metrics_thread = threading.Thread(target=start_http_server, args=(self.metrics_port,), daemon=True)
         metrics_thread.start()
@@ -427,10 +450,16 @@ Respond with ONLY the JSON array:"""
                     def on_message(ch, method, properties, body):
                         try:
                             message = json.loads(body)
-                            self._on_message(ch, method, properties, body)
+                            self._process_batch_message({
+                                "ch": ch,
+                                "method": method,
+                                "properties": properties,
+                                "body": body,
+                                "message": message,
+                            })
                         except Exception as e:
                             self.logger.error(f"Message error: {e}")
-                            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                         finally:
                             if self._stopping:
                                 ch.stop_consuming()

@@ -7,7 +7,8 @@ import json
 import time
 from typing import Optional, Dict, Any
 import redis
-from pkg.worker_common.entity_utils import SCHEMA_VERSION
+
+SCHEMA_VERSION = "1.1.0"
 
 
 class EventBus:

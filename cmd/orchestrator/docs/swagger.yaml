@@ -1,5 +1,130 @@
 definitions:
-  models.Chunk:
+  cmd_orchestrator_handlers.ChunkVector:
+    properties:
+      chunk_id:
+        type: string
+      embedding:
+        items:
+          type: number
+        type: array
+      text:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.Edge:
+    properties:
+      from:
+        type: string
+      to:
+        type: string
+      type:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.EntitiesResponse:
+    properties:
+      entities:
+        items:
+          $ref: '#/definitions/cmd_orchestrator_handlers.EntityFlat'
+        type: array
+      job_id:
+        type: string
+      schema_version:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.EntityFlat:
+    properties:
+      confidence:
+        type: number
+      entity_id:
+        type: string
+      label:
+        type: string
+      text:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.GraphResponse:
+    properties:
+      edges:
+        items:
+          $ref: '#/definitions/cmd_orchestrator_handlers.Edge'
+        type: array
+      job_id:
+        type: string
+      nodes:
+        items:
+          $ref: '#/definitions/cmd_orchestrator_handlers.Node'
+        type: array
+      schema_version:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.InferenceFlat:
+    properties:
+      chunk_id:
+        type: string
+      confidence:
+        type: number
+      entity_id_refs:
+        items:
+          type: string
+        type: array
+      entity_refs:
+        items:
+          type: string
+        type: array
+      inference_id:
+        type: string
+      text:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.InferenceVector:
+    properties:
+      chunk_id:
+        type: string
+      embedding:
+        items:
+          type: number
+        type: array
+      inference_id:
+        type: string
+      text:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.InferencesResponse:
+    properties:
+      inferences:
+        items:
+          $ref: '#/definitions/cmd_orchestrator_handlers.InferenceFlat'
+        type: array
+      job_id:
+        type: string
+      schema_version:
+        type: string
+    type: object
+  cmd_orchestrator_handlers.Node:
+    properties:
+      id:
+        type: string
+      label:
+        type: string
+      props:
+        additionalProperties: {}
+        type: object
+    type: object
+  cmd_orchestrator_handlers.VectorsResponse:
+    properties:
+      chunks:
+        items:
+          $ref: '#/definitions/cmd_orchestrator_handlers.ChunkVector'
+        type: array
+      inferences:
+        items:
+          $ref: '#/definitions/cmd_orchestrator_handlers.InferenceVector'
+        type: array
+      job_id:
+        type: string
+      schema_version:
+        type: string
+    type: object
+  textflow_internal_models.Chunk:
     properties:
       chunk_id:
         type: string
@@ -15,7 +140,7 @@ definitions:
         type: array
       inferences:
         items:
-          $ref: '#/definitions/models.InferenceItem'
+          $ref: '#/definitions/textflow_internal_models.InferenceItem'
         type: array
       start_offset:
         type: integer
@@ -24,7 +149,7 @@ definitions:
       token_count:
         type: integer
     type: object
-  models.CreateJobRequest:
+  textflow_internal_models.CreateJobRequest:
     properties:
       document_base64:
         type: string
@@ -42,16 +167,16 @@ definitions:
       webhook_url:
         type: string
     type: object
-  models.CreateJobResponse:
+  textflow_internal_models.CreateJobResponse:
     properties:
       job_id:
         type: string
       status:
-        $ref: '#/definitions/models.JobStatus'
+        $ref: '#/definitions/textflow_internal_models.JobStatus'
       status_url:
         type: string
     type: object
-  models.EntityMinimal:
+  textflow_internal_models.EntityMinimal:
     properties:
       chunk_id:
         type: string
@@ -66,14 +191,14 @@ definitions:
       text:
         type: string
     type: object
-  models.ErrorResponse:
+  textflow_internal_models.ErrorResponse:
     properties:
       detail:
         type: string
       error:
         type: string
     type: object
-  models.GetJobResponse:
+  textflow_internal_models.GetJobResponse:
     properties:
       created_at:
         type: string
@@ -84,18 +209,26 @@ definitions:
       job_id:
         type: string
       status:
-        $ref: '#/definitions/models.JobStatus'
+        $ref: '#/definitions/textflow_internal_models.JobStatus'
       steps:
         additionalProperties:
           type: string
         type: object
     type: object
-  models.InferenceItem:
+  textflow_internal_models.InferenceItem:
     properties:
       confidence:
         type: number
+      embedding:
+        items:
+          type: number
+        type: array
       entity_id:
         type: string
+      entity_id_refs:
+        items:
+          type: string
+        type: array
       entity_refs:
         items:
           type: string
@@ -103,11 +236,11 @@ definitions:
       text:
         type: string
     type: object
-  models.JobResults:
+  textflow_internal_models.JobResults:
     properties:
       chunks:
         items:
-          $ref: '#/definitions/models.Chunk'
+          $ref: '#/definitions/textflow_internal_models.Chunk'
         type: array
       completed_at:
         type: string
@@ -118,12 +251,14 @@ definitions:
         type: object
       entities:
         additionalProperties:
-          $ref: '#/definitions/models.EntityMinimal'
+          $ref: '#/definitions/textflow_internal_models.EntityMinimal'
         type: object
       job_id:
         type: string
+      schema_version:
+        type: string
       source_classification:
-        $ref: '#/definitions/models.SourceClassificationResult'
+        $ref: '#/definitions/textflow_internal_models.SourceClassificationResult'
       status:
         type: string
       text:
@@ -132,7 +267,7 @@ definitions:
         additionalProperties: true
         type: object
     type: object
-  models.JobStatus:
+  textflow_internal_models.JobStatus:
     enum:
     - pending
     - extracting
@@ -156,7 +291,7 @@ definitions:
     - StatusAnalyzingImage
     - StatusCompleted
     - StatusFailed
-  models.SourceClassificationResult:
+  textflow_internal_models.SourceClassificationResult:
     properties:
       classifier_version:
         type: string
@@ -184,7 +319,7 @@ paths:
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Delete a job
     get:
       description: Returns job status and current pipeline step. Does not include
@@ -201,11 +336,11 @@ paths:
         "200":
           description: Job status with current_step field
           schema:
-            $ref: '#/definitions/models.GetJobResponse'
+            $ref: '#/definitions/textflow_internal_models.GetJobResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Get job status
   /v1/documents/{id}/download:
     get:
@@ -227,12 +362,147 @@ paths:
         "200":
           description: 'Gzip-compressed JSON (Content-Encoding: gzip)'
           schema:
-            $ref: '#/definitions/models.JobResults'
+            $ref: '#/definitions/textflow_internal_models.JobResults'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Download job results
+  /v1/documents/{id}/entities:
+    get:
+      description: Returns a flat list of all entities extracted from the document.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cmd_orchestrator_handlers.EntitiesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+      summary: Get document entities
+      tags:
+      - documents
+  /v1/documents/{id}/graph:
+    get:
+      description: Returns nodes and edges representing the document structure for
+        graph database ingestion.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cmd_orchestrator_handlers.GraphResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+      summary: Get document graph
+      tags:
+      - documents
+  /v1/documents/{id}/inferences:
+    get:
+      description: Returns a flat list of all inferences with resolved entity_id_refs
+        for knowledge graph construction.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Page number (default: 1)'
+        in: query
+        name: page
+        type: integer
+      - description: 'Items per page (default: 100)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cmd_orchestrator_handlers.InferencesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+      summary: Get document inferences
+      tags:
+      - documents
+  /v1/documents/{id}/vectors:
+    get:
+      description: Returns chunks and inferences with optional embeddings for vector
+        database ingestion.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Include embeddings (default: true)'
+        in: query
+        name: embeddings
+        type: boolean
+      - description: Comma-separated fields to include (chunks,inferences)
+        in: query
+        name: fields
+        type: string
+      - description: 'Page number (default: 1)'
+        in: query
+        name: page
+        type: integer
+      - description: 'Items per page (default: 100)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cmd_orchestrator_handlers.VectorsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
+      summary: Get document vectors
+      tags:
+      - documents
   /v1/documents/process:
     post:
       consumes:
@@ -244,22 +514,22 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/models.CreateJobRequest'
+          $ref: '#/definitions/textflow_internal_models.CreateJobRequest'
       produces:
       - application/json
       responses:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/models.CreateJobResponse'
+            $ref: '#/definitions/textflow_internal_models.CreateJobResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Process a document
   /v1/documents/upload:
     post:
@@ -286,10 +556,10 @@ paths:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/models.CreateJobResponse'
+            $ref: '#/definitions/textflow_internal_models.CreateJobResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/models.ErrorResponse'
+            $ref: '#/definitions/textflow_internal_models.ErrorResponse'
       summary: Upload a document
 swagger: "2.0"

@@ -298,6 +298,64 @@ models/
 
 ---
 
+## 🔌 Ingestion-Ready Output
+
+textFlow outputs results in formats ready for direct ingestion into **Memgraph** (graph) and **Qdrant** (vectors). All endpoints return `schema_version: "1.1.0"`.
+
+### Graph endpoint — Memgraph
+
+```
+GET /v1/documents/{id}/graph
+```
+
+Returns nodes and edges as a flat list for `UNWIND` import:
+
+```json
+{
+  "schema_version": "1.1.0",
+  "job_id": "abc123",
+  "nodes": [
+    {"id": "doc_abc123", "label": "Document", "props": {"title": "README"}},
+    {"id": "chunk_000", "label": "Chunk", "props": {"start_offset": 0}},
+    {"id": "96d1c6e23149", "label": "Entity", "props": {"label": "ORG", "text": "textFlow"}},
+    {"id": "inf_chunk_000_0", "label": "Inference", "props": {"text": "textFlow is fast", "confidence": 0.98}}
+  ],
+  "edges": [
+    {"from": "doc_abc123", "to": "chunk_000", "type": "HAS_CHUNK"},
+    {"from": "doc_abc123", "to": "96d1c6e23149", "type": "HAS_ENTITY"},
+    {"from": "chunk_000", "to": "inf_chunk_000_0", "type": "HAS_INFERENCE"},
+    {"from": "inf_chunk_000_0", "to": "96d1c6e23149", "type": "REFERS_TO"}
+  ]
+}
+```
+
+### Vectors endpoint — Qdrant
+
+```
+GET /v1/documents/{id}/vectors?embeddings=false&fields=chunks,inferences&page=1&limit=100
+```
+
+Returns chunks and inferences with optional embeddings for Qdrant point upload.
+
+### Entities and Inferences endpoints
+
+```
+GET /v1/documents/{id}/entities   # flat entity list
+GET /v1/documents/{id}/inferences  # flat inference list with resolved entity_id_refs
+```
+
+Inferences include `entity_id_refs` — entity IDs resolved from LLM text references (`entity_refs`) via fuzzy matching, ready for linking in your knowledge graph.
+
+### Webhook enrichment
+
+Configure `WEBHOOK_PAYLOAD_MODE=summary` to receive entities and inferences directly in the webhook POST, with automatic fallback to minimal mode when payload exceeds 500 items.
+
+### Schema version
+
+All v1.1.0 outputs include `schema_version`. The `entity_id_refs` field on inferences uses a 0-1 fuzzy threshold (default 0.85).
+
+---
+
 ## 📊 Monitoreo
 
 ### Health endpoint

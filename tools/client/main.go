@@ -27,6 +27,9 @@ const (
 	pollingInterval = 3 * time.Second
 	defaultTimeout  = 1 * time.Hour
 	defaultAPIURL   = "http://localhost:8080"
+	defaultMaxInflight = 5
+	defaultRetryBackoff = 2 * time.Second
+	maxRetries = 5
 )
 
 var audioExtensions = map[string]bool{
@@ -199,6 +202,9 @@ func main() {
 		timeoutStr        string
 		resumeJobID       string
 		diarizeEnabled    bool
+		maxInflight       int
+		sequential        bool
+		retryBackoffStr   string
 	)
 
 	args := os.Args[1:]
@@ -274,6 +280,24 @@ func main() {
 			i++
 		case "--diarize":
 			diarizeEnabled = true
+		case "--max-inflight":
+			if i+1 >= len(args) {
+				fmt.Println("Error: --max-inflight requires a value")
+				printUsage()
+				os.Exit(1)
+			}
+			fmt.Sscanf(args[i+1], "%d", &maxInflight)
+			i++
+		case "--sequential":
+			sequential = true
+		case "--retry-backoff":
+			if i+1 >= len(args) {
+				fmt.Println("Error: --retry-backoff requires a value")
+				printUsage()
+				os.Exit(1)
+			}
+			retryBackoffStr = args[i+1]
+			i++
 		default:
 			fmt.Printf("Unknown argument: %s\n", args[i])
 			printUsage()
@@ -288,6 +312,25 @@ func main() {
 
 	if apiURL == "" {
 		apiURL = defaultAPIURL
+	}
+
+	// Apply sequential override
+	if sequential {
+		maxInflight = 1
+	}
+	if maxInflight <= 0 {
+		maxInflight = defaultMaxInflight
+	}
+
+	retryBackoff := defaultRetryBackoff
+	if retryBackoffStr != "" {
+		parsed, err := time.ParseDuration(retryBackoffStr)
+		if err != nil {
+			fmt.Printf("Error: Invalid retry-backoff value '%s': %v\n", retryBackoffStr, err)
+			printUsage()
+			os.Exit(1)
+		}
+		retryBackoff = parsed
 	}
 
 	// Validate required arguments based on mode
@@ -345,7 +388,7 @@ func main() {
 	start := time.Now()
 
 	if useBatch {
-		err := runBatchMode(ctx, apiURL, batchFile, outputFile, webhookURL, webhookSecret)
+		err := runBatchMode(ctx, apiURL, batchFile, outputFile, webhookURL, webhookSecret, maxInflight, retryBackoff)
 		if err != nil {
 			fmt.Printf("Error in batch mode: %v\n", err)
 			os.Exit(1)
@@ -387,7 +430,7 @@ func main() {
 
 		fmt.Printf("\nResults saved to: %s\n", outputFile)
 	} else {
-		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, webhookURL, webhookSecret, diarizeEnabled)
+		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, webhookURL, webhookSecret, diarizeEnabled, retryBackoff)
 		if err != nil {
 			fmt.Printf("Error uploading document: %v\n", err)
 			os.Exit(1)
@@ -437,6 +480,9 @@ func printUsage() {
 	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 10m)")
 	fmt.Println("  -b, --batch [file]         Batch processing mode (reads JSON file with documents)")
 	fmt.Println("  --job-id <id>              Resume or download results for an existing job ID")
+	fmt.Println("  --max-inflight <n>         Max concurrent jobs in flight (default: 5)")
+	fmt.Println("  --sequential               Alias for --max-inflight 1")
+	fmt.Println("  --retry-backoff <duration> Base backoff for retries (default: 2s)")
 	fmt.Println("  -h, --help                 Show this help message")
 	fmt.Println("")
 	fmt.Println("Single Job Mode:")
@@ -462,9 +508,11 @@ func printUsage() {
 	fmt.Println("Batch Mode:")
 	fmt.Println("  client -b documents.json -o results.json")
 	fmt.Println("  client -b documents.json -o results.json -w https://myapp.com/webhook")
+	fmt.Println("  client -b documents.json -o results.json --max-inflight 3")
+	fmt.Println("  client -b documents.json -o results.json --sequential")
 }
 
-func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool) (string, error) {
+func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool, retryBackoff time.Duration) (string, error) {
 	if strings.HasPrefix(inputFile, "http://") || strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
@@ -516,33 +564,69 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/process", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
+	// Retry loop with backoff for 503/429
+	var nextWait time.Duration
+	for retry := 0; retry <= maxRetries; retry++ {
+		if retry > 0 {
+			wait := nextWait
+			if wait == 0 {
+				wait = time.Duration(retry) * retryBackoff
+			}
+			nextWait = 0
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(wait):
+			}
+			fmt.Printf("Retrying upload (attempt %d/%d)...\n", retry+1, maxRetries+1)
+		}
 
-	req.Header.Set("Content-Type", "application/json")
+		req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/process", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to API: %w", err)
-	}
-	defer resp.Body.Close()
+		req.Header.Set("Content-Type", "application/json")
 
-	if resp.StatusCode != http.StatusAccepted {
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to connect to API: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusAccepted {
+			var result CreateJobResponse
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				resp.Body.Close()
+				return "", fmt.Errorf("failed to parse response: %w", err)
+			}
+			resp.Body.Close()
+			fmt.Printf("Job created: %s\n", result.JobID)
+			return result.JobID, nil
+		}
+
+		// Handle 503/429 with Retry-After
+		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := resp.Header.Get("Retry-After")
+			resp.Body.Close()
+
+			if retryAfter != "" {
+				if seconds, err := time.ParseDuration(retryAfter + "s"); err == nil {
+					nextWait = seconds
+				}
+			}
+			fmt.Printf("Server busy (HTTP %d), Retry-After: %s, retry %d/%d\n",
+				resp.StatusCode, retryAfter, retry+1, maxRetries)
+			continue
+		}
+
+		// Other errors
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var result CreateJobResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	fmt.Printf("Job created: %s\n", result.JobID)
-
-	return result.JobID, nil
+	return "", fmt.Errorf("max retries exceeded")
 }
 
 func encodeFile(filePath string) (string, string, error) {
@@ -808,7 +892,7 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 	}
 }
 
-func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL, webhookSecret string) error {
+func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL, webhookSecret string, maxInflight int, retryBackoff time.Duration) error {
 	fmt.Println("Reading batch file...")
 
 	data, err := os.ReadFile(batchFile)
@@ -830,65 +914,131 @@ func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL
 		batchReq.WebhookSecret = webhookSecret
 	}
 
-	fmt.Printf("Creating batch with %d documents...\n", len(batchReq.Documents))
+	fmt.Printf("Processing %d documents (max-inflight: %d)...\n", len(batchReq.Documents), maxInflight)
 
-	jsonData, err := json.Marshal(batchReq)
-	if err != nil {
-		return fmt.Errorf("failed to marshal batch request: %w", err)
+	totalJobs := 0
+	failedJobs := 0
+	startTime := time.Now()
+
+	for i := 0; i < len(batchReq.Documents); i += maxInflight {
+		end := i + maxInflight
+		if end > len(batchReq.Documents) {
+			end = len(batchReq.Documents)
+		}
+		chunk := batchReq.Documents[i:end]
+
+		chunkReq := BatchRequest{
+			Documents:      chunk,
+			MaxConcurrency: batchReq.MaxConcurrency,
+			WebhookURL:     batchReq.WebhookURL,
+			WebhookSecret:  batchReq.WebhookSecret,
+		}
+
+		chunkNum := (i / maxInflight) + 1
+		totalChunks := (len(batchReq.Documents) + maxInflight - 1) / maxInflight
+		fmt.Printf("\n--- Chunk %d/%d (%d documents) ---\n", chunkNum, totalChunks, len(chunk))
+
+		chunkJSON, err := json.Marshal(chunkReq)
+		if err != nil {
+			return fmt.Errorf("failed to marshal chunk: %w", err)
+		}
+
+		var nextWait time.Duration
+		success := false
+		for retry := 0; retry <= maxRetries; retry++ {
+			if retry > 0 {
+				wait := nextWait
+				if wait == 0 {
+					wait = time.Duration(retry) * retryBackoff
+				}
+				nextWait = 0
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(wait):
+				}
+				fmt.Printf("  Retrying chunk (attempt %d/%d)...\n", retry+1, maxRetries+1)
+			}
+
+			req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/batch", bytes.NewBuffer(chunkJSON))
+			if err != nil {
+				return fmt.Errorf("failed to create request: %w", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			client := &http.Client{Timeout: 60 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				return fmt.Errorf("failed to connect to API: %w", err)
+			}
+
+			if resp.StatusCode == http.StatusAccepted {
+				var result BatchResponse
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					resp.Body.Close()
+					return fmt.Errorf("failed to parse response: %w", err)
+				}
+				resp.Body.Close()
+
+				fmt.Printf("  Batch created: %s (%d jobs)\n", result.BatchID, result.Total)
+				totalJobs += result.Total
+
+				_, err := monitorBatch(ctx, apiURL, result.BatchID)
+				if err != nil {
+					return fmt.Errorf("error monitoring batch: %w", err)
+				}
+
+				finalStatus, err := getBatchStatus(ctx, apiURL, result.BatchID)
+				if err != nil {
+					return fmt.Errorf("failed to get batch status: %w", err)
+				}
+
+				fmt.Printf("  Chunk completed: %d/%d done, %d failed\n",
+					finalStatus.Completed, finalStatus.Total, finalStatus.Failed)
+				failedJobs += finalStatus.Failed
+				success = true
+				break
+			}
+
+			// Handle 503/429
+			if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests {
+				retryAfter := resp.Header.Get("Retry-After")
+				resp.Body.Close()
+				if retryAfter != "" {
+					if seconds, err := time.ParseDuration(retryAfter + "s"); err == nil {
+						nextWait = seconds
+					}
+				}
+				fmt.Printf("  Server busy (HTTP %d), Retry-After: %s, retry %d/%d\n",
+					resp.StatusCode, retryAfter, retry+1, maxRetries)
+				continue
+			}
+
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		if !success {
+			failedJobs += len(chunk)
+			fmt.Printf("  Chunk failed after %d retries\n", maxRetries+1)
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/batch", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	// Write summary
+	summary := map[string]interface{}{
+		"total":     len(batchReq.Documents),
+		"completed": len(batchReq.Documents) - failedJobs,
+		"failed":    failedJobs,
+		"duration":  time.Since(startTime).String(),
 	}
+	outputData, _ := json.MarshalIndent(summary, "", "  ")
+	os.WriteFile(outputFile, outputData, 0644)
 
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to connect to API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result BatchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	fmt.Printf("Batch created: %s\n", result.BatchID)
-	fmt.Printf("Total jobs: %d\n", result.Total)
-
-	status, err := monitorBatch(ctx, apiURL, result.BatchID)
-	if err != nil {
-		return fmt.Errorf("error monitoring batch: %w", err)
-	}
-
-	finalStatus, err := getBatchStatus(ctx, apiURL, result.BatchID)
-	if err != nil {
-		return fmt.Errorf("failed to get batch status: %w", err)
-	}
-
-	outputData, err := json.MarshalIndent(finalStatus, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal batch results: %w", err)
-	}
-
-	err = os.WriteFile(outputFile, outputData, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write output file: %w", err)
-	}
-
-	fmt.Printf("\nBatch %s\n", status)
-	fmt.Printf("Results saved to: %s\n", outputFile)
+	fmt.Printf("\nBatch completed in %s\n", time.Since(startTime).Round(time.Second))
 	fmt.Printf("Summary: %d completed, %d failed, %d total\n",
-		finalStatus.Completed, finalStatus.Failed, finalStatus.Total)
-
+		len(batchReq.Documents)-failedJobs, failedJobs, len(batchReq.Documents))
+	fmt.Printf("Results saved to: %s\n", outputFile)
 	return nil
 }
 

@@ -37,6 +37,15 @@ type Config struct {
 	MaxDocumentSizeMB  int           `env:"MAX_DOCUMENT_SIZE_MB" default:"10"`
 	MaxFeaturesPerJob  int           `env:"MAX_FEATURES_PER_JOB" default:"2"`
 	RabbitMQPoolSize   int           `env:"RABBITMQ_POOL_SIZE" default:"5"`
+
+	// Admission Control
+	IngestionRateLimit        float64 `env:"INGESTION_RATE_LIMIT" default:"10"`
+	IngestionRateBurst        int     `env:"INGESTION_RATE_BURST" default:"20"`
+	MaxConcurrentJobs         int     `env:"MAX_CONCURRENT_JOBS" default:"30"`
+	QueueDepthRejectThreshold int     `env:"QUEUE_DEPTH_REJECT_THRESHOLD" default:"500"`
+
+	// RabbitMQ Queue Limits
+	QueueMaxLength int `env:"QUEUE_MAX_LENGTH" default:"1000"`
 }
 
 func (c *Config) Validate() error {

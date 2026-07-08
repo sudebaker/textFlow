@@ -763,6 +763,22 @@ func (c *RedisClient) expireStuckJobsViaScan(ctx context.Context, timeout time.D
 	return nil
 }
 
+// GetActiveJobCount returns the number of active (non-terminal) jobs.
+// Uses ZCARD on the active_jobs sorted set for O(1) complexity.
+// Called by AdmissionController to enforce concurrent job limits.
+// Returns 0 if the ZSET doesn't exist or on error (fail open).
+func (c *RedisClient) GetActiveJobCount(ctx context.Context) (int64, error) {
+	activeKey := c.key(activeJobsSuffix)
+	count, err := c.client.ZCard(ctx, activeKey).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to count active jobs: %w", err)
+	}
+	return count, nil
+}
+
 // Close gracefully closes the Redis connection.
 // Called during orchestrator/worker shutdown.
 // Returns error if close operation fails.

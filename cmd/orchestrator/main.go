@@ -52,6 +52,7 @@ var (
 	eventBus      *events.EventBus
 	healthChecker *health.HealthChecker
 	logger        zerolog.Logger
+	admission     *handlers.AdmissionController
 
 	// Spreadsheet validation limits
 	maxSpreadsheetRows  int
@@ -120,6 +121,9 @@ func main() {
 	// Initialize handlers with dependencies
 	handlers.SetDependencies(eventBus, redis, mqBroker)
 	redisclient.SetClient(redis)
+
+	// Initialize admission controller
+	admission = handlers.NewAdmissionController(cfg, redis, mqBroker)
 
 	// Initialize comprehensive health checker
 	healthChecker = health.NewHealthChecker(redis, mqBroker, cfg)
@@ -453,6 +457,22 @@ func createJobHandler(c *gin.Context) {
 		return
 	}
 
+	// Admission control: check system capacity before accepting job
+	if admission != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		defer cancel()
+		accepted, reason, statusCode := admission.CanAcceptJob(ctx)
+		if !accepted {
+			logger.Warn().Str("reason", reason).Int("status", statusCode).Msg("Job rejected by admission control")
+			c.Header("Retry-After", "5")
+			c.JSON(statusCode, models.ErrorResponse{
+				Error:  "system_busy",
+				Detail: reason,
+			})
+			return
+		}
+	}
+
 	jobID := generateJobID()
 
 	// Create context with timeout for the entire job creation process
@@ -519,6 +539,23 @@ func createJobHandler(c *gin.Context) {
 
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
 		logger.Error().Msgf("Failed to publish job message: %v", err)
+
+		// Check if this is a queue overflow error (x-max-length reached)
+		if broker.IsQueueOverflowError(err) {
+			logger.Warn().Str("job_id", jobID).Msg("Queue full, rejecting job")
+			if statusErr := redis.SetJobStatus(ctx, jobID, models.StatusFailed); statusErr != nil {
+				logger.Error().Err(statusErr).Str("job_id", jobID).Msg("Failed to mark job as failed after queue overflow")
+			}
+			metrics.JobsInProgress.Dec()
+			metrics.JobsTotal.WithLabelValues("failed", "queue_overflow").Inc()
+			c.Header("Retry-After", "5")
+			c.JSON(http.StatusServiceUnavailable, models.ErrorResponse{
+				Error:  "system_busy",
+				Detail: "system is at capacity, please retry later",
+			})
+			return
+		}
+
 		if statusErr := redis.SetJobStatus(ctx, jobID, models.StatusFailed); statusErr != nil {
 			logger.Error().Err(statusErr).Str("job_id", jobID).Msg("Failed to mark job as failed after publish error")
 		}

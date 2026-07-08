@@ -216,6 +216,31 @@ var (
 		},
 		[]string{"name"},
 	)
+
+	// Admission control metrics
+	AdmissionRejected = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_admission_rejected_total",
+			Help: "Total number of jobs rejected by admission control",
+		},
+		[]string{"reason"}, // "rate_limit", "concurrent_jobs", "queue_depth"
+	)
+
+	AdmissionAccepted = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_admission_accepted_total",
+			Help: "Total number of jobs accepted by admission control",
+		},
+	)
+
+	// Queue overflow metrics
+	QueueOverflowTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_queue_overflow_total",
+			Help: "Total number of messages rejected due to queue overflow (x-max-length)",
+		},
+		[]string{"queue"},
+	)
 )
 
 // Init initializes queue metrics with default values

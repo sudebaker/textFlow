@@ -7,6 +7,7 @@ import json
 import time
 from typing import Optional, Dict, Any
 import redis
+from pkg.worker_common.entity_utils import SCHEMA_VERSION
 
 
 class EventBus:
@@ -51,11 +52,21 @@ class EventBus:
         self.publish_event(job_id, "job_progress", progress=progress, status=status)
 
     def publish_job_completed(
-        self, job_id: str, metadata: Optional[Dict[str, Any]] = None
+        self,
+        job_id: str,
+        download_url: str = "",
+        summary: Optional[Dict[str, int]] = None,
+        metadata: Optional[Dict] = None,
     ) -> None:
         """Publish a job completed event."""
+        enriched = dict(metadata) if metadata else {}
+        enriched.update({
+            "schema_version": SCHEMA_VERSION,
+            "download_url": download_url,
+            "summary": summary or {},
+        })
         self.publish_event(
-            job_id, "job_completed", progress=100, status="completed", metadata=metadata
+            job_id, "job_completed", progress=100, status="completed", metadata=enriched
         )
 
     def publish_job_failed(self, job_id: str, error: str) -> None:

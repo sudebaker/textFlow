@@ -21,7 +21,6 @@ import requests
 from prometheus_client import Counter, Histogram
 from pydantic_settings import BaseSettings
 from rapidfuzz import fuzz
-from unidecode import unidecode
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -34,6 +33,18 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
 from pkg.worker_common.pubsub_base import BasePubSubWorker
+from pkg.worker_common.entity_utils import resolve_entity_refs, normalize_entity_text, SCHEMA_VERSION
+
+MAX_WEBHOOK_ITEMS = 500
+
+
+def _should_use_summary_payload(results: dict) -> bool:
+    entity_count = len(results.get("entities", {}))
+    inference_count = sum(
+        len(chunk.get("inferences", []))
+        for chunk in results.get("chunks", [])
+    )
+    return (entity_count + inference_count) <= MAX_WEBHOOK_ITEMS
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -50,6 +61,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     fuzzy_match_threshold: float = 0.85
     webhook_url: str = ""
+    webhook_payload_mode: str = "minimal"
     results_path: str = "/app/data/results"
     api_base_url: str = "http://localhost:8080"
     metrics_port: int = 8005
@@ -152,7 +164,7 @@ class CompletionWorker(BasePubSubWorker):
             return False
 
     def send_webhook(
-        self, job_id: str, status: str, error: Optional[str] = None
+        self, job_id: str, status: str, results: Optional[dict] = None, error: Optional[str] = None
     ) -> bool:
         webhook_url = settings.webhook_url
         webhook_secret = ""
@@ -173,6 +185,44 @@ class CompletionWorker(BasePubSubWorker):
             }
             if error:
                 payload["error"] = error
+            if settings.webhook_payload_mode == "summary" and results:
+                entity_count = len(results.get("entities", {}))
+                inference_count = sum(
+                    len(chunk.get("inferences", []))
+                    for chunk in results.get("chunks", [])
+                )
+                if _should_use_summary_payload(results):
+                    payload["schema_version"] = SCHEMA_VERSION
+                    payload["summary"] = {
+                        "chunks": len(results.get("chunks", [])),
+                        "entities": entity_count,
+                        "inferences": inference_count,
+                    }
+                    payload["results"] = {
+                        "entities": results.get("entities", {}),
+                        "inferences": [
+                            {
+                                "chunk_id": chunk.get("chunk_id"),
+                                "text": inf.get("text"),
+                                "confidence": inf.get("confidence"),
+                                "entity_id_refs": inf.get("entity_id_refs"),
+                            }
+                            for chunk in results.get("chunks", [])
+                            for inf in chunk.get("inferences", [])
+                        ],
+                    }
+                else:
+                    logger.warning(
+                        f"Webhook payload too large for job {job_id}: "
+                        f"{entity_count} entities + {inference_count} inferences "
+                        f"exceeds {MAX_WEBHOOK_ITEMS}. Falling back to minimal mode."
+                    )
+                    payload["schema_version"] = SCHEMA_VERSION
+                    payload["summary"] = {
+                        "chunks": len(results.get("chunks", [])),
+                        "entities": entity_count,
+                        "inferences": inference_count,
+                    }
             headers = {"Content-Type": "application/json"}
             if webhook_secret:
                 timestamp = str(int(time.time()))
@@ -283,11 +333,8 @@ class CompletionWorker(BasePubSubWorker):
         if not entities:
             return {}
 
-        def _normalize(text: str) -> str:
-            return unidecode(text).lower().strip()
-
         def _generate_id(label: str, text: str) -> str:
-            key = f"{label}:{_normalize(text)}"
+            key = f"{label}:{normalize_entity_text(text)}"
             return hashlib.sha256(key.encode()).hexdigest()[:12]
 
         result: dict = {}
@@ -297,7 +344,7 @@ class CompletionWorker(BasePubSubWorker):
             label = ent.get("label", "")
             text = ent.get("text", "")
             confidence = ent.get("confidence", 0.0)
-            norm_text = _normalize(text)
+            norm_text = normalize_entity_text(text)
             matched_id = None
             for existing_id, existing_norm in norm_index.items():
                 if result[existing_id]["label"] != label:
@@ -316,7 +363,7 @@ class CompletionWorker(BasePubSubWorker):
                         "end_offset": ent.get("end", 0),
                         "chunk_id": ent.get("chunk_id", ""),
                     }
-                    norm_index[matched_id] = _normalize(text)
+                    norm_index[matched_id] = normalize_entity_text(text)
             else:
                 eid = ent.get("entity_id") or _generate_id(label, text)
                 result[eid] = {
@@ -505,6 +552,13 @@ class CompletionWorker(BasePubSubWorker):
                     emb_key = f"inference_{idx}"
                     if emb_key in chunk_inf_emb:
                         inf_copy["embedding"] = chunk_inf_emb[emb_key]
+                    resolved_ids = resolve_entity_refs(
+                        inf_copy.get("entity_refs", []),
+                        entities_dict,
+                        fuzzy_threshold=settings.fuzzy_match_threshold,
+                    )
+                    if resolved_ids:
+                        inf_copy["entity_id_refs"] = resolved_ids
                     inferences[idx] = inf_copy
                 enriched["inferences"] = inferences
                 enriched_chunks.append(enriched)
@@ -518,6 +572,7 @@ class CompletionWorker(BasePubSubWorker):
                 "text_metadata": text_metadata,
                 "chunks": enriched_chunks,
                 "entities": entities_dict,
+                "schema_version": SCHEMA_VERSION,
             }
             if source_classification is not None:
                 results["source_classification"] = source_classification
@@ -544,9 +599,17 @@ class CompletionWorker(BasePubSubWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:status", "status", "completed"
             )
-            self.send_webhook(job_id, "completed", None)
+            self.send_webhook(job_id, "completed", results)
             self._check_and_notify_batch(job_id, "completed")
-            self.event_bus.publish_job_completed(job_id)
+            self.event_bus.publish_job_completed(
+                job_id,
+                download_url=f"{settings.api_base_url}/v1/documents/{job_id}/download",
+                summary={
+                    "chunks": len(enriched_chunks),
+                    "entities": len(entities_dict),
+                    "inferences": total_inferences,
+                },
+            )
             job_finalization_duration.observe(time.time() - finalization_start_time)
             jobs_finalized_total.labels(status="success").inc()
         except Exception as e:

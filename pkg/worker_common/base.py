@@ -459,7 +459,14 @@ class BaseWorker:
                     self._channel = channel
 
                     # Declare queue
-                    channel.queue_declare(queue=self.queue_name, durable=True)
+                    channel.queue_declare(
+                        queue=self.queue_name,
+                        durable=True,
+                        arguments={
+                            "x-dead-letter-exchange": "document_processor_dlx",
+                            "x-dead-letter-routing-key": f"{self.queue_name}_failed",
+                        },
+                    )
                     self.logger.info(f"Consuming from queue: {self.queue_name}")
 
                     # Start consuming

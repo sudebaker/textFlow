@@ -422,6 +422,7 @@ services:
     - LOG_LEVEL=debug
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
+    - WEBHOOK_PAYLOAD_MODE=minimal
     - CUDA_VISIBLE_DEVICES=0
     - NVIDIA_VISIBLE_DEVICES=0
     volumes:
@@ -479,13 +480,9 @@ services:
     container_name: textflow-docling
     ports:
     - 8000:5001
-    volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set \u2014 copy .env.example to .env and\
-      \ set it}/docling:/models/docling"
     environment:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-cuda}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
-    - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=debug
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1

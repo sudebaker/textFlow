@@ -86,6 +86,7 @@ type InferenceItem struct {
 	Confidence float32   `json:"confidence"`
 	EntityRefs []string  `json:"entity_refs,omitempty"`
 	EntityID   string    `json:"entity_id,omitempty"`
+	EntityIDs  []string  `json:"entity_id_refs,omitempty"`
 	Embedding  []float32 `json:"embedding,omitempty"`
 }
 
@@ -100,6 +101,7 @@ type JobResults struct {
 	CreatedAt            string                      `json:"created_at"`
 	CompletedAt          string                      `json:"completed_at"`
 	Text                 string                      `json:"text"`
+	SchemaVersion        string                      `json:"schema_version,omitempty"`
 	Chunks               []Chunk                     `json:"chunks,omitempty"`
 	Entities             map[string]EntityMinimal    `json:"entities,omitempty"`
 	DocumentMetadata     map[string]interface{}      `json:"document_metadata,omitempty"`

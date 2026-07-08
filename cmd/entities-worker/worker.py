@@ -41,6 +41,7 @@ from sliding_window import (
     process_with_sliding_window,
     estimate_tokens,
     requires_sliding_window,
+    normalize_entity_text,
 )
 from unidecode import unidecode
 from rapidfuzz import fuzz
@@ -187,9 +188,6 @@ class EntitiesWorker(BaseWorker):
     def _calculate_global_position(self, chunk_offset: int, local_start: int, local_end: int) -> tuple:
         return (chunk_offset + local_start, chunk_offset + local_end)
 
-    def _normalize_entity_text(self, text: str) -> str:
-        return unidecode(text).lower().strip()
-
     def _deduplicate_entities(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not DEDUPLICATION_ENABLED or not entities:
             return entities
@@ -200,14 +198,14 @@ class EntitiesWorker(BaseWorker):
         for entity in entities:
             text = entity["text"]
             label = entity["label"]
-            normalized_key = f"{label}:{self._normalize_entity_text(text)}"
+            normalized_key = f"{label}:{normalize_entity_text(text)}"
 
             found_similar = False
             for existing_key, existing_entity in deduplicated.items():
                 if existing_key.startswith(f"{label}:"):
                     similarity = fuzz.ratio(
-                        self._normalize_entity_text(text),
-                        self._normalize_entity_text(existing_entity["text"]),
+                        normalize_entity_text(text),
+                        normalize_entity_text(existing_entity["text"]),
                     ) / 100.0
                     if similarity >= FUZZY_MATCH_THRESHOLD:
                         if entity.get("confidence", 0) > existing_entity.get("confidence", 0):

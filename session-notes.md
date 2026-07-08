@@ -1,88 +1,111 @@
-## Session Notes — textFlow: fixes post-Fase 2 + smoke test inferencia mac-mini
+# Session Notes
+
+There are two sessions documented in this file:
+- **This session** (2026-07-02): Implementation of ingestion API improvements — validation, pagination, normalization, schema versioning.
+- **Previous session** (before 2026-07-02): Phase 2 fixes for async workers, inference smoke test. See origin/main history.
+
+---
+
+## Session Notes — textFlow Implementation (2026-07-02)
 
 ### Cambios aplicados
 
-#### 1. Reparación del contrato `BaseAsyncWorker` en audio/image workers
-- **Archivos:** `cmd/audio-worker/worker.py`, `cmd/image-worker/worker.py`
-- Renombrado `_process_message_async(self, message)` → `process_message(self, body)` para cumplir el método abstracto de `BaseAsyncWorker`.
-- Eliminado el `async with message.process(requeue=False):` duplicado (la base ya gestiona el ack).
-- Eliminado `body = json.loads(message.body)` (la base ya decodifica el dict).
-- Reemplazado `AudioWorker().start()` / `ImageWorker().start()` por `asyncio.run(AudioWorker().run())` (la base no define `start()`).
-- Eliminado `self.jobs_completed += 1` y `self.jobs_failed += 1` (la base ya incrementa el counter Prometheus `jobs_total`).
-- En el `except` se conservó `self.event_bus.publish_job_failed(job_id, str(e))` y se eliminaron los sets Redis duplicados que ya hace la base.
+#### 1. Validación jobID en 4 handlers (`cmd/orchestrator/handlers/results.go`)
+- Añadida función `isValidJobID(jobID string) bool` con validación de formato UUID v4 (36 caracteres, hyphens en posiciones 8,13,18,23, hex chars).
+- Validación añadida al inicio de `GraphHandler`, `VectorsHandler`, `EntitiesHandler`, `InferencesHandler`.
+- Devuelve `400 Bad Request` con `error: "invalid_job_id"` para IDs mal formados.
 
-#### 2. Fixes en `pkg/worker_common/async_base.py`
-- Corregido el almacenamiento de job failed: ahora usa `hset(..., "status", "failed")` en lugar de `set(...)` para mantener compatibilidad con `orchestrator:job:{id}:status` esperado por el orchestrator Go.
-- Sanitizado el nombre de métricas Prometheus: `worker_name.replace("-", "_")` para evitar nombres inválidos (`audio-worker_jobs_total`).
-- Corregido import de `JSONResponse`: ahora se importa desde `fastapi.responses` para compatibilidad con FastAPI reciente.
+#### 2. Paginación separada (`cmd/orchestrator/handlers/results.go`)
+- Reemplazado `page`/`limit` compartidos por dos pares independientes:
+  - `page_chunks` / `limit_chunks` — para la colección `chunks`
+  - `page_inferences` / `limit_inferences` — para la colección `inferences`
+- Defaults: `page_*=1`, `limit_*=100`.
+- Si un parámetro no se pasa, no se aplica paginación en esa colección.
+- Actualizados los comentarios Swagger de `VectorsHandler` e `InferencesHandler`.
 
-#### 3. Fix en `pkg/worker_common/pubsub_base.py`
-- Aplicadas las mismas correcciones que en `async_base.py`: sanitización de nombres de métricas y `JSONResponse` desde `fastapi.responses`.
+#### 3. Normalización unificada de entidades
 
-#### 4. Limpieza de configs huérfanas
-- **Comandos:** `rm -rf cmd/audio-worker/app/config cmd/image-worker/app/config`
-- Eliminados `settings.py` y `__init__.py` duplicados que no se importaban desde `worker.py` tras la migración a `pydantic_settings` inline.
+**`cmd/entities-worker/sliding_window.py`:**
+- Añadido `import re`
+- Añadido `_PUNCT_RE = re.compile(r"[^\w\s]")` (module-level)
+- `normalize_entity_text` ahora usa: `unidecode` → `_PUNCT_RE.sub("")` → `.lower().strip()`
+- Anteriormente solo hacía `unidecode(text).lower().strip()` (sin quitar puntuación)
 
-#### 5. Actualización de configuración de inferencia
-- **Archivo:** `deploy/docker/.env`
-- `LLM_URL=http://mac-mini:11434` → `LLM_URL=http://mac-mini:11234`.
-- `LLM_MODEL=qwen3.5:9b-32k` → `LLM_MODEL=model` (descubierto vía `GET /v1/models` en mac-mini:11234).
-- Corregidos comentarios inline que rompían el parseo de variables: `MAX_RETRIES`, `JOB_TTL`, `RETRY_DELAY`, nombres de colas y thresholds de entidades.
+**`cmd/entities-worker/worker.py`:**
+- Importado `normalize_entity_text` desde `sliding_window`
+- Eliminado método `_normalize_entity_text` de la clase
+- `_deduplicate_entities` ahora usa `normalize_entity_text` directamente (importada del módulo)
 
-#### 6. Fix de parsing de vhost en RabbitMQ
-- **Archivo:** `pkg/worker_common/rabbitmq.py`
-- Cambiada la lógica `virtual_host=parsed.path[1:] if parsed.path else "/"` para que una URL terminada en `/` mapee al vhost `/` en lugar de una cadena vacía. Esto solucionaba el error `NOT_ALLOWED - vhost  not found` de pika.
+**`cmd/completion-worker/worker.py`:**
+- Importado `normalize_entity_text` desde `pkg.worker_common.entity_utils`
+- `deduplicate_entities` ahora usa `normalize_entity_text` directamente (no `unidecode().lower().strip()`)
+- Eliminado import de `unidecode` (ya no se usa en este archivo)
 
-#### 7. Dependencias Docker del inference worker
-- **Archivo:** `cmd/inference-worker/requirements.txt`
-- Añadidos `fastapi>=0.110.0`, `uvicorn>=0.27.0`, `httpx>=0.27.0` porque `pkg.worker_common.base` los importa.
+#### 4. Imports estilo 3 secciones (`pkg/worker_common/entity_utils.py`)
+Reordenados los imports a:
+```python
+# Standard library
+import re
+from typing import Dict, List, Set
 
-#### 8. Smoke tests realizados
-- **Audio/image workers:** arrancaron en contenedores Docker y respondieron `/health` healthy contra RabbitMQ/Redis (sin servicios whisper/multimodal-llm no se envió job real).
-- **Inference worker end-to-end:**
-  - Contenedor `textflow-inference` contra RabbitMQ/Redis de prueba.
-  - Descubrimiento del modelo `model` en `http://mac-mini:11234/v1/models`.
-  - Publicación manual a la cola `inferences` con texto de notariado.
-  - Llamada real a `/v1/chat/completions` en mac-mini.
-  - Resultado guardado en Redis: `orchestrator:job:smoke-test-001:micro_inferences`.
+# Third-party
+from rapidfuzz import fuzz
+from unidecode import unidecode
+```
 
-#### 9. Reindexación del proyecto
-- **Comando:** `index_repository` de `codebase-memory-mcp` en modo `full` con `persistence=true`.
-- Resultado: 3.477 nodos, 9.484 edges.
+#### 5. Constante `SCHEMA_VERSION` compartida
+- Añadido `SCHEMA_VERSION = "1.1.0"` en `pkg/worker_common/entity_utils.py`
+- `pkg/events_python.py` ahora importa `SCHEMA_VERSION` desde `pkg.worker_common.entity_utils` y lo usa en `publish_job_completed`
+- `cmd/completion-worker/worker.py` ahora importa `SCHEMA_VERSION` desde `pkg.worker_common.entity_utils` y lo usa en 3 lugares (webhook payload y results dict)
 
-#### 10. Commits y push
-- `17a64ee fix(Phase 2): repair BaseAsyncWorker contract for audio+image workers + inference endpoint`
-- `99bb67b fix(rabbitmq,inference): correct vhost parsing and add missing inference deps`
-- Push a `origin/main`: `46d1200..99bb67b`.
+#### 6. README worker_common (`pkg/worker_common/README.md`)
+- Corregido import path en ejemplo: `worker_common.rabbitmq` → `pkg.worker_common.rabbitmq`
 
----
+#### 7. Tests HTTP (`cmd/orchestrator/handlers/results_test.go`)
+Nuevos tests añadidos:
+- `TestGraphHandler_InvalidJobID` — 400 para jobID inválido en `/graph`
+- `TestVectorsHandler_InvalidJobID` — 400 para jobID inválido en `/vectors`
+- `TestEntitiesHandler_InvalidJobID` — 400 para jobID inválido en `/entities`
+- `TestInferencesHandler_InvalidJobID` — 400 para jobID inválido en `/inferences`
+- `TestVectorsHandler_SeparatePagination` — paginación separada funciona (`page_chunks=2, limit_chunks=2` → 2 chunks starting at index 2)
+- `TestVectorsHandler_NotFoundJobID` — 404 para jobID válido pero no encontrado
+- `TestIsValidJobID` — tests unitarios de la función `isValidJobID` con IDs válidos e inválidos
+
+#### 8. Confirmación WEBHOOK env
+- `deploy/docker/docker-compose.yml` tiene `WEBHOOK_PAYLOAD_MODE=minimal` (línea 427)
+- `cmd/completion-worker/worker.py` tiene `webhook_payload_mode: str = "minimal"` en `Settings` (pydantic)
+- La configuración es consistente — no se requirió cambio.
+
+#### 9. Swagger
+- `swag` (SwagGo) no está disponible en el entorno de desarrollo — no se pudo regenerar `cmd/orchestrator/docs/`
+- Los comentarios Swagger en los handlers fueron actualizados manualmente con los nuevos parámetros de paginación.
 
 ### Decisiones tomadas
 
-1. **Patrón de contrato `BaseAsyncWorker`: dict vs `IncomingMessage`.**
-   - Se mantuvo el patrón de la base: `process_message(self, body)` recibe el JSON ya decodificado. La base gestiona el ack y el contador de métricas.
-   - **Alternativa descartada:** pasar el `IncomingMessage` a los workers. Habría requerido quitar el wrapper `async with message.process()` de la base y duplicar lógica de ack en cada worker.
+#### Decisión: Duplicar `isValidJobID` en `handlers/results.go` en lugar de moverla a un paquete compartido
+- **Alternativa**: Mover `validateJobID` de `main.go` a `internal/utils/` e importarla desde `handlers`.
+- **Descartada**: Requerir cambios en múltiples packages por una función trivial de 17 líneas.
+- **Justificación**: Mantiene `handlers/results.go` autocontenido; la función es simple y no justifica crear un nuevo paquete.
 
-2. **Eventos de fallo en workers (no en la base).**
-   - Se conservó `self.event_bus.publish_job_failed(job_id, str(e))` en audio/image workers.
-   - **Alternativa descartada:** mover la publicación del evento a `BaseAsyncWorker`. Rechazada para no ampliar el scope de cambios en la base y evitar efectos laterales en otros workers derivados.
+#### Decisión: Normalización con regex `[^\w\s]` en vez de solo `unidecode().lower().strip()`
+- **Alternativa**: Mantener la normalización simple (solo unidecode + lower + strip).
+- **Descartada**: No elimina puntuación, lo que causa que entidades como "John." y "John" se consideren diferentes.
+- **Justificación**: La función `normalize_entity_text` ya existía en `entity_utils.py` con el comportamiento completo. Se unificó `sliding_window.py` y `entities-worker/worker.py` para usar la misma lógica.
 
-3. **Sanitización de nombres de métricas en la base.**
-   - Reemplazar `"-"` por `"_"` en `worker_name` al registrar métricas Prometheus. Es la solución más centralizada.
-   - **Alternativa descartada:** cambiar los nombres de los workers para que nunca contengan guiones; es más invasiva y rompe convenciones de naming del proyecto.
+#### Decisión: `SCHEMA_VERSION` en `entity_utils.py` en vez de un archivo `constants.py` separado
+- **Alternativa**: Crear `pkg/worker_common/constants.py` con todas las constantes del proyecto.
+- **Descartada**: Sobrediseño — solo hay una constante (`SCHEMA_VERSION`). Añadir otro archivo no justifica el overhead.
+- **Justificación**: `entity_utils.py` es el lugar natural ya que es el módulo compartido de entidades y la versión del schema está ligada a la respuesta de los endpoints de ingestion.
 
-4. **Commit separado para fixes de rabbitmq/inference.**
-   - Se hizo un segundo commit (`99bb67b`) en lugar de amend de `17a64ee`. Así queda clara la línea temporal: primero fixes de fase 2, luego fixes descubiertos durante el smoke test de inferencia.
-
-5. **Reindexación completa del proyecto.**
-   - Se eligió modo `full` con persistencia para que el grafo refleje los nuevos archivos (`async_base.py`, `pubsub_base.py`, `chunking.py`) y las eliminaciones de configs huérfanas.
-
----
+#### Decisión: No migrar tests de Python por errores de import pre-existentes
+- Los tests de Python fallan con `ImportError` en varios archivos (e.g. `inference-worker/tests/test_inference_worker.py` importando de `entities-worker/worker.py`).
+- Estos errores existían antes de esta sesión — son deuda técnica pre-existente.
+- No se tocaron para no ampliar el scope de la sesión.
 
 ### TODOs pendientes
 
-- [ ] Actualizar `pkg/worker_common/example_worker.py`: está obsoleto, referencia módulos antiguos (`worker_common.config`, `worker_common.rabbitmq`, `worker_common.signals`). El `README.md` del paquete lo menciona como ejemplo.
-- [ ] Verificar smoke test completo del pipeline de texto: `extraction-worker`, `embeddings-worker`, `entities-worker`, `metadata-worker`, `completion-worker`. Requieren modelos descargados y/o docling.
-- [ ] Revisar `.env.example` y los defaults de `deploy/docker/docker-compose.yml` para sincronizar el nuevo endpoint de inferencia (`mac-mini:11234`, `model`).
-- [ ] Considerar una red Docker no-internal para el `inference-worker` en producción si debe salir a `mac-mini` (la red `docker_datastore` actual es internal).
-- [ ] Revisar advertencia de Pydantic `class-based config is deprecated` en los workers migrados y migrar a `ConfigDict`.
+- [ ] **Regenerar swagger**: `swag` no está instalado en el entorno. Instalar con `go install github.com/swaggo/swag/cmd/swag@latest` y ejecutar `swag init -g cmd/orchestrator/main.go -o cmd/orchestrator/docs`.
+- [ ] **Deuda técnica: imports de Python worker tests**: `cmd/inference-worker/tests/test_inference_worker.py` importa `InferenceWorker` desde `worker` (apunta a `entities-worker`). Necesita corrección de paths en los imports de los tests.
+- [ ] **Deuda técnica: otros errors de test collection**: `test_finalize_job.py`, `test_entity_id_refs.py`, `test_chunking.py`, `test_inference_embeddings.py`, `test_api.py`, `test_source_classifier.py` — verificar si son deuda pre-existente o requieren fix.
+- [ ] **Implementar ANALISIS_README.txt**: las propuestas de mejora del sistema GLiNER (DEDUPLICATION_ENABLED=false por defecto, thresholds DATE/MONEY por tipo, dedup con exact match) no están implementadas. Ver `ANALISIS_README.txt` para el plan completo.
+- [ ] **Revisar advertencia de Pydantic `class-based config is deprecated`** en los workers migrados y migrar a `ConfigDict`.

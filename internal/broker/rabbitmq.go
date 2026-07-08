@@ -215,16 +215,24 @@ func (b *RabbitMQBroker) declareQueues() error {
 }
 
 func (b *RabbitMQBroker) declareQueue(name string) error {
+	args := amqp.Table{
+		"x-dead-letter-exchange":    "document_processor_dlx",
+		"x-dead-letter-routing-key": name + "_failed",
+	}
+
+	// Add queue length limit if configured (prevents unbounded growth)
+	if b.config.QueueMaxLength > 0 {
+		args["x-max-length"] = int64(b.config.QueueMaxLength)
+		args["x-overflow"] = "reject-publish"
+	}
+
 	_, err := b.channel.QueueDeclare(
 		name,
 		true,
 		false,
 		false,
 		false,
-		amqp.Table{
-			"x-dead-letter-exchange":    "document_processor_dlx",
-			"x-dead-letter-routing-key": name + "_failed",
-		},
+		args,
 	)
 	return err
 }

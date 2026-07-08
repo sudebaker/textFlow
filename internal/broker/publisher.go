@@ -47,6 +47,11 @@ func (p *publisher) publish(ctx context.Context, queue string, body []byte) erro
 	)
 	if err != nil {
 		metrics.RabbitMQErrors.Inc()
+		// Check if this is a queue overflow error
+		if IsQueueOverflowError(err) {
+			metrics.QueueOverflowTotal.WithLabelValues(queue).Inc()
+			return &QueueOverflowError{Queue: queue, Err: err}
+		}
 		return fmt.Errorf("publish to %s: %w", queue, err)
 	}
 	if !ack {

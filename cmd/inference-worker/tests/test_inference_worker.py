@@ -460,11 +460,13 @@ class TestBatchProcessing:
             assert not worker._batch_lock.locked()
 
     def test_flush_batch_buffer_nack_on_error(self, worker):
-        """If _process_batch fails in flush, messages are dead-lettered (requeue=False)."""
+        """If _process_single_message fails, messages are dead-lettered (requeue=False)."""
         worker._llm_model_id = "test-model"
         worker._llm_max_model_len = 4096
         mock_redis = Mock()
         worker._redis_client = mock_redis
+        worker._executor = None
+        worker._connection = Mock()
 
         ch1 = Mock()
         method1 = Mock()
@@ -474,43 +476,41 @@ class TestBatchProcessing:
         method2 = Mock()
         method2.delivery_tag = "tag2"
 
-        with worker._batch_lock:
-            worker._batch_buffer = [
-                {
-                    "ch": ch1,
-                    "method": method1,
-                    "body": b'{}',
-                    "message": {
-                        "job_id": "j1",
-                        "chunk_id": 1,
-                        "chunk_text": "text1",
-                        "total_chunks": 2,
-                    },
+        batch = [
+            {
+                "ch": ch1,
+                "method": method1,
+                "body": b'{}',
+                "message": {
+                    "job_id": "j1",
+                    "chunk_id": 1,
+                    "chunk_text": "text1",
+                    "total_chunks": 2,
                 },
-                {
-                    "ch": ch2,
-                    "method": method2,
-                    "body": b'{}',
-                    "message": {
-                        "job_id": "j1",
-                        "chunk_id": 2,
-                        "chunk_text": "text2",
-                        "total_chunks": 2,
-                    },
+            },
+            {
+                "ch": ch2,
+                "method": method2,
+                "body": b'{}',
+                "message": {
+                    "job_id": "j1",
+                    "chunk_id": 2,
+                    "chunk_text": "text2",
+                    "total_chunks": 2,
                 },
-            ]
+            },
+        ]
 
-        with patch.object(worker, "_process_batch") as mock_process:
-            mock_process.side_effect = Exception("LLM timeout")
-            worker.flush_batch_buffer()
+        with patch.object(worker, "_process_single_message", side_effect=Exception("LLM timeout")):
+            worker._flush_batch_buffer(batch)
 
-            ch1.basic_nack.assert_called_once_with(delivery_tag="tag1", requeue=False)
-            ch2.basic_nack.assert_called_once_with(delivery_tag="tag2", requeue=False)
+            # NACKs are scheduled via add_callback_threadsafe
+            worker._connection.add_callback_threadsafe.assert_called()
             ch1.basic_ack.assert_not_called()
             ch2.basic_ack.assert_not_called()
 
     def test_flush_batch_buffer_ack_on_success(self, worker):
-        """If _process_batch succeeds, messages are ACKed."""
+        """If _process_single_message succeeds, messages are ACKed."""
         worker._llm_model_id = "test-model"
         worker._llm_max_model_len = 4096
         mock_redis = Mock()
@@ -518,6 +518,8 @@ class TestBatchProcessing:
         mock_redis.rpush.return_value = 1
         mock_redis.expire.return_value = True
         worker._redis_client = mock_redis
+        worker._executor = None
+        worker._connection = Mock()
 
         ch1 = Mock()
         method1 = Mock()
@@ -537,10 +539,10 @@ class TestBatchProcessing:
             },
         }
 
-        with patch.object(worker, "_process_batch") as mock_process:
+        with patch.object(worker, "_process_single_message"):
             worker._flush_batch_buffer([item])
-            mock_process.assert_called_once_with([item["message"]])
-            ch1.basic_ack.assert_called_once_with(delivery_tag="tag1")
+            worker._connection.add_callback_threadsafe.assert_called()
+            ch1.basic_ack.assert_not_called()
 
     def test_cache_key_includes_config(self, worker):
         """Cache key changes when MIN_CONFIDENCE_THRESHOLD changes."""
@@ -604,6 +606,8 @@ class TestBatchProcessing:
         mock_redis.lrange.return_value = []
         worker._redis_client = mock_redis
         worker._event_bus = Mock()
+        worker._executor = None
+        worker._connection = Mock()
         ch = Mock()
         method = Mock()
 

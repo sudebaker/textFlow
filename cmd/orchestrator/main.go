@@ -160,6 +160,7 @@ func main() {
 		maxAudioSizeMB = 500
 	}
 
+	handlers.SetResultsPath(cfg.ResultsPath)
 	r := setupRouter()
 
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
@@ -306,6 +307,10 @@ func setupRouter() *gin.Engine {
 		v1.POST("/documents/upload", uploadHandler)
 		v1.POST("/documents/batch", handlers.CreateBatchHandler)
 		v1.GET("/documents/:id", getJobHandler)
+		v1.GET("/documents/:id/graph", handlers.GraphHandler)
+		v1.GET("/documents/:id/vectors", handlers.VectorsHandler)
+		v1.GET("/documents/:id/entities", handlers.EntitiesHandler)
+		v1.GET("/documents/:id/inferences", handlers.InferencesHandler)
 		v1.GET("/documents/:id/download", downloadHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
 		v1.GET("/batches/:id/status", handlers.GetBatchStatusHandler)

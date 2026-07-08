@@ -31,7 +31,7 @@ import signal
 import sys
 import threading
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import redis
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
@@ -175,22 +175,6 @@ class BaseAsyncWorker:
         raise RuntimeError(
             f"Failed to connect to RabbitMQ after {self.max_retries} retries: {last_exc}"
         )
-
-    async def publish_downstream(
-        self,
-        channel: Any,
-        queues: List[str],
-        message: Dict,
-    ) -> None:
-        import aio_pika
-        for queue in queues:
-            await channel.default_exchange.publish(
-                aio_pika.Message(
-                    body=json.dumps(message).encode(),
-                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                ),
-                routing_key=queue,
-            )
 
     def run_in_executor(self, func, *args) -> asyncio.Future:
         loop = asyncio.get_running_loop()

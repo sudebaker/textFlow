@@ -45,3 +45,4 @@ tests/e2e/*.csv
 tests/e2e/*.json
 tests/e2e/*.txt
 .codebase-memory/
+.env

@@ -79,27 +79,14 @@ python3 -m http.server 8000
 
 ## How to Update Documentation
 
-Regenerate all documentation after code changes:
+Regenerate after code changes:
 
 ```bash
-# Regenerate all docs
-python3 scripts/generate_docs.py
+# Go docs (requires go doc)
+go doc -all ./... > docs/api/go_orchestrator.txt
 
-# This will:
-# 1. Extract all Go package documentation
-# 2. Parse Python docstrings from all workers
-# 3. Generate HTML for Python workers
-# 4. Create/update the main index.html
-```
-
-## Integration with CI/CD
-
-Suggested pre-commit hook or CI step:
-
-```bash
-# Ensure docs are up to date before commit
-python3 scripts/generate_docs.py
-git add docs/api/
+# Python docs (manual, via pydoc or inspection)
+python -m pydoc -w cmd/completion-worker/worker.py
 ```
 
 ## Architecture Documentation

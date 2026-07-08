@@ -428,7 +428,14 @@ Respond with ONLY the JSON array:"""
                 with connect_rabbitmq(self.rabbitmq_url) as (connection, channel):
                     self._rabbitmq_connected = True
                     self._channel = channel
-                    channel.queue_declare(queue=self.queue_name, durable=True)
+                    channel.queue_declare(
+                        queue=self.queue_name,
+                        durable=True,
+                        arguments={
+                            "x-dead-letter-exchange": "document_processor_dlx",
+                            "x-dead-letter-routing-key": f"{self.queue_name}_failed",
+                        },
+                    )
                     prefetch_count = int(os.getenv("PREFETCH_COUNT", str(BATCH_SIZE * 2)))
                     channel.basic_qos(prefetch_count=prefetch_count)
 

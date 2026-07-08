@@ -114,6 +114,7 @@ type InferenceItem struct {
 	Confidence float32   `json:"confidence"`
 	EntityRefs []string  `json:"entity_refs,omitempty"`
 	EntityID   string    `json:"entity_id,omitempty"`
+	EntityIDs  []string  `json:"entity_id_refs,omitempty"`
 	Embedding  []float32 `json:"embedding,omitempty"`
 }
 

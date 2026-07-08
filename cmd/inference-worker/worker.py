@@ -50,6 +50,7 @@ MAX_INFERENCES_LONG = int(os.getenv("MAX_INFERENCES_LONG", "3"))
 MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
 CACHE_TTL_SECONDS = int(os.getenv("INFERENCE_CACHE_TTL", "86400"))
 CACHE_ENABLED = os.getenv("INFERENCE_CACHE_ENABLED", "true").lower() == "true"
+CACHE_VERSION = os.getenv("INFERENCE_CACHE_VERSION", "1")
 RAW_TTL_SECONDS = int(os.getenv("INFERENCE_RAW_TTL", "86400"))
 BATCH_ENABLED = os.getenv("INFERENCE_BATCH_ENABLED", "true").lower() == "true"
 BATCH_SIZE = max(2, min(10, int(os.getenv("INFERENCE_BATCH_SIZE", "3"))))
@@ -67,6 +68,21 @@ INFERENCE_TARGET_TOKENS_PER_SEC = float(os.getenv("INFERENCE_TARGET_TOKENS_PER_S
 INFERENCE_TIMEOUT_DECAY_FACTOR = int(os.getenv("INFERENCE_TIMEOUT_DECAY_FACTOR", "2"))
 INFERENCE_COOLDOWN_SECONDS = float(os.getenv("INFERENCE_COOLDOWN_SECONDS", "30"))
 INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN = int(os.getenv("INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN", "5"))
+LLM_TEMPERATURE = float(os.getenv("INFERENCE_LLM_TEMPERATURE", "0.1"))
+
+_INFERENCE_SYSTEM_PROMPT = """You are a precise fact-extraction engine. Your task is to distill the key facts from a text passage into concise, self-contained statements.
+
+Rules:
+- Each fact MUST be a SYNTHESIZED, CONDENSED statement — never copy a literal sentence from the text.
+- Each fact must be independently understandable without reading the original text.
+- Mention specific values, names, dates, or amounts whenever they are in the text.
+- Do NOT include vague or generic statements (e.g. "the document describes...").
+- Respond ONLY with a valid JSON array. No explanation. No text outside the JSON.
+
+Each object in the array must have exactly these fields:
+- "text": condensed factual statement (your own words, not copied)
+- "confidence": float between 0.0 and 1.0
+- "entity_refs": list of entity name strings referenced in the fact"""
 
 
 class InferenceWorker(BaseWorker):
@@ -87,6 +103,9 @@ class InferenceWorker(BaseWorker):
             logger.info(f"Model discovery failed, falling back to LLM_MODEL: {LLM_MODEL}")
             self._llm_model_id = LLM_MODEL
             self._llm_max_model_len = None
+
+        # Hash of LLM-affecting parameters for cache invalidation
+        self._llm_params_hash = self._compute_llm_params_hash()
 
         # Adaptive LLM concurrency
         self._semaphore: Optional[AdaptiveSemaphore] = None
@@ -117,7 +136,11 @@ class InferenceWorker(BaseWorker):
         self._connection = None
         self._stopping = False
         self._executor: Optional[ThreadPoolExecutor] = None
+        self._metrics_thread: Optional[threading.Thread] = None
         signal.signal(signal.SIGTERM, self._handle_sigterm)
+
+        # Export initial semaphore state so gauges aren't stuck at 0
+        self._export_metrics()
 
     def _discover_model(self, llm_url: str) -> tuple:
         if not llm_url:
@@ -152,13 +175,21 @@ class InferenceWorker(BaseWorker):
         else:
             logger.info("No executor, skipping drain")
 
+    def _compute_llm_params_hash(self) -> str:
+        params = json.dumps({
+            "v": CACHE_VERSION,
+            "sp": _INFERENCE_SYSTEM_PROMPT,
+            "tp": {"enable_thinking": False},
+            "temp": LLM_TEMPERATURE,
+            "model": self._llm_model_id or "unknown",
+            "threshold": MIN_CONFIDENCE_THRESHOLD,
+            "max": [MAX_INFERENCES_SHORT, MAX_INFERENCES_MEDIUM, MAX_INFERENCES_LONG],
+        }, sort_keys=True)
+        return hashlib.sha256(params.encode()).hexdigest()[:16]
+
     def _cache_key(self, chunk_text: str, source_type: str) -> str:
-        content = (
-            f"{chunk_text}:{source_type}:{self._llm_model_id or 'unknown'}:"
-            f"{MIN_CONFIDENCE_THRESHOLD}:"
-            f"{MAX_INFERENCES_SHORT}:{MAX_INFERENCES_MEDIUM}:{MAX_INFERENCES_LONG}"
-        )
-        return f"inference:cache:{hashlib.sha256(content.encode()).hexdigest()}"
+        text_hash = hashlib.sha256(f"{chunk_text}:{source_type}".encode()).hexdigest()
+        return f"inference:cache:{self._llm_params_hash}:{text_hash}"
 
     def _get_cached(self, cache_key: str) -> Optional[List[Dict]]:
         if not CACHE_ENABLED:
@@ -228,8 +259,8 @@ class InferenceWorker(BaseWorker):
             "model": self._llm_model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.1,
-            "chat_templatekwargs": {"enable_thinking": False},
+            "temperature": LLM_TEMPERATURE,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         t0 = time.monotonic()
         released = False
@@ -299,8 +330,16 @@ class InferenceWorker(BaseWorker):
         stats = self._semaphore.get_stats()
         self._cwnd_gauge.set(stats["cwnd"])
         self._in_flight_gauge.set(stats["in_flight"])
+        self._total_requests_counter.inc(0)  # ensure counter is registered (no-op on first call)
+        self._total_timeouts_counter.inc(0)
         self._avg_tps_gauge.set(stats["avg_tokens_per_sec"])
         self._cooldown_gauge.set(1 if stats["is_in_cooldown"] else 0)
+
+    def _metrics_loop(self):
+        """Periodically export semaphore metrics (every 5s)."""
+        while not self._stopping:
+            self._export_metrics()
+            time.sleep(5)
 
     def extract_inferences(
         self, chunk_text: str, entities: List, source_type: str
@@ -316,20 +355,6 @@ class InferenceWorker(BaseWorker):
         word_count = len(chunk_text.split())
         dynamic_max = self._dynamic_max_inferences(word_count)
 
-        system_prompt = """You are a precise fact-extraction engine. Your task is to distill the key facts from a text passage into concise, self-contained statements.
-
-Rules:
-- Each fact MUST be a SYNTHESIZED, CONDENSED statement — never copy a literal sentence from the text.
-- Each fact must be independently understandable without reading the original text.
-- Mention specific values, names, dates, or amounts whenever they are in the text.
-- Do NOT include vague or generic statements (e.g. "the document describes...").
-- Respond ONLY with a valid JSON array. No explanation. No text outside the JSON.
-
-Each object in the array must have exactly these fields:
-- "text": condensed factual statement (your own words, not copied)
-- "confidence": float between 0.0 and 1.0
-- "entity_refs": list of entity name strings referenced in the fact"""
-
         user_prompt = f"""Extract the {dynamic_max} MOST IMPORTANT facts from this text. Quality over quantity — only include facts with high confidence. Synthesize — do NOT copy sentences.
 
 Text:
@@ -339,7 +364,7 @@ Respond with ONLY the JSON array:"""
 
         max_tokens = max(200, min((self._llm_max_model_len or 4096) - 900, 4096))
         completion_text = self._call_llm(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            [{"role": "system", "content": _INFERENCE_SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
             max_tokens,
         )
         if not completion_text:
@@ -367,7 +392,7 @@ Respond with ONLY the JSON array:"""
                     "entity_refs": inf.get("entity_refs", inf.get("entities", [])),
                 })
         validated = [i for i in validated if i["confidence"] >= MIN_CONFIDENCE_THRESHOLD]
-        self._set_cached(cache_key, inferences if isinstance(inferences, list) else [])
+        self._set_cached(cache_key, validated)
         return validated
 
     def process_message(self, message: Dict) -> Dict:
@@ -473,42 +498,6 @@ Respond with ONLY the JSON array:"""
                 lambda: ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             )
 
-    def _process_batch(self, messages: List[Dict]):
-        for msg in messages:
-            job_id = msg.get("job_id")
-            chunk_id = msg.get("chunk_id")
-            chunk_text = msg.get("chunk_text", "")
-            source_type = msg.get("source_type", "generico")
-            total_chunks = msg.get("total_chunks", 1)
-
-            if not chunk_text or len(chunk_text.split()) > MAX_CHUNK_WORDS:
-                self._store_empty_result(job_id, chunk_id, total_chunks)
-                continue
-
-            cache_key = self._cache_key(chunk_text, source_type)
-            cached = self._get_cached(cache_key)
-            if cached is not None:
-                inferences = self._validate_cached(cached)
-            else:
-                inferences = self.extract_inferences(chunk_text, [], source_type)
-                raw = inferences
-                self._set_cached(cache_key, raw)
-
-            raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
-            self.redis_client.rpush(raw_key, json.dumps({"chunk_id": chunk_id, "inferences": inferences}))
-            self.redis_client.expire(raw_key, RAW_TTL_SECONDS)
-
-            remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
-            remaining = self.redis_client.decr(remaining_key)
-
-            if remaining <= 0:
-                self._assemble_final_results(job_id)
-            else:
-                chunks_done = total_chunks - remaining
-                self.event_bus.publish_job_inference_chunk_progress(
-                    job_id, chunks_done=chunks_done, chunks_total=total_chunks
-                )
-
     def _store_empty_result(self, job_id: str, chunk_id: Any, total_chunks: int):
         raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
         self.redis_client.rpush(raw_key, json.dumps({"chunk_id": chunk_id, "inferences": []}))
@@ -564,6 +553,12 @@ Respond with ONLY the JSON array:"""
         if INFERENCE_ADAPTIVE_ENABLED and LLM_URL:
             self._executor = ThreadPoolExecutor(max_workers=INFERENCE_MAX_CONCURRENCY)
             self.logger.info(f"Thread pool created: max_workers={INFERENCE_MAX_CONCURRENCY}")
+
+        # Start periodic metrics export thread
+        if self._semaphore:
+            self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
+            self._metrics_thread.start()
+            self.logger.info("Metrics export thread started (every 5s)")
 
         from pkg.worker_common.rabbitmq import connect_rabbitmq
         while not self._shutdown_requested and not self._stopping:

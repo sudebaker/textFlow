@@ -70,6 +70,14 @@ INFERENCE_COOLDOWN_SECONDS = float(os.getenv("INFERENCE_COOLDOWN_SECONDS", "30")
 INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN = int(os.getenv("INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN", "5"))
 LLM_TEMPERATURE = float(os.getenv("INFERENCE_LLM_TEMPERATURE", "0.1"))
 
+_ASSEMBLY_DECR_SCRIPT = """
+local current = redis.call('GET', KEYS[1])
+if not current or tonumber(current) <= 0 then
+    return -1
+end
+return redis.call('DECR', KEYS[1])
+"""
+
 _INFERENCE_SYSTEM_PROMPT = """You are a precise fact-extraction engine. Your task is to distill the key facts from a text passage into concise, self-contained statements.
 
 Rules:
@@ -122,6 +130,9 @@ class InferenceWorker(BaseWorker):
                 f"Adaptive semaphore enabled: min={INFERENCE_MIN_CONCURRENCY}, "
                 f"max={INFERENCE_MAX_CONCURRENCY}, target_tps={INFERENCE_TARGET_TOKENS_PER_SEC}"
             )
+
+        # Lua script for atomic remaining counter decrement
+        self._assembly_decr = self.redis_client.register_script(_ASSEMBLY_DECR_SCRIPT)
 
         # Prometheus metrics
         self._cwnd_gauge = Gauge("inference_worker_cwnd", "Current congestion window")
@@ -249,8 +260,10 @@ class InferenceWorker(BaseWorker):
             return None
 
         # Acquire token from adaptive semaphore
+        # Timeout accounts for worst case: other chunks in batch holding the semaphore
         if self._semaphore:
-            if not self._semaphore.acquire(timeout=LLM_TIMEOUT + 10):
+            semaphore_timeout = LLM_TIMEOUT * LLM_RETRIES * BATCH_SIZE + 10
+            if not self._semaphore.acquire(timeout=semaphore_timeout):
                 logger.warning("Adaptive semaphore acquire timeout")
                 self._export_metrics()
                 return None
@@ -425,9 +438,13 @@ Respond with ONLY the JSON array:"""
         self.redis_client.expire(raw_key, RAW_TTL_SECONDS)
 
         remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
-        remaining = self.redis_client.decr(remaining_key)
+        remaining = self._assembly_decr(keys=[remaining_key])
 
-        if remaining <= 0:
+        if remaining < 0:
+            # Counter missing or already <= 0 — job already assembled or cleared
+            return {"inferences": inferences, "remaining": 0}
+
+        if remaining == 0:
             self._assemble_final_results(job_id)
         else:
             chunks_done = total_chunks - remaining
@@ -503,8 +520,8 @@ Respond with ONLY the JSON array:"""
         self.redis_client.rpush(raw_key, json.dumps({"chunk_id": chunk_id, "inferences": []}))
         self.redis_client.expire(raw_key, RAW_TTL_SECONDS)
         remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
-        remaining = self.redis_client.decr(remaining_key)
-        if remaining <= 0:
+        remaining = self._assembly_decr(keys=[remaining_key])
+        if remaining == 0:
             self._assemble_final_results(job_id)
 
     def _assemble_final_results(self, job_id: str):

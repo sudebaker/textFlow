@@ -132,7 +132,7 @@ class BasePubSubWorker:
                 decode_responses=True,
                 socket_keepalive=True,
                 socket_connect_timeout=5,
-                health_check_interval=30,
+                health_check_interval=0,
             )
         return self._redis_client
 
@@ -144,7 +144,7 @@ class BasePubSubWorker:
                 decode_responses=False,
                 socket_keepalive=True,
                 socket_connect_timeout=5,
-                health_check_interval=30,
+                health_check_interval=0,
             )
         return self._redis_raw
 
@@ -186,15 +186,21 @@ class BasePubSubWorker:
 
                 backoff = 1
 
-                for message in pubsub.listen():
-                    if self._shutdown_requested:
-                        break
+                while not self._shutdown_requested:
                     try:
-                        self.handle_event(message)
+                        message = pubsub.get_message(timeout=1.0)
+                        if message:
+                            try:
+                                self.handle_event(message)
+                            except Exception as e:
+                                logger.error(f"Error handling event: {e}")
+                    except (redis.ConnectionError, redis.TimeoutError) as e:
+                        raise e
                     except Exception as e:
-                        logger.error(f"Error handling event: {e}")
+                        logger.warning(f"Unexpected error in pubsub loop: {e}")
+                        raise
 
-            except Exception as e:
+            except (redis.ConnectionError, redis.TimeoutError, OSError) as e:
                 logger.error(f"Error in {self.worker_name} pubsub: {e}")
                 try:
                     pubsub.close()

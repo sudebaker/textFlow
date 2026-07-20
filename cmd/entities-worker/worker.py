@@ -405,6 +405,11 @@ class EntitiesWorker(BaseWorker):
             connection = pika.BlockingConnection(params)
             try:
                 channel = connection.channel()
+                self.redis_client.setex(
+                    f"orchestrator:job:{job_id}:inferences:remaining",
+                    86400,
+                    len(valid_chunks),
+                )
                 for chunk in valid_chunks:
                     chunk_id = chunk.get("chunk_id")
                     chunk_text = chunk.get("text", "")
@@ -423,11 +428,6 @@ class EntitiesWorker(BaseWorker):
                         body=json.dumps(inference_msg),
                         properties=pika.BasicProperties(delivery_mode=2),
                     )
-                self.redis_client.setex(
-                    f"orchestrator:job:{job_id}:inferences:remaining",
-                    86400,
-                    len(valid_chunks),
-                )
                 logger.info(f"Published {len(valid_chunks)} inference tasks for job {job_id}")
             finally:
                 connection.close()

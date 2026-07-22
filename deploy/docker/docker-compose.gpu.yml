@@ -1,58 +1,32 @@
-# GPU-Accelerated Deployment Override
-# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-# Prerequisites: NVIDIA GPU, nvidia-docker2, CUDA 11.8+ installed on host
+# GPU override file — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#
+# Adds NVIDIA GPU support to workers that benefit from CUDA.
+# The base docker-compose.yml defaults to CPU-only.
 
 services:
-  docling:
-    image: quay.io/docling-project/docling-serve:latest
-    runtime: nvidia
-    environment:
-      - DOCLING_DEVICE=cuda:0
-      - NVIDIA_VISIBLE_DEVICES=0
-    deploy:
-      resources:
-        limits:
-          memory: 8G  # GPU offloads models to VRAM, reduces system RAM needed
-    healthcheck:
-      start_period: 60s  # CUDA initialization takes longer
-
   embeddings-worker:
-    build:
-      args:
-        CUDA_VERSION: cu118  # CUDA 11.8 support
     runtime: nvidia
     environment:
       - EMBEDDINGS_DEVICE=cuda
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=0
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 6G  # GPU reduces system RAM pressure
 
   entities-worker:
-    build:
-      args:
-        CUDA_VERSION: cu118  # CUDA 11.8 support
     runtime: nvidia
     environment:
       - ENTITIES_DEVICE=cuda
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=0
-    deploy:
-      resources:
-        limits:
-          memory: 6G  # GPU offloads GLiNER to VRAM
 
   completion-worker:
     runtime: nvidia
     environment:
-      - EMBEDDINGS_DEVICE=cuda
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=0
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
+
+  docling:
+    runtime: nvidia
+    environment:
+      - DOCLING_DEVICE=cuda
+      - NVIDIA_VISIBLE_DEVICES=0

@@ -10,7 +10,7 @@ textFlow extrae, analiza y enriquece contenido de documentos, imágenes y archiv
 
 ```bash
 # 1. Clonar y configurar
-git clone https://github.com/anomalyco/textflow.git
+git clone https://github.com/sudebaker/textFlow.git
 cd textflow
 cp .env.example .env
 

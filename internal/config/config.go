@@ -46,11 +46,17 @@ type Config struct {
 
 	// RabbitMQ Queue Limits
 	QueueMaxLength int `env:"QUEUE_MAX_LENGTH" default:"1000"`
+
+	// API Key for orchestrator auth (empty = disabled, for dev mode)
+	APIKey string `env:"API_KEY" default:""`
 }
 
 func (c *Config) Validate() error {
 	if strings.Contains(c.RabbitMQURL, "guest:guest") {
 		return fmt.Errorf("SECURITY: RabbitMQ default credentials detected — set RABBITMQ_URL with proper credentials before deploying")
+	}
+	if c.APIKey != "" && len(c.APIKey) < 32 {
+		return fmt.Errorf("SECURITY: API_KEY must be at least 32 characters when set — current length: %d", len(c.APIKey))
 	}
 	return nil
 }

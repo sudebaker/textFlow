@@ -302,10 +302,14 @@ func setupRouter() *gin.Engine {
 	)
 	r.Use(limiter.Middleware())
 
+	// API key auth (disabled if API_KEY env var is empty)
+	authMiddleware := middleware.APIKeyAuth(cfg.APIKey)
+
 	r.GET("/health", healthHandler)
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	v1 := r.Group("/v1")
+	v1.Use(authMiddleware)
 	{
 		v1.POST("/documents/process", createJobHandler)
 		v1.POST("/documents/upload", uploadHandler)
@@ -318,9 +322,8 @@ func setupRouter() *gin.Engine {
 		v1.GET("/documents/:id/download", downloadHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
 		v1.GET("/batches/:id/status", handlers.GetBatchStatusHandler)
+		v1.GET("/jobs/:id/stream", handlers.StreamJobHandler)
 	}
-
-	v1.GET("/jobs/:id/stream", handlers.StreamJobHandler)
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 

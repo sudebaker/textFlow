@@ -222,7 +222,8 @@ class Phase2AtomicityValidation:
                         if job_status.get("status") == "completed":
                             logger.info("Job completed", self.phase_name)
                             break
-                except:
+                except Exception as e:
+                    logger.error(f"Unexpected error in e2e test: {e}", exc_info=True)
                     pass
             
             self.results["ttl_checks"] = ttl_check_results

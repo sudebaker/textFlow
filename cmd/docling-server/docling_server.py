@@ -98,8 +98,8 @@ def extract_text_from_pdf_raw(file_path):
                 text = match.replace("\\n", "\n").replace("\\t", "\t")
                 if text.strip():
                     text_parts.append(text)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to extract text from converted file: {e}")
 
         # Fallback: look for any readable ASCII text in the file
         if not text_parts:
@@ -196,7 +196,7 @@ async def convert_document(file: UploadFile = File(...)):
             # Clean up temp file
             try:
                 os.remove(tmp_path)
-            except:
+            except OSError:
                 pass
 
     except Exception as e:

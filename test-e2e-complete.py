@@ -20,7 +20,7 @@ except ImportError:
 
 # Configuration
 ORCHESTRATOR_URL = "http://localhost:8080"
-TEST_DOCUMENT_PATH = "/path/to/textflow/data/input/sample-document.pdf"
+TEST_DOCUMENT_PATH = "data/input/sample-document.pdf"
 MAX_WAIT_TIME = 1800  # 30 minutes — CPU mode is slow for large docs
 POLL_INTERVAL = 5  # Check status every 5 seconds
 
@@ -369,7 +369,7 @@ def save_results_to_file(job_id: str, results: Dict[str, Any]) -> bool:
     Returns:
         True if saved successfully
     """
-    output_dir = Path("/path/to/textflow/data/output")
+    output_dir = Path("data/output")
     output_dir.mkdir(exist_ok=True, parents=True)
 
     output_file = output_dir / f"result_{job_id}.json"

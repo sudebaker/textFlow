@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 # Add the entities-worker directory to the path
-sys.path.insert(0, "/path/to/textflow/cmd/entities-worker")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sliding_window import (
     normalize_entity_text,

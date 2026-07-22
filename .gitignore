@@ -46,3 +46,11 @@ tests/e2e/*.json
 tests/e2e/*.txt
 .codebase-memory/
 .env
+
+# Internal documentation (not for public repo)
+docs/internal/
+todo.md
+*.session-notes.md
+
+# Avoid re-adding the binary that was removed from history
+cmd/orchestrator/orchestrator

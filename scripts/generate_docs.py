@@ -45,7 +45,7 @@ def generate_go_docs() -> None:
                 capture_output=True,
                 text=True,
                 timeout=10,
-                cwd="/path/to/textflow"
+                cwd=str(Path(__file__).resolve().parent.parent)
             )
             
             if result.returncode == 0 and result.stdout.strip():

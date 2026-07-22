@@ -37,6 +37,6 @@ done
 export RABBITMQ_URL="amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@localhost:${RABBITMQ_PORT}/"
 
 echo "Running broker tests with RABBITMQ_URL=$RABBITMQ_URL"
-cd /path/to/textflow
+cd "$(dirname "$0")/.."
 
 go test -v -race ./internal/broker/...

@@ -32,7 +32,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.CreateJobRequest"
+                            "$ref": "#/definitions/models.CreateJobRequest"
                         }
                     }
                 ],
@@ -40,19 +40,19 @@ const docTemplate = `{
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.CreateJobResponse"
+                            "$ref": "#/definitions/models.CreateJobResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     }
                 }
@@ -93,13 +93,13 @@ const docTemplate = `{
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.CreateJobResponse"
+                            "$ref": "#/definitions/models.CreateJobResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     }
                 }
@@ -125,13 +125,13 @@ const docTemplate = `{
                     "200": {
                         "description": "Job status with current_step field",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.GetJobResponse"
+                            "$ref": "#/definitions/models.GetJobResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     }
                 }
@@ -155,7 +155,7 @@ const docTemplate = `{
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     }
                 }
@@ -187,213 +187,13 @@ const docTemplate = `{
                     "200": {
                         "description": "Gzip-compressed JSON (Content-Encoding: gzip)",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.JobResults"
+                            "$ref": "#/definitions/models.JobResults"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/documents/{id}/entities": {
-            "get": {
-                "description": "Returns a flat list of all entities extracted from the document.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Get document entities",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/cmd_orchestrator_handlers.EntitiesResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/documents/{id}/graph": {
-            "get": {
-                "description": "Returns nodes and edges representing the document structure for graph database ingestion.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Get document graph",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/cmd_orchestrator_handlers.GraphResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/documents/{id}/inferences": {
-            "get": {
-                "description": "Returns a flat list of all inferences with resolved entity_id_refs for knowledge graph construction.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Get document inferences",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page number (default: 1)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Items per page (default: 100)",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/cmd_orchestrator_handlers.InferencesResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/documents/{id}/vectors": {
-            "get": {
-                "description": "Returns chunks and inferences with optional embeddings for vector database ingestion.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Get document vectors",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "boolean",
-                        "description": "Include embeddings (default: true)",
-                        "name": "embeddings",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Comma-separated fields to include (chunks,inferences)",
-                        "name": "fields",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page number (default: 1)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Items per page (default: 100)",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/cmd_orchestrator_handlers.VectorsResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/textflow_internal_models.ErrorResponse"
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     }
                 }
@@ -401,199 +201,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "cmd_orchestrator_handlers.ChunkVector": {
-            "type": "object",
-            "properties": {
-                "chunk_id": {
-                    "type": "string"
-                },
-                "embedding": {
-                    "type": "array",
-                    "items": {
-                        "type": "number"
-                    }
-                },
-                "text": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.Edge": {
-            "type": "object",
-            "properties": {
-                "from": {
-                    "type": "string"
-                },
-                "to": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.EntitiesResponse": {
-            "type": "object",
-            "properties": {
-                "entities": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/cmd_orchestrator_handlers.EntityFlat"
-                    }
-                },
-                "job_id": {
-                    "type": "string"
-                },
-                "schema_version": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.EntityFlat": {
-            "type": "object",
-            "properties": {
-                "confidence": {
-                    "type": "number"
-                },
-                "entity_id": {
-                    "type": "string"
-                },
-                "label": {
-                    "type": "string"
-                },
-                "text": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.GraphResponse": {
-            "type": "object",
-            "properties": {
-                "edges": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/cmd_orchestrator_handlers.Edge"
-                    }
-                },
-                "job_id": {
-                    "type": "string"
-                },
-                "nodes": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/cmd_orchestrator_handlers.Node"
-                    }
-                },
-                "schema_version": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.InferenceFlat": {
-            "type": "object",
-            "properties": {
-                "chunk_id": {
-                    "type": "string"
-                },
-                "confidence": {
-                    "type": "number"
-                },
-                "entity_id_refs": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "entity_refs": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "inference_id": {
-                    "type": "string"
-                },
-                "text": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.InferenceVector": {
-            "type": "object",
-            "properties": {
-                "chunk_id": {
-                    "type": "string"
-                },
-                "embedding": {
-                    "type": "array",
-                    "items": {
-                        "type": "number"
-                    }
-                },
-                "inference_id": {
-                    "type": "string"
-                },
-                "text": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.InferencesResponse": {
-            "type": "object",
-            "properties": {
-                "inferences": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/cmd_orchestrator_handlers.InferenceFlat"
-                    }
-                },
-                "job_id": {
-                    "type": "string"
-                },
-                "schema_version": {
-                    "type": "string"
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.Node": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string"
-                },
-                "label": {
-                    "type": "string"
-                },
-                "props": {
-                    "type": "object",
-                    "additionalProperties": {}
-                }
-            }
-        },
-        "cmd_orchestrator_handlers.VectorsResponse": {
-            "type": "object",
-            "properties": {
-                "chunks": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/cmd_orchestrator_handlers.ChunkVector"
-                    }
-                },
-                "inferences": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/cmd_orchestrator_handlers.InferenceVector"
-                    }
-                },
-                "job_id": {
-                    "type": "string"
-                },
-                "schema_version": {
-                    "type": "string"
-                }
-            }
-        },
-        "textflow_internal_models.Chunk": {
+        "models.Chunk": {
             "type": "object",
             "properties": {
                 "chunk_id": {
@@ -617,7 +225,7 @@ const docTemplate = `{
                 "inferences": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/textflow_internal_models.InferenceItem"
+                        "$ref": "#/definitions/models.InferenceItem"
                     }
                 },
                 "start_offset": {
@@ -631,7 +239,7 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.CreateJobRequest": {
+        "models.CreateJobRequest": {
             "type": "object",
             "properties": {
                 "document_base64": {
@@ -658,21 +266,21 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.CreateJobResponse": {
+        "models.CreateJobResponse": {
             "type": "object",
             "properties": {
                 "job_id": {
                     "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/textflow_internal_models.JobStatus"
+                    "$ref": "#/definitions/models.JobStatus"
                 },
                 "status_url": {
                     "type": "string"
                 }
             }
         },
-        "textflow_internal_models.EntityMinimal": {
+        "models.EntityMinimal": {
             "type": "object",
             "properties": {
                 "chunk_id": {
@@ -695,7 +303,7 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.ErrorResponse": {
+        "models.ErrorResponse": {
             "type": "object",
             "properties": {
                 "detail": {
@@ -706,7 +314,7 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.GetJobResponse": {
+        "models.GetJobResponse": {
             "type": "object",
             "properties": {
                 "created_at": {
@@ -722,7 +330,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/textflow_internal_models.JobStatus"
+                    "$ref": "#/definitions/models.JobStatus"
                 },
                 "steps": {
                     "type": "object",
@@ -732,26 +340,14 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.InferenceItem": {
+        "models.InferenceItem": {
             "type": "object",
             "properties": {
                 "confidence": {
                     "type": "number"
                 },
-                "embedding": {
-                    "type": "array",
-                    "items": {
-                        "type": "number"
-                    }
-                },
                 "entity_id": {
                     "type": "string"
-                },
-                "entity_id_refs": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 },
                 "entity_refs": {
                     "type": "array",
@@ -764,13 +360,13 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.JobResults": {
+        "models.JobResults": {
             "type": "object",
             "properties": {
                 "chunks": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/textflow_internal_models.Chunk"
+                        "$ref": "#/definitions/models.Chunk"
                     }
                 },
                 "completed_at": {
@@ -786,17 +382,14 @@ const docTemplate = `{
                 "entities": {
                     "type": "object",
                     "additionalProperties": {
-                        "$ref": "#/definitions/textflow_internal_models.EntityMinimal"
+                        "$ref": "#/definitions/models.EntityMinimal"
                     }
                 },
                 "job_id": {
                     "type": "string"
                 },
-                "schema_version": {
-                    "type": "string"
-                },
                 "source_classification": {
-                    "$ref": "#/definitions/textflow_internal_models.SourceClassificationResult"
+                    "$ref": "#/definitions/models.SourceClassificationResult"
                 },
                 "status": {
                     "type": "string"
@@ -810,7 +403,7 @@ const docTemplate = `{
                 }
             }
         },
-        "textflow_internal_models.JobStatus": {
+        "models.JobStatus": {
             "type": "string",
             "enum": [
                 "pending",
@@ -837,7 +430,7 @@ const docTemplate = `{
                 "StatusFailed"
             ]
         },
-        "textflow_internal_models.SourceClassificationResult": {
+        "models.SourceClassificationResult": {
             "type": "object",
             "properties": {
                 "classifier_version": {

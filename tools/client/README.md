@@ -38,7 +38,8 @@ go build -o client .
 | `-i, --input <file>` | Archivo local o URL (requerido para modo simple) |
 | `-o, --output <file>` | Ruta para guardar resultados JSON (requerido) |
 | `-u, --url <url>` | URL base de la API (default: `http://localhost:8080`) |
-| `-f, --inferences` | Habilitar inferencias con embeddings vectoriales automáticos (requiere vLLM) |
+| `-f, --inferences` | Habilitar generación de inferencias (requiere vLLM) |
+| `--inference-embeddings` | Generar embeddings vectoriales para inferencias (requiere `-f`) |
 | `-w, --webhook <url>` | URL de webhook para notificación de completado |
 | `--webhook-secret <secret>` | Secreto para firma de verificación del webhook |
 | `--sse` | Usar streaming SSE en lugar de polling |
@@ -103,15 +104,7 @@ El archivo JSON de salida contiene:
       "end_offset": 128,
       "token_count": 25,
       "embeddings": [0.123, 0.456, ...],
-      "entity_ids": ["entity_0", "entity_1"],
-      "inferences": [
-        {
-          "text": "El valor de la propiedad es 500000 EUR",
-          "confidence": 0.95,
-          "entity_refs": ["500000 EUR"],
-          "embedding": [0.123, 0.456, ...]
-        }
-      ]
+      "entity_ids": ["entity_0", "entity_1"]
     }
   ],
   "entities": {
@@ -139,12 +132,6 @@ ORCHESTRATOR_URL=http://localhost:8080 ./client -i document.pdf -o results.json
 
 # Con streaming SSE
 ./client -i document.pdf -o results.json --sse
-
-# Inferencias (con embeddings automáticos)
-./client -i document.pdf -o results.json -f
-
-# Audio con inferencias
-./client -i audio.mp3 -o results.json -f
 
 # Batch processing
 ./client -b documents.json -o batch_results.json

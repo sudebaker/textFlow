@@ -13,14 +13,11 @@ the model's limitations.
 """
 
 import logging
-import re
 from typing import List, Dict, Any, Tuple
 from rapidfuzz import fuzz
 from unidecode import unidecode
 
 logger = logging.getLogger(__name__)
-
-_PUNCT_RE = re.compile(r"[^\w\s]")
 
 # Constants
 GLINER_MAX_WORDS = 384  # GLiNER max length in words
@@ -101,13 +98,9 @@ def normalize_entity_text(text: str) -> str:
         text: Entity text to normalize
 
     Returns:
-        Normalized text (lowercase, no accents, no punctuation, trimmed)
+        Normalized text (lowercase, no accents, trimmed)
     """
-    if not text:
-        return ""
-    text = unidecode(text)
-    text = _PUNCT_RE.sub("", text)
-    return text.lower().strip()
+    return unidecode(text).lower().strip()
 
 
 def positions_overlap(

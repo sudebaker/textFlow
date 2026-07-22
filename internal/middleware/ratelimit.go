@@ -50,30 +50,19 @@ func NewRateLimiterWithTTL(limit rate.Limit, burst int, ttl time.Duration) *Rate
 func (rl *RateLimiter) getLimiter(key string) *rate.Limiter {
 	now := time.Now()
 
-	// Try read lock first
-	rl.mu.RLock()
-	entry, exists := rl.limiters[key]
-	rl.mu.RUnlock()
-
-	if exists {
-		// Update lastSeen with write lock
-		rl.mu.Lock()
-		entry.lastSeen = now
-		rl.mu.Unlock()
-		return entry.limiter
-	}
-
-	// Create new limiter with write lock
+	// Use exclusive lock from the start to avoid race conditions
+	// during upgrade from RLock to Lock and prevent use-after-free
+	// with concurrent cleanup
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if entry, exists = rl.limiters[key]; exists {
+	entry, exists := rl.limiters[key]
+	if exists {
 		entry.lastSeen = now
 		return entry.limiter
 	}
 
-	// Create new entry
+	// Create new limiter
 	limiter := rate.NewLimiter(rl.limit, rl.burst)
 	rl.limiters[key] = &limiterEntry{
 		limiter:  limiter,

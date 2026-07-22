@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	sseChannelBuffer = 100
+	sseChannelBuffer = 50 // Limited buffer to prevent memory exhaustion with slow clients
 	sseHeartbeat     = 30 * time.Second
 	sseMaxDuration   = 10 * time.Minute
 )
@@ -36,10 +36,11 @@ func SetDependencies(eb *events.EventBus, r *redisclient.RedisClient, mq *broker
 func StreamJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
+	// Use separate contexts: longer timeout for initial check, independent for stream
+	checkCtx, checkCancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer checkCancel()
 
-	status, err := redisInst.GetJobStatus(ctx, jobID)
+	status, err := redisInst.GetJobStatus(checkCtx, jobID)
 	if err != nil || status == "" {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{
 			Error:  "not_found",
@@ -91,14 +92,19 @@ func StreamJobHandler(c *gin.Context) {
 		}
 	}()
 
-	ctx, cancel = context.WithTimeout(ctx, sseMaxDuration)
-	defer cancel()
+	// Stream context with reasonable max duration
+	streamCtx, streamCancel := context.WithTimeout(c.Request.Context(), sseMaxDuration)
+	defer streamCancel()
 	defer close(done)
 
 	ch := pubsub.Channel()
 	for {
 		select {
-		case msg := <-ch:
+		case msg, ok := <-ch:
+			if !ok {
+				// Channel closed, connection lost
+				return
+			}
 			var jobEvent events.JobEvent
 			if err := json.Unmarshal([]byte(msg.Payload), &jobEvent); err != nil {
 				continue
@@ -117,14 +123,20 @@ func StreamJobHandler(c *gin.Context) {
 				continue
 			}
 
-			c.SSEvent(eventType, string(eventData))
-			c.Writer.Flush()
+			// Non-blocking write to prevent slow clients from blocking the server
+			select {
+			case <-streamCtx.Done():
+				return
+			default:
+				c.SSEvent(eventType, string(eventData))
+				c.Writer.Flush()
+			}
 
 			if jobEvent.EventType == events.EventJobCompleted || jobEvent.EventType == events.EventJobFailed {
 				return
 			}
 
-		case <-ctx.Done():
+		case <-streamCtx.Done():
 			return
 		}
 	}

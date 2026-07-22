@@ -1,16 +1,6 @@
 import re
-import sys
-from unittest.mock import MagicMock
 
-sys.modules['pika'] = MagicMock()
-sys.modules['pkg'] = MagicMock()
-sys.modules['pkg.worker_common'] = MagicMock()
-sys.modules['pkg.worker_common.base'] = MagicMock()
-sys.modules['pkg.worker_common.rabbitmq'] = MagicMock()
-sys.modules['rapidfuzz'] = MagicMock()
-sys.modules['sliding_window'] = MagicMock()
-
-from worker import entity_id  # noqa: E402
+from worker import entity_id  # module-level helper, not method
 
 
 def test_entity_id_deterministic():

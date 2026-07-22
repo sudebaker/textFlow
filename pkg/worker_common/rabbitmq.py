@@ -36,11 +36,10 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
         parsed.username or "guest", parsed.password or "guest"
     )
 
-    vhost = parsed.path[1:] if parsed.path and parsed.path != "/" else "/"
     return pika.ConnectionParameters(
         host=parsed.hostname or "localhost",
         port=parsed.port or 5672,
-        virtual_host=vhost,
+        virtual_host=parsed.path[1:] if parsed.path else "/",
         credentials=credentials,
         heartbeat=600,
         blocked_connection_timeout=300,

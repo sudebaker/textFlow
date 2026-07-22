@@ -1,22 +1,17 @@
 """
 Conftest for inference-worker tests.
 
-Mocks external dependencies (pika, redis, requests, prometheus_client) and
-internal pkg modules (events_python, logging_python) so that BaseWorker and
-InferenceWorker can be imported and instantiated without real connections.
-
-IMPORTANT: Do NOT mock pkg.worker_common or pkg.worker_common.base — those
-must remain real modules so InferenceWorker can inherit from BaseWorker.
+Sets sys.path so worker.py is imported from THIS worker directory, not from
+another worker that pytest may have loaded first (all conftest files load
+before any test module is imported).
 """
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
+# --- sys.path setup ---
 WORKER_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = WORKER_DIR.parent.parent
-
-# Ensure paths are correct for imports
 _w = str(WORKER_DIR)
 _r = str(PROJECT_ROOT)
 for _p in (_w, _r):
@@ -25,40 +20,40 @@ for _p in (_w, _r):
 sys.path.insert(0, _r)
 sys.path.insert(0, _w)
 
-# Remove any cached 'worker' module so fresh import happens per test
+# Evict stale 'worker' module so Python re-imports from the updated sys.path
 sys.modules.pop("worker", None)
 
-# --- Mock external libraries ---
-# pika: fully mocked (no real connection needed)
-sys.modules["pika"] = MagicMock()
-
-# redis: fully mocked (no real connection needed)
-sys.modules["redis"] = MagicMock()
-
-# requests: fully mocked. Use lightweight stubs for the exception classes
-# so the conftest remains hermetic and works even when requests is absent.
-class _RequestExceptionStub(Exception):
-    pass
+# ---------------------------------------------------------------------------
+# pytest hooks to ensure sys.modules["worker"] always resolves to THIS
+# worker's module when running tests from this directory.
+# ---------------------------------------------------------------------------
+_TESTS_DIR = Path(__file__).resolve().parent
+_worker_module = None
 
 
-class _TimeoutStub(_RequestExceptionStub):
-    pass
+def pytest_pycollect_makemodule(module_path, parent):
+    """Fire before each test module is imported; set our worker's paths."""
+    if Path(module_path).resolve().parent == _TESTS_DIR:
+        for _p in (_w, _r):
+            while _p in sys.path:
+                sys.path.remove(_p)
+        sys.path.insert(0, _r)
+        sys.path.insert(0, _w)
+        sys.modules.pop("worker", None)
+    return None
 
 
-_requests_mock = MagicMock()
-_requests_mock.RequestException = _RequestExceptionStub
-_requests_mock.Timeout = _TimeoutStub
-sys.modules["requests"] = _requests_mock
+def pytest_itemcollected(item):
+    """After a test item is collected (module imported), capture the worker module."""
+    global _worker_module
+    if Path(item.fspath).resolve().parent == _TESTS_DIR:
+        captured = sys.modules.get("worker")
+        if captured is not None and _worker_module is None:
+            _worker_module = captured
 
-# prometheus_client: fully mocked
-sys.modules["prometheus_client"] = MagicMock()
 
-# fastapi: fully mocked
-sys.modules["fastapi"] = MagicMock()
-sys.modules["fastapi.responses"] = MagicMock()
-
-# --- Mock internal pkg modules that base.py imports ---
-# pkg.events_python provides EventBus
-sys.modules["pkg.events_python"] = MagicMock()
-# pkg.logging_python provides setup_logging, JobLogger
-sys.modules["pkg.logging_python"] = MagicMock()
+def pytest_runtest_setup(item):
+    """Before each test in THIS suite, restore sys.modules['worker'] to our module."""
+    global _worker_module
+    if Path(item.fspath).resolve().parent == _TESTS_DIR and _worker_module is not None:
+        sys.modules["worker"] = _worker_module

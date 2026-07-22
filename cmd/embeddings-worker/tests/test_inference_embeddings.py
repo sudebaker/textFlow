@@ -25,20 +25,6 @@ def _setup_mock_modules():
     sys.modules['pkg'] = mock_pkg
     sys.modules['pkg.events_python'] = MagicMock()
     sys.modules['pkg.worker_common'] = MagicMock()
-    class FakeBaseWorker:
-        def __init__(self, worker_name, queue_name, metrics_port, requires_gpu):
-            self.worker_name = worker_name
-            self.queue_name = queue_name
-            self.metrics_port = metrics_port
-            self.requires_gpu = requires_gpu
-            self.redis_client = MagicMock()
-            self.event_bus = MagicMock()
-            self.gpu_available = MagicMock()
-            self.jobs_total = MagicMock()
-            self.job_duration = MagicMock()
-            self._stopping = False
-    sys.modules['pkg.worker_common.base'] = MagicMock()
-    sys.modules['pkg.worker_common.base'].BaseWorker = FakeBaseWorker
     sys.modules['pkg.worker_common.rabbitmq'] = MagicMock()
     sys.modules['app'] = MagicMock()
     sys.modules['app.services'] = MagicMock()

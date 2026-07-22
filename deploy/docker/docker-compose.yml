@@ -295,6 +295,8 @@ services:
     build:
       context: ../../
       dockerfile: cmd/inference-worker/Dockerfile
+    extra_hosts:
+    - "mac-mini:host-gateway"
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
@@ -435,7 +437,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 1G
+          memory: 2G
   redis-exporter:
     image: oliver006/redis_exporter:v1.67.0
     container_name: textflow-redis-exporter
@@ -461,13 +463,9 @@ services:
     container_name: textflow-docling
     ports:
     - 8000:5001
-    volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
-      \ set it}/docling:/models/docling"
     environment:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-cpu}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
-    - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=debug
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1

@@ -197,3 +197,36 @@ go build -o cmd/foo/foo ./cmd/foo    # INCORRECTO — nunca en el source
 git rm --cached <ruta-del-binario>
 # Añadir la ruta a .gitignore si no está ya cubierta
 ```
+
+---
+
+## RabbitMQ Queue Declaration (CRITICAL)
+
+Toda declaración de cola RabbitMQ debe incluir **exactamente los mismos argumentos** en Go y Python.
+
+### Regla
+
+Si modificas `internal/broker/rabbitmq.go:declareQueue()`, debes actualizar **todos** estos archivos en el mismo commit:
+
+| Archivo | Función |
+|---------|---------|
+| `internal/broker/rabbitmq.go` | `declareQueue()` — Go orchestrator |
+| `pkg/worker_common/base.py` | `BaseWorker.run()` — embeddings, entities, metadata |
+| `pkg/worker_common/async_base.py` | `BaseAsyncWorker.connect_rabbitmq()` — extraction, audio, image |
+| `pkg/worker_common/rabbitmq.py` | `declare_queue()` — inference-worker, utilities |
+| `pkg/worker_common/rabbitmq_async.py` | `declare_queue_async()` — extraction-worker |
+
+### Args actuales
+
+```python
+arguments={
+    "x-dead-letter-exchange": "document_processor_dlx",
+    "x-dead-letter-routing-key": f"{queue_name}_failed",
+}
+```
+
+### Síntomas de inconsistencia
+
+- Workers entran en loop de reconexión con `PRECONDITION_FAILED`
+- Los mensajes se acumulan en las colas (0 consumers)
+- RabbitMQ logea: `inequivalent arg 'x-dead-letter-exchange'`

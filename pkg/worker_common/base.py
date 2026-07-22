@@ -458,8 +458,15 @@ class BaseWorker:
                     # can call stop_consuming() on graceful shutdown.
                     self._channel = channel
 
-                    # Declare queue
-                    channel.queue_declare(queue=self.queue_name, durable=True)
+                    # Declare queue with DLX args matching internal/broker/rabbitmq.go
+                    channel.queue_declare(
+                        queue=self.queue_name,
+                        durable=True,
+                        arguments={
+                            "x-dead-letter-exchange": "document_processor_dlx",
+                            "x-dead-letter-routing-key": f"{self.queue_name}_failed",
+                        },
+                    )
                     self.logger.info(f"Consuming from queue: {self.queue_name}")
 
                     # Start consuming

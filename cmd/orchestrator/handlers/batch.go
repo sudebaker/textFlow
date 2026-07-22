@@ -57,7 +57,8 @@ func validateWebhookURL(webhookURL string) error {
 
 // validFeatures is the whitelist of allowed feature names.
 var validFeatures = map[string]bool{
-	"inferences": true,
+	"inferences":           true,
+	"inference_embeddings": true,
 }
 
 // validateFeatureList validates and normalizes a list of feature names.

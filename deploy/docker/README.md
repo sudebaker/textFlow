@@ -105,7 +105,7 @@ All services should show **Up** or **Healthy** status. Wait ~30 seconds for init
 ### 4. Test Orchestrator
 
 ```bash
-curl http://localhost:9080/health
+curl http://localhost:8080/health
 # Expected response: {"status":"healthy"}
 ```
 
@@ -146,29 +146,29 @@ EMBEDDINGS_DEVICE=cpu
 
 | Service | Port (Host) | Port (Container) |
 |---------|-------------|------------------|
-| Orchestrator | 9080 | 8080 |
+| Orchestrator | 8080 | 8080 |
 | Regex Entity Extractor | 8081 | 8081 |
 | Docling | 8000 | 5001 |
 | RabbitMQ Management | 15672 | 15672 |
 
 ## 📡 API Endpoints
 
-Once running, the orchestrator is available at `http://localhost:9080`:
+Once running, the orchestrator is available at `http://localhost:8080`:
 
 ### Upload & Process Document
 ```bash
-curl -X POST http://localhost:9080/v1/documents/upload \
+curl -X POST http://localhost:8080/v1/documents/upload \
   -F "file=@document.pdf"
 ```
 
 ### Get Job Status
 ```bash
-curl http://localhost:9080/v1/documents/{job_id}
+curl http://localhost:8080/v1/documents/{job_id}
 ```
 
 ### Get Results
 ```bash
-curl http://localhost:9080/v1/documents/{job_id} \
+curl http://localhost:8080/v1/documents/{job_id} \
   | jq '.results'
 ```
 
@@ -189,7 +189,7 @@ docker compose logs -f embeddings-worker
 ### Metrics
 
 Prometheus metrics available at:
-- Orchestrator: `http://localhost:9080/metrics`
+- Orchestrator: `http://localhost:8080/metrics`
 - Embeddings: `http://localhost:8001/metrics`
 - Entities: `http://localhost:8002/metrics`
 

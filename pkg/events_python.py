@@ -8,8 +8,6 @@ import time
 from typing import Optional, Dict, Any
 import redis
 
-SCHEMA_VERSION = "1.1.0"
-
 
 class EventBus:
     """Redis Pub/Sub event bus for job events."""
@@ -53,21 +51,11 @@ class EventBus:
         self.publish_event(job_id, "job_progress", progress=progress, status=status)
 
     def publish_job_completed(
-        self,
-        job_id: str,
-        download_url: str = "",
-        summary: Optional[Dict[str, int]] = None,
-        metadata: Optional[Dict] = None,
+        self, job_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Publish a job completed event."""
-        enriched = dict(metadata) if metadata else {}
-        enriched.update({
-            "schema_version": SCHEMA_VERSION,
-            "download_url": download_url,
-            "summary": summary or {},
-        })
         self.publish_event(
-            job_id, "job_completed", progress=100, status="completed", metadata=enriched
+            job_id, "job_completed", progress=100, status="completed", metadata=metadata
         )
 
     def publish_job_failed(self, job_id: str, error: str) -> None:

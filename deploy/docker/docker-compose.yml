@@ -4,7 +4,9 @@ services:
     image: rabbitmq:3.13-management
     container_name: textflow-rabbitmq
     command: 'sh -c "rabbitmq-plugins enable rabbitmq_delayed_message_exchange ||
-      true && rabbitmq-server"'
+      true && rabbitmq-server"
+
+      '
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
@@ -53,7 +55,7 @@ services:
       dockerfile: cmd/orchestrator/Dockerfile
     container_name: textflow-orchestrator
     ports:
-    - 9080:8080
+    - 8080:8080
     networks:
     - frontend
     - backend
@@ -81,11 +83,6 @@ services:
     - MAX_SPREADSHEET_SIZE_MB=${MAX_SPREADSHEET_SIZE_MB:-5}
     - MAX_DOCUMENT_SIZE_MB=${MAX_DOCUMENT_SIZE_MB:-10}
     - JOB_TIMEOUT=${JOB_TIMEOUT:-60m}
-    - INGESTION_RATE_LIMIT=${INGESTION_RATE_LIMIT:-10}
-    - INGESTION_RATE_BURST=${INGESTION_RATE_BURST:-20}
-    - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-30}
-    - QUEUE_DEPTH_REJECT_THRESHOLD=${QUEUE_DEPTH_REJECT_THRESHOLD:-500}
-    - QUEUE_MAX_LENGTH=${QUEUE_MAX_LENGTH:-1000}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -192,6 +189,7 @@ services:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: textflow-embeddings-worker
+    runtime: nvidia
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set \u2014 copy .env.example to .env and\
       \ set it}:/models"
@@ -235,15 +233,12 @@ services:
         reservations:
           cpus: '1'
           memory: 1G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
   entities-worker:
     build:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: textflow-entities-worker
+    runtime: nvidia
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set \u2014 copy .env.example to .env and\
       \ set it}:/models"
@@ -304,10 +299,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 2G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
   inference-worker:
     build:
       context: ../../
@@ -321,14 +312,6 @@ services:
     - PREFETCH_COUNT=3
     - LLM_URL=${LLM_URL:-http://vllm-qwen-2b:8000}
     - LLM_MODEL=${LLM_MODEL:-qwen3-coder}
-    - INFERENCE_LLM_TIMEOUT=${INFERENCE_LLM_TIMEOUT:-300}
-    - INFERENCE_ADAPTIVE_ENABLED=${INFERENCE_ADAPTIVE_ENABLED:-true}
-    - INFERENCE_MAX_CONCURRENCY=${INFERENCE_MAX_CONCURRENCY:-16}
-    - INFERENCE_MIN_CONCURRENCY=${INFERENCE_MIN_CONCURRENCY:-1}
-    - INFERENCE_TARGET_TOKENS_PER_SEC=${INFERENCE_TARGET_TOKENS_PER_SEC:-10}
-    - INFERENCE_COOLDOWN_SECONDS=${INFERENCE_COOLDOWN_SECONDS:-30}
-    - INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN=${INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN:-5}
-    - INFERENCE_GLOBAL_MAX_CONCURRENCY=${INFERENCE_GLOBAL_MAX_CONCURRENCY:-0}
     depends_on:
       redis:
         condition: service_healthy
@@ -367,6 +350,8 @@ services:
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=8081
+    ports:
+    - 8081:8081
     networks:
     - backend
     restart: unless-stopped
@@ -434,9 +419,6 @@ services:
     - LOG_LEVEL=debug
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
-    - WEBHOOK_PAYLOAD_MODE=minimal
-    - CUDA_VISIBLE_DEVICES=0
-    - NVIDIA_VISIBLE_DEVICES=0
     volumes:
     - results-data:/app/data/results
     - ${MODELS_PATH:?MODELS_PATH is not set}/bge-m3:/models/bge-m3:ro
@@ -461,12 +443,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 2G
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+          memory: 1G
   redis-exporter:
     image: oliver006/redis_exporter:v1.67.0
     container_name: textflow-redis-exporter
@@ -490,11 +467,16 @@ services:
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: textflow-docling
+    runtime: nvidia
     ports:
     - 8000:5001
+    volumes:
+    - "${MODELS_PATH:?MODELS_PATH is not set \u2014 copy .env.example to .env and\
+      \ set it}/docling:/models/docling"
     environment:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-cuda}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
+    - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=debug
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -505,10 +487,6 @@ services:
           memory: 16G
         reservations:
           memory: 4G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test:
       - CMD

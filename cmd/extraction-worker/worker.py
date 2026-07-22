@@ -1033,6 +1033,9 @@ class ExtractionWorker:
                 else:
                     target_queues = ["embeddings", "entities", "metadata"]
 
+                if "inferences" in features:
+                    target_queues.append("inferences")
+
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in target_queues:
                     await channel.default_exchange.publish(

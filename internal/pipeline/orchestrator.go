@@ -49,7 +49,7 @@ type PipelineResult struct {
 // and returns immediately without waiting for workers to complete.
 //
 // The method spawns three goroutines that:
-//   - Store the input text in Redis
+//   - Store the input text in Redis (embeddings stage only)
 //   - Dispatch a job message to each respective worker queue
 //   - Publish a progress event (0% completion)
 //
@@ -59,6 +59,10 @@ type PipelineResult struct {
 //   - Only returns error if there's a fatal issue (e.g., Redis/broker failure)
 //   - Does NOT wait for workers to finish; use WaitForCompletion to poll for results
 //
+// Important: This method ONLY dispatches jobs and does not retrieve results.
+// The returned PipelineResult will have nil/empty result fields since workers
+// run asynchronously. Use WaitForCompletion to poll for actual results.
+//
 // The caller is responsible for calling WaitForCompletion to poll for job completion
 // and retrieve actual embeddings, entities, and metadata from Redis.
 func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text string) (*PipelineResult, error) {
@@ -66,9 +70,6 @@ func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text str
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	var embeddingsResult map[string][]float32
-	var entitiesResult []models.Entity
-	var metadataResult map[string]interface{}
 	var errors []error
 
 	wg.Add(3)
@@ -81,11 +82,6 @@ func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text str
 		mu.Lock()
 		if err != nil {
 			errors = append(errors, err)
-		} else {
-			emb, err := p.redis.GetJobEmbeddings(ctx, jobID)
-			if err == nil {
-				embeddingsResult = emb
-			}
 		}
 		mu.Unlock()
 	}()
@@ -98,11 +94,6 @@ func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text str
 		mu.Lock()
 		if err != nil {
 			errors = append(errors, err)
-		} else {
-			ents, err := p.redis.GetJobEntities(ctx, jobID)
-			if err == nil {
-				entitiesResult = ents
-			}
 		}
 		mu.Unlock()
 	}()
@@ -115,11 +106,6 @@ func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text str
 		mu.Lock()
 		if err != nil {
 			errors = append(errors, err)
-		} else {
-			meta, err := p.redis.GetJobMetadata(ctx, jobID)
-			if err == nil {
-				metadataResult = meta
-			}
 		}
 		mu.Unlock()
 	}()
@@ -127,9 +113,9 @@ func (p *Pipeline) ProcessInParallel(ctx context.Context, jobID string, text str
 	wg.Wait()
 
 	return &PipelineResult{
-		EmbeddingsResult: embeddingsResult,
-		EntitiesResult:   entitiesResult,
-		MetadataResult:   metadataResult,
+		EmbeddingsResult: nil,
+		EntitiesResult:   nil,
+		MetadataResult:   nil,
 		Errors:           errors,
 		Duration:         time.Since(start),
 	}, nil

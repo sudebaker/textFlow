@@ -32,11 +32,11 @@ run-resource: ## Run resource manager locally
 
 run-embeddings-worker: ## Run embeddings worker locally
 	@echo -e "${YELLOW}Running embeddings worker...${NC}"
-	cd cmd/embeddings-worker && python worker.py
+	cd cmd/embeddings-worker && python embeddings_worker.py
 
 run-entities-worker: ## Run entities worker locally
 	@echo -e "${YELLOW}Running entities worker...${NC}"
-	cd cmd/entities-worker && python worker.py
+	cd cmd/entities-worker && python entities_worker.py
 
 run-audio-worker: ## Run audio worker locally
 	@echo -e "${YELLOW}Running audio worker...${NC}"

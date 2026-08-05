@@ -306,6 +306,7 @@ services:
     - PREFETCH_COUNT=3
     - LLM_URL=${LLM_URL:-http://vllm-qwen-2b:8000}
     - LLM_MODEL=${LLM_MODEL:-qwen3-coder}
+    - INFERENCE_LLM_TIMEOUT=${INFERENCE_LLM_TIMEOUT:-300}
     depends_on:
       redis:
         condition: service_healthy
@@ -344,8 +345,6 @@ services:
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=8081
-    ports:
-    - 8081:8081
     networks:
     - backend
     restart: unless-stopped

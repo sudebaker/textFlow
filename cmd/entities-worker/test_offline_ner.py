@@ -8,7 +8,7 @@ import os
 
 sys.path.insert(0, "/app")
 
-from worker import EntitiesWorker
+from entities_worker import EntitiesWorker
 
 
 def test_offline_ner():

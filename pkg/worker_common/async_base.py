@@ -45,10 +45,8 @@ DLX_EXCHANGE = "document_processor_dlx"
 
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("worker_common.async_base")
+sys.path.insert(0, "/app")
+from pkg.logging_python import setup_logging
 
 
 class BaseAsyncWorker:
@@ -75,6 +73,8 @@ class BaseAsyncWorker:
         self._redis_client: Optional[redis.Redis] = None
         self._event_bus: Optional[EventBus] = None
         self._channel: Optional[Any] = None
+
+        self.logger = setup_logging(worker_name)
 
         self._init_metrics()
         self._init_health_server()
@@ -130,6 +130,10 @@ class BaseAsyncWorker:
                 return JSONResponse({"ready": False, "reason": "shutdown_pending"}, status_code=503)
             return JSONResponse({"ready": True})
 
+    def cleanup(self) -> None:
+        """Hook for subclasses to release resources before shutdown."""
+        pass
+
     @property
     def redis_client(self) -> redis.Redis:
         if self._redis_client is None:
@@ -159,7 +163,7 @@ class BaseAsyncWorker:
                         "x-dead-letter-routing-key": f"{self.queue_name}_failed",
                     },
                 )
-                logger.info(
+                self.logger.info(
                     f"Connected to RabbitMQ at {self.rabbitmq_url}, "
                     f"queue={self.queue_name}, prefetch={self.prefetch_count}"
                 )
@@ -167,7 +171,7 @@ class BaseAsyncWorker:
             except Exception as exc:
                 last_exc = exc
                 wait = 2 ** attempt
-                logger.warning(
+                self.logger.warning(
                     f"RabbitMQ connect attempt {attempt}/{self.max_retries} failed: {exc}. "
                     f"Retrying in {wait}s"
                 )
@@ -183,8 +187,8 @@ class BaseAsyncWorker:
     async def run(self) -> None:
         import aio_pika
 
-        logger.info(f"Starting {self.worker_name}")
-        logger.info(f"Queue: {self.queue_name}")
+        self.logger.info(f"Starting {self.worker_name}")
+        self.logger.info(f"Queue: {self.queue_name}")
 
         health_port = self.metrics_port + 1000
 
@@ -194,21 +198,22 @@ class BaseAsyncWorker:
 
         health_thread = threading.Thread(target=start_uvicorn, daemon=True)
         health_thread.start()
-        logger.info(f"Health server started on port {health_port}")
+        self.logger.info(f"Health server started on port {health_port}")
 
         from prometheus_client import start_http_server
         metrics_thread = threading.Thread(
             target=start_http_server, args=(self.metrics_port,), daemon=True
         )
         metrics_thread.start()
-        logger.info(f"Metrics server started on port {self.metrics_port}")
+        self.logger.info(f"Metrics server started on port {self.metrics_port}")
 
         stop_event = asyncio.Event()
 
         def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
             self._shutdown_requested = True
             self._stopping = True
+            self.cleanup()
             stop_event.set()
 
         loop = asyncio.get_running_loop()
@@ -239,16 +244,16 @@ class BaseAsyncWorker:
                             duration = asyncio.get_event_loop().time() - start_time
                             self.job_duration.observe(duration)
                             self.jobs_total.labels(status="success").inc()
-                            logger.info(f"Job {job_id} completed in {duration:.2f}s")
+                            self.logger.info(f"Job {job_id} completed in {duration:.2f}s")
                         except (ConnectionError, TimeoutError) as e:
                             duration = asyncio.get_event_loop().time() - start_time
                             self.jobs_total.labels(status="transient_error").inc()
-                            logger.warning(f"Job {job_id} transient error: {e}")
+                            self.logger.warning(f"Job {job_id} transient error: {e}")
                             raise
                         except Exception as e:
                             duration = asyncio.get_event_loop().time() - start_time
                             self.jobs_total.labels(status="error").inc()
-                            logger.error(f"Job {job_id} failed permanently: {e}")
+                            self.logger.error(f"Job {job_id} failed permanently: {e}")
                             if job_id:
                                 try:
                                     self.redis_client.hset(
@@ -260,7 +265,7 @@ class BaseAsyncWorker:
                                 except Exception:
                                     pass
 
-                logger.info(f"Consuming from queue: {self.queue_name}")
+                self.logger.info(f"Consuming from queue: {self.queue_name}")
                 await queue.consume(on_message)
 
                 while not stop_event.is_set():
@@ -276,11 +281,11 @@ class BaseAsyncWorker:
 
             except Exception as e:
                 self._rabbitmq_connected = False
-                logger.error(f"RabbitMQ error: {e}")
+                self.logger.error(f"RabbitMQ error: {e}")
                 if not self._shutdown_requested:
                     await asyncio.sleep(5)
 
-        logger.info(f"{self.worker_name} shutdown complete")
+        self.logger.info(f"{self.worker_name} shutdown complete")
 
     @abstractmethod
     async def process_message(self, message: Dict) -> None:

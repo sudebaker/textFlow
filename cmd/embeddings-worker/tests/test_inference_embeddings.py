@@ -54,7 +54,7 @@ def _create_mock_embeddings_worker():
     """Create EmbeddingsWorker with mocked dependencies."""
     _setup_mock_modules()
 
-    import worker
+    import embeddings_worker as worker
 
     mock_redis = MagicMock()
     mock_redis.exists.return_value = False

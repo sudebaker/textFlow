@@ -145,8 +145,8 @@ def generate_python_docs() -> None:
         "cmd/completion-worker/worker.py",
         "cmd/metadata-worker/worker.py",
         "cmd/inference-worker/worker.py",
-        "cmd/embeddings-worker/worker.py",
-        "cmd/entities-worker/worker.py",
+        "cmd/embeddings-worker/embeddings_worker.py",
+        "cmd/entities-worker/entities_worker.py",
     ]
     
     print("\nGenerating Python documentation...")
@@ -457,8 +457,8 @@ def generate_python_html_docs() -> None:
         ("completion-worker", "cmd/completion-worker/worker.py"),
         ("metadata-worker", "cmd/metadata-worker/worker.py"),
         ("inference-worker", "cmd/inference-worker/worker.py"),
-        ("embeddings-worker", "cmd/embeddings-worker/worker.py"),
-        ("entities-worker", "cmd/entities-worker/worker.py"),
+        ("embeddings-worker", "cmd/embeddings-worker/embeddings_worker.py"),
+        ("entities-worker", "cmd/entities-worker/entities_worker.py"),
     ]
     
     print("\nGenerating Python HTML documentation...")

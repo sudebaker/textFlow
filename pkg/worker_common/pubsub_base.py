@@ -21,6 +21,7 @@ Usage:
         worker.start()
 """
 
+import json
 import logging
 import os
 import signal
@@ -35,11 +36,7 @@ from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("worker_common.pubsub_base")
+from pkg.logging_python import setup_logging
 
 
 class BasePubSubWorker:
@@ -58,6 +55,8 @@ class BasePubSubWorker:
         self._redis_raw: Optional[redis.Redis] = None
         self._event_bus: Optional[EventBus] = None
         self._pubsub: Optional[redis.client.PubSub] = None
+
+        self.logger = setup_logging(worker_name)
 
         self._init_metrics()
         self._init_health_server()
@@ -113,16 +112,34 @@ class BasePubSubWorker:
 
     def _setup_signal_handlers(self) -> None:
         def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
             self._shutdown_requested = True
             try:
                 if self._pubsub:
                     self._pubsub.close()
             except Exception:
                 pass
+            self.cleanup()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
+
+    def cleanup(self) -> None:
+        """Hook for subclasses to release resources before shutdown."""
+        pass
+
+    def _parse_pubsub_message(self, message: Dict) -> Optional[Dict]:
+        """Filter control messages and parse JSON data from pub/sub message.
+
+        Returns None if not a data message or if parsing fails.
+        """
+        if message.get("type") != "message":
+            return None
+        try:
+            return json.loads(message["data"])
+        except (json.JSONDecodeError, TypeError, KeyError) as e:
+            self.logger.warning(f"Malformed pubsub message: {e}")
+            return None
 
     @property
     def redis_client(self) -> redis.Redis:
@@ -165,14 +182,14 @@ class BasePubSubWorker:
 
         health_thread = threading.Thread(target=start_uvicorn, daemon=True)
         health_thread.start()
-        logger.info(f"Health server started on port {health_port}")
+        self.logger.info(f"Health server started on port {health_port}")
 
         from prometheus_client import start_http_server
         metrics_thread = threading.Thread(
             target=start_http_server, args=(self.metrics_port,), daemon=True
         )
         metrics_thread.start()
-        logger.info(f"Metrics server started on port {self.metrics_port}")
+        self.logger.info(f"Metrics server started on port {self.metrics_port}")
 
         backoff = 1
         max_backoff = 60
@@ -182,7 +199,7 @@ class BasePubSubWorker:
                 pubsub = self.redis_client.pubsub()
                 self._pubsub = pubsub
                 pubsub.subscribe("job:events")
-                logger.info(f"{self.worker_name} started, listening for job events...")
+                self.logger.info(f"{self.worker_name} started, listening for job events...")
 
                 backoff = 1
 
@@ -190,30 +207,32 @@ class BasePubSubWorker:
                     try:
                         message = pubsub.get_message(timeout=1.0)
                         if message:
-                            try:
-                                self.handle_event(message)
-                            except Exception as e:
-                                logger.error(f"Error handling event: {e}")
+                            event = self._parse_pubsub_message(message)
+                            if event is not None:
+                                try:
+                                    self.handle_event(event)
+                                except Exception as e:
+                                    self.logger.error(f"Error handling event: {e}")
                     except (redis.ConnectionError, redis.TimeoutError) as e:
                         raise e
                     except Exception as e:
-                        logger.warning(f"Unexpected error in pubsub loop: {e}")
+                        self.logger.warning(f"Unexpected error in pubsub loop: {e}")
                         raise
 
             except (redis.ConnectionError, redis.TimeoutError, OSError) as e:
-                logger.error(f"Error in {self.worker_name} pubsub: {e}")
+                self.logger.error(f"Error in {self.worker_name} pubsub: {e}")
                 try:
                     pubsub.close()
                 except Exception:
                     pass
 
                 if not self._shutdown_requested:
-                    logger.info(f"Reconnecting in {backoff}s...")
+                    self.logger.info(f"Reconnecting in {backoff}s...")
                     import time
                     time.sleep(backoff)
                     backoff = min(backoff * 2, max_backoff)
 
-        logger.info(f"{self.worker_name} shutdown complete")
+        self.logger.info(f"{self.worker_name} shutdown complete")
 
     @abstractmethod
     def handle_event(self, message: Dict) -> None:

@@ -5,8 +5,8 @@ This is a simplified example showing how to structure a worker using the
 shared utilities from the worker_common package.
 
 Compare this with the existing workers in:
-- cmd/embeddings-worker/worker.py
-- cmd/entities-worker/worker.py
+- cmd/embeddings-worker/embeddings_worker.py
+- cmd/entities-worker/entities_worker.py
 - cmd/metadata-worker/worker.py
 
 To see the benefits of using worker_common.

@@ -49,7 +49,7 @@ ENV TRANSFORMERS_OFFLINE=1
 COPY pkg/ ./pkg/
 
 # Copy worker code, sliding window, and app structure
-COPY cmd/entities-worker/worker.py .
+COPY cmd/entities-worker/entities_worker.py .
 COPY cmd/entities-worker/sliding_window.py .
 COPY cmd/entities-worker/entrypoint.sh /entrypoint.sh
 COPY cmd/entities-worker/app ./app

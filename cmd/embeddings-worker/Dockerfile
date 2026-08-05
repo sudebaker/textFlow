@@ -44,7 +44,7 @@ RUN useradd --create-home --shell /bin/bash app
 COPY pkg/ ./pkg/
 
 # Copy worker code and app structure
-COPY cmd/embeddings-worker/worker.py .
+COPY cmd/embeddings-worker/embeddings_worker.py .
 COPY cmd/embeddings-worker/app ./app
 
 # Create models directory
@@ -61,4 +61,4 @@ ENV EMBEDDING_BATCH_SIZE_CPU=2
 EXPOSE 8001
 
 # Run worker
-CMD ["python", "worker.py"]
+CMD ["python", "embeddings_worker.py"]

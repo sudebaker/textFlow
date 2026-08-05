@@ -3,7 +3,7 @@ import json
 from unittest.mock import Mock, patch, MagicMock
 import requests
 
-from worker import InferenceWorker
+from inference_worker import InferenceWorker
 
 
 class TestInferenceWorker:

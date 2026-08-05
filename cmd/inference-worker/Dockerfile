@@ -23,4 +23,4 @@ COPY cmd/inference-worker/ ./cmd/inference-worker/
 
 USER app
 
-CMD ["python", "cmd/inference-worker/worker.py"]
+CMD ["python", "cmd/inference-worker/inference_worker.py"]

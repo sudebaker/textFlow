@@ -50,4 +50,4 @@ echo ""
 
 # Start the worker
 echo "🚀 Starting worker..."
-exec python worker.py
+exec python entities_worker.py

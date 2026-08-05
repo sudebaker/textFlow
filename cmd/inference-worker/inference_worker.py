@@ -62,7 +62,6 @@ Key Features:
 import os
 import sys
 import json
-import logging
 import time
 import re
 import hashlib
@@ -71,29 +70,15 @@ import redis
 import pika
 import requests
 from typing import Dict, List, Any, Optional
-from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, "/app")
-from pkg.worker_common.rabbitmq import (
-    parse_rabbitmq_url,
-    connect_rabbitmq,
-    declare_queue,
-)
-from pkg.events_python import EventBus
+from pkg.worker_common.base import BaseWorker
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-_stopping = False
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq:5672/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
-LLM_URL = os.getenv("LLM_URL", "")  # Base URL without /v1 path
-LLM_MODEL = os.getenv("LLM_MODEL", "")  # Will be auto-discovered, left empty by default
+LLM_URL = os.getenv("LLM_URL", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "")
 MAX_INFERENCES_SHORT   = int(os.getenv("MAX_INFERENCES_SHORT",   "1"))  # chunks < 200 words
 MAX_INFERENCES_MEDIUM  = int(os.getenv("MAX_INFERENCES_MEDIUM",  "2"))  # chunks 200-499 words
 MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks >= 500 words
@@ -109,13 +94,8 @@ LLM_TIMEOUT = int(os.getenv("INFERENCE_LLM_TIMEOUT", "60"))
 LLM_RETRIES = int(os.getenv("INFERENCE_LLM_RETRIES", "2"))
 LLM_RETRY_BACKOFF = float(os.getenv("INFERENCE_LLM_RETRY_BACKOFF", "2.0"))
 
-# Prometheus metrics
-jobs_total = Counter("inference_worker_jobs_total", "Total jobs processed", ["status"])
-job_duration = Histogram("inference_worker_job_duration_seconds", "Job duration")
-batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
 
-
-class InferenceWorker:
+class InferenceWorker(BaseWorker):
     """
     RabbitMQ consumer that extracts micro-inferences from document chunks using an LLM.
 
@@ -143,42 +123,25 @@ class InferenceWorker:
     """
 
     def __init__(self):
-        """
-        Initialize the inference worker with Redis connection and model discovery.
-
-        Behavior:
-            1. Connects to Redis using REDIS_URL
-            2. Creates Event Bus for publishing progress
-            3. If LLM_URL is configured:
-               a. Attempts to discover available models from vLLM /v1/models API
-               b. If discovery succeeds, caches model_id and max_model_len
-               c. If discovery fails but LLM_MODEL env var set, falls back to that value
-               d. If both fail, sets llm_model_id to None (inferences permanently disabled)
-            4. If LLM_URL is not configured, disables inferences entirely
-
-        State Invariants:
-            - self.llm_model_id is set once and never changes (no re-discovery)
-            - self.llm_max_model_len may be None (use default 4096 as fallback)
-            - If llm_model_id is None, extract_inferences() always returns []
-
-        Side Effects:
-            - Logs INFO message if model discovered
-            - Logs INFO message if fallback to LLM_MODEL triggered
-            - Logs WARNING message if model discovery fails (only if LLM_URL set)
-        """
-        self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        self.event_bus = EventBus(self.redis_client)
+        super().__init__(
+            worker_name="inference-worker",
+            queue_name=QUEUE_NAME,
+            metrics_port=METRICS_PORT,
+        )
 
         # Batch processing buffer
         self._batch_buffer: List[Dict[str, Any]] = []
         self._batch_lock = threading.Lock()
 
-        # Discover model at startup (once, cached)
+        # Batch-specific metric
+        from prometheus_client import Counter
+        self.batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
+
+        # Discover model at startup (one-time, cached)
         if LLM_URL:
             self.llm_model_id, self.llm_max_model_len = self._discover_model(LLM_URL)
-            # Fallback to statically configured LLM_MODEL if discovery fails
             if not self.llm_model_id and LLM_MODEL:
-                logger.info(
+                self.logger.info(
                     f"Model discovery failed, falling back to LLM_MODEL env var: {LLM_MODEL}"
                 )
                 self.llm_model_id = LLM_MODEL
@@ -187,8 +150,7 @@ class InferenceWorker:
             self.llm_model_id = None
             self.llm_max_model_len = None
 
-    @staticmethod
-    def _discover_model(llm_url: str) -> tuple[Optional[str], Optional[int]]:
+    def _discover_model(self, llm_url: str) -> tuple[Optional[str], Optional[int]]:
         """
         Discover available models from vLLM API endpoint.
 
@@ -220,7 +182,7 @@ class InferenceWorker:
         Timeout: 5 seconds per request
         """
         if not llm_url:
-            logger.warning("No LLM_URL configured, model discovery skipped")
+            self.logger.warning("No LLM_URL configured, model discovery skipped")
             return (None, None)
 
         try:
@@ -232,23 +194,23 @@ class InferenceWorker:
             models = response.json()
 
             if not models.get("data"):
-                logger.warning(f"No models found in vLLM response: {models}")
+                self.logger.warning(f"No models found in vLLM response: {models}")
                 return (None, None)
 
             model_info = models["data"][0]
             model_id = model_info.get("id")
             max_model_len = model_info.get("max_model_len", 4096)
 
-            logger.info(
+            self.logger.info(
                 f"Discovered model '{model_id}' with max_model_len={max_model_len}"
             )
             return (model_id, max_model_len)
 
         except requests.RequestException as e:
-            logger.warning(f"Failed to discover models from {llm_url}: {e}")
+            self.logger.warning(f"Failed to discover models from {llm_url}: {e}")
             return (None, None)
         except (KeyError, ValueError) as e:
-            logger.warning(f"Failed to parse vLLM models response: {e}")
+            self.logger.warning(f"Failed to parse vLLM models response: {e}")
             return (None, None)
 
     @staticmethod
@@ -329,10 +291,10 @@ class InferenceWorker:
         try:
             cached = self.redis_client.get(cache_key)
             if cached:
-                logger.info(f"Cache HIT for {cache_key[:50]}")
+                self.logger.info(f"Cache HIT for {cache_key[:50]}")
                 return json.loads(cached)
         except Exception as e:
-            logger.warning(f"Cache read error: {e}")
+            self.logger.warning(f"Cache read error: {e}")
         return None
 
     def _set_cached(self, cache_key: str, inferences: List[Dict[str, Any]]) -> None:
@@ -341,9 +303,9 @@ class InferenceWorker:
             return
         try:
             self.redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(inferences))
-            logger.debug(f"Cached {len(inferences)} inferences (TTL: {CACHE_TTL_SECONDS}s)")
+            self.logger.debug(f"Cached {len(inferences)} inferences (TTL: {CACHE_TTL_SECONDS}s)")
         except Exception as e:
-            logger.warning(f"Cache write error: {e}")
+            self.logger.warning(f"Cache write error: {e}")
 
     def extract_inferences(
         self,
@@ -435,7 +397,7 @@ class InferenceWorker:
             - Falls back to 4096 if max_model_len unknown
         """
         if not LLM_URL or not self.llm_model_id:
-            logger.warning(
+            self.logger.warning(
                 "No LLM configured or model discovery failed, skipping inferences"
             )
             return []
@@ -445,7 +407,7 @@ class InferenceWorker:
         cached = self._get_cached(cache_key)
         if cached is not None:
             validated_cached = self._validate_cached_inferences(cached)
-            logger.info(f"Returning {len(validated_cached)} cached inferences (filtered from {len(cached)})")
+            self.logger.info(f"Returning {len(validated_cached)} cached inferences (filtered from {len(cached)})")
             return validated_cached
 
         # Dynamic max inferences based on chunk size (word count as proxy for length)
@@ -513,13 +475,13 @@ Respond with ONLY the JSON array:"""
                     last_error = e
                     if attempt < LLM_RETRIES - 1:
                         wait = LLM_RETRY_BACKOFF * (2 ** attempt)
-                        logger.warning(
+                        self.logger.warning(
                             f"LLM call attempt {attempt + 1}/{LLM_RETRIES} failed: {e}, "
                             f"retrying in {wait:.1f}s"
                         )
                         time.sleep(wait)
                     else:
-                        logger.error(
+                        self.logger.error(
                             f"LLM call failed after {LLM_RETRIES} attempts: {e}"
                         )
                         raise
@@ -531,7 +493,7 @@ Respond with ONLY the JSON array:"""
                 result.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
 
-            logger.debug(f"Raw LLM response (first 500 chars): {completion_text[:500]}")
+            self.logger.debug(f"Raw LLM response (first 500 chars): {completion_text[:500]}")
 
             # Remove markdown code blocks if present
             completion_text = re.sub(r"```.*?\n", "", completion_text, flags=re.DOTALL)
@@ -552,21 +514,21 @@ Respond with ONLY the JSON array:"""
                     if completion_text
                     else "(empty)"
                 )
-                logger.warning(
+                self.logger.warning(
                     f"No JSON array found in LLM response. Response preview: {response_preview}"
                 )
                 return []
 
-            logger.debug(f"Extracted JSON array (first 400 chars): {json_str[:400]}")
+            self.logger.debug(f"Extracted JSON array (first 400 chars): {json_str[:400]}")
 
             try:
                 inferences = json.loads(json_str)
-                logger.debug(
+                self.logger.debug(
                     f"Successfully parsed {len(inferences)} inferences from LLM response"
                 )
             except json.JSONDecodeError as e:
                 response_preview = completion_text[:500].replace("\n", " ")
-                logger.warning(
+                self.logger.warning(
                     f"Failed to parse LLM response JSON: {e.msg}. Response: {response_preview}"
                 )
                 return []
@@ -580,7 +542,7 @@ Respond with ONLY the JSON array:"""
                         # Fallback: old LLM response used "entities" key
                         entity_refs_value = inf.get("entities", [])
                         if entity_refs_value:
-                            logger.debug(
+                            self.logger.debug(
                                 "LLM response used deprecated 'entities' key; "
                                 "mapped to 'entity_refs' via fallback"
                             )
@@ -597,17 +559,17 @@ Respond with ONLY the JSON array:"""
             # Cache raw inferences (before confidence filter) for reuse
             self._set_cached(cache_key, inferences if isinstance(inferences, list) else [])
 
-            logger.info(f"Extracted {len(validated)} inferences from chunk")
+            self.logger.info(f"Extracted {len(validated)} inferences from chunk")
             return validated
 
         except requests.RequestException as e:
-            logger.warning(f"LLM call failed: {e}")
+            self.logger.warning(f"LLM call failed: {e}")
             return []
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse LLM response JSON: {e}")
+            self.logger.warning(f"Failed to parse LLM response JSON: {e}")
             return []
         except Exception as e:
-            logger.error(f"Error extracting inferences: {e}")
+            self.logger.error(f"Error extracting inferences: {e}")
             return []
 
     def extract_inferences_batch(
@@ -705,13 +667,13 @@ Respond with ONLY the JSON array:"""
                     last_error = e
                     if attempt < LLM_RETRIES - 1:
                         wait = LLM_RETRY_BACKOFF * (2 ** attempt)
-                        logger.warning(
+                        self.logger.warning(
                             f"Batch LLM attempt {attempt + 1}/{LLM_RETRIES} failed: {e}, "
                             f"retrying in {wait:.1f}s"
                         )
                         time.sleep(wait)
                     else:
-                        logger.error(
+                        self.logger.error(
                             f"Batch LLM failed after {LLM_RETRIES} attempts: {e}"
                         )
                         raise
@@ -730,7 +692,7 @@ Respond with ONLY the JSON array:"""
             return results
 
         except Exception as e:
-            logger.error(f"Batch extraction failed ({len(chunks_data)} chunks): {e}")
+            self.logger.error(f"Batch extraction failed ({len(chunks_data)} chunks): {e}")
             raise
 
     def _parse_batch_response(
@@ -771,7 +733,7 @@ Respond with ONLY the JSON array:"""
                         pass
 
             if data is None:
-                logger.warning("No JSON array found in batch response")
+                self.logger.warning("No JSON array found in batch response")
                 return results
 
             for item in data:
@@ -797,13 +759,13 @@ Respond with ONLY the JSON array:"""
                 results[passage_id] = validated
 
             found = [cid for cid in results if results[cid]]
-            logger.info(
+            self.logger.info(
                 f"Batch parsed: {len(found)}/{len(expected_chunk_ids)} chunks have results"
             )
             return results
 
         except Exception as e:
-            logger.error(f"Error parsing batch response: {e}")
+            self.logger.error(f"Error parsing batch response: {e}")
             return results
 
     def process(self, ch, method, properties, body):
@@ -825,24 +787,24 @@ Respond with ONLY the JSON array:"""
             required_fields = ["job_id", "chunk_id", "chunk_text", "total_chunks"]
             missing = [f for f in required_fields if f not in message]
             if missing:
-                logger.error(f"Missing required fields: {missing}")
-                jobs_total.labels(status="invalid_message").inc()
+                self.logger.error(f"Missing required fields: {missing}")
+                self.jobs_total.labels(status="invalid_message").inc()
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
             chunk_text = message.get("chunk_text", "")
             if not chunk_text:
-                jobs_total.labels(status="no_text").inc()
+                self.jobs_total.labels(status="no_text").inc()
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
             word_count = len(chunk_text.split())
             if word_count > MAX_CHUNK_WORDS:
-                logger.warning(
+                self.logger.warning(
                     f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
                     f"job={message.get('job_id')}, chunk={message.get('chunk_id')}"
                 )
-                jobs_total.labels(status="chunk_too_large").inc()
+                self.jobs_total.labels(status="chunk_too_large").inc()
                 self._store_empty_result(ch, method, message)
                 return
 
@@ -864,7 +826,7 @@ Respond with ONLY the JSON array:"""
                 self._process_batch(batch_to_process)
                 return
         except Exception as e:
-            logger.error(f"Error in batch accumulation: {e}")
+            self.logger.error(f"Error in batch accumulation: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def flush_batch_buffer(self):
@@ -876,11 +838,11 @@ Respond with ONLY the JSON array:"""
             self._batch_buffer.clear()
 
         if batch:
-            logger.info(f"Timer flush: processing {len(batch)} buffered messages")
+            self.logger.info(f"Timer flush: processing {len(batch)} buffered messages")
             try:
                 self._process_batch(batch)
             except Exception as e:
-                logger.error(f"Timer flush failed: {e}")
+                self.logger.error(f"Timer flush failed: {e}")
                 for item in batch:
                     try:
                         item["ch"].basic_nack(
@@ -888,7 +850,7 @@ Respond with ONLY the JSON array:"""
                             requeue=True
                         )
                     except Exception as nack_error:
-                        logger.warning(f"Failed to NACK message: {nack_error}")
+                        self.logger.warning(f"Failed to NACK message: {nack_error}")
 
     def _store_empty_result(self, ch, method, message):
         """Store empty inference result and ACK the message. Used for skipped/oversized chunks."""
@@ -908,19 +870,19 @@ Respond with ONLY the JSON array:"""
         remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
         remaining = self.redis_client.decr(remaining_key)
 
-        logger.info(
+        self.logger.info(
             f"Inference skipped for job: {job_id}, chunk: {chunk_id}, remaining: {remaining}"
         )
 
         if remaining <= 0:
             self._assemble_final_results(job_id)
-            jobs_total.labels(status="success").inc()
+            self.jobs_total.labels(status="success").inc()
         else:
             chunks_done = total_chunks - remaining
             self.event_bus.publish_job_inference_chunk_progress(
                 job_id, chunks_done=chunks_done, chunks_total=total_chunks
             )
-            jobs_total.labels(status="chunk_processed").inc()
+            self.jobs_total.labels(status="chunk_processed").inc()
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -934,8 +896,8 @@ Respond with ONLY the JSON array:"""
         3. Fallback to individual processing if batch fails
         """
         start_time = time.time()
-        batch_counter.labels(type="batch_start").inc()
-        logger.info(f"Processing batch of {len(batch)} chunks")
+        self.batch_counter.labels(type="batch_start").inc()
+        self.logger.info(f"Processing batch of {len(batch)} chunks")
 
         # Separate cached vs uncached
         cached_results = {}
@@ -953,7 +915,7 @@ Respond with ONLY the JSON array:"""
             if cached is not None:
                 validated = self._validate_cached_inferences(cached)
                 cached_results[str(chunk_id)] = validated
-                batch_counter.labels(type="cache_hit").inc()
+                self.batch_counter.labels(type="cache_hit").inc()
             else:
                 uncached_chunks.append({
                     "chunk_id": str(chunk_id),
@@ -973,10 +935,10 @@ Respond with ONLY the JSON array:"""
                     raw = batch_results.get(cid, [])
                     self._set_cached(cache_key, raw)
                 cached_results.update(batch_results)
-                batch_counter.labels(type="batch_success").inc()
+                self.batch_counter.labels(type="batch_success").inc()
             except Exception as e:
-                logger.warning(f"Batch LLM call failed, falling back to individual: {e}")
-                batch_counter.labels(type="batch_fallback").inc()
+                self.logger.warning(f"Batch LLM call failed, falling back to individual: {e}")
+                self.batch_counter.labels(type="batch_fallback").inc()
                 # Fallback: process each uncached chunk individually
                 for chunk in uncached_chunks:
                     try:
@@ -987,8 +949,8 @@ Respond with ONLY the JSON array:"""
                         )
                         cached_results[chunk["chunk_id"]] = inferences
                     except Exception as individual_error:
-                        logger.error(f"Individual fallback also failed: {individual_error}")
-                        batch_counter.labels(type="individual_fallback_error").inc()
+                        self.logger.error(f"Individual fallback also failed: {individual_error}")
+                        self.batch_counter.labels(type="individual_fallback_error").inc()
                         cached_results[chunk["chunk_id"]] = []
 
         # Save results for each chunk in batch
@@ -1014,25 +976,25 @@ Respond with ONLY the JSON array:"""
             remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
             remaining = self.redis_client.decr(remaining_key)
 
-            logger.info(
+            self.logger.info(
                 f"Inference completed for job: {job_id}, chunk: {chunk_id}, "
                 f"inferences: {len(inferences)}, remaining chunks: {remaining}"
             )
 
             if remaining <= 0:
                 self._assemble_final_results(job_id)
-                jobs_total.labels(status="success").inc()
+                self.jobs_total.labels(status="success").inc()
             else:
                 chunks_done = total_chunks - remaining
                 self.event_bus.publish_job_inference_chunk_progress(
                     job_id, chunks_done=chunks_done, chunks_total=total_chunks
                 )
-                jobs_total.labels(status="chunk_processed").inc()
+                self.jobs_total.labels(status="chunk_processed").inc()
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         duration = time.time() - start_time
-        job_duration.observe(duration)
+        self.job_duration.observe(duration)
 
     def _assemble_final_results(self, job_id: str):
         """Assemble final inference results when all chunks complete."""
@@ -1041,7 +1003,7 @@ Respond with ONLY the JSON array:"""
         self.redis_client.expire(assembly_lock_key, 3600)
 
         if not acquired:
-            logger.warning(f"Assembly lock already held for job {job_id}, skipping")
+            self.logger.warning(f"Assembly lock already held for job {job_id}, skipping")
             return
 
         try:
@@ -1054,7 +1016,7 @@ Respond with ONLY the JSON array:"""
                     chunk_data = json.loads(raw_json)
                     assembled.append(chunk_data)
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse intermediate result: {e}")
+                    self.logger.warning(f"Failed to parse intermediate result: {e}")
 
             assembled.sort(key=lambda x: x.get("chunk_id") or 0)
 
@@ -1071,18 +1033,30 @@ Respond with ONLY the JSON array:"""
 
             self.event_bus.publish_job_progress(job_id, 80, "inferences")
 
-            logger.info(
+            self.logger.info(
                 f"Inferences finalized for job: {job_id}, "
                 f"total chunks: {len(assembled)}, "
                 f"total inferences: {sum(len(c['inferences']) for c in assembled)}"
             )
 
         except Exception as e:
-            logger.error(f"Error assembling final inferences: {e}")
+            self.logger.error(f"Error assembling final inferences: {e}")
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "inferences", "failed"
             )
-            jobs_total.labels(status="assembly_error").inc()
+            self.jobs_total.labels(status="assembly_error").inc()
+
+    def cleanup(self) -> None:
+        """Flush pending batch and join timer thread on shutdown."""
+        super().cleanup()
+        self._shutdown_requested = True
+        with self._batch_lock:
+            if self._batch_buffer:
+                try:
+                    self._process_batch(self._batch_buffer[:])
+                except Exception as e:
+                    self.logger.error(f"Final batch flush failed: {e}")
+                self._batch_buffer.clear()
 
     def _process_single(self, ch, method, properties, body):
         """
@@ -1184,23 +1158,23 @@ Respond with ONLY the JSON array:"""
             source_type = message.get("source_type", "generico")
             total_chunks = message.get("total_chunks", 1)
 
-            logger.info(f"Processing inferences for job: {job_id}, chunk: {chunk_id}")
+            self.logger.info(f"Processing inferences for job: {job_id}, chunk: {chunk_id}")
 
             if not chunk_text:
-                logger.warning(
+                self.logger.warning(
                     f"No text in message for job: {job_id}, chunk: {chunk_id}"
                 )
-                jobs_total.labels(status="no_text").inc()
+                self.jobs_total.labels(status="no_text").inc()
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
             word_count = len(chunk_text.split())
             if word_count > MAX_CHUNK_WORDS:
-                logger.warning(
+                self.logger.warning(
                     f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
                     f"job={job_id}, chunk={chunk_id}"
                 )
-                jobs_total.labels(status="chunk_too_large").inc()
+                self.jobs_total.labels(status="chunk_too_large").inc()
                 self._store_empty_result(ch, method, message)
                 return
 
@@ -1225,14 +1199,14 @@ Respond with ONLY the JSON array:"""
             remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
             remaining = self.redis_client.decr(remaining_key)
 
-            logger.info(
+            self.logger.info(
                 f"Inference completed for job: {job_id}, chunk: {chunk_id}, "
                 f"inferences: {len(inferences)}, remaining chunks: {remaining}"
             )
 
             # If this is the last chunk (remaining <= 0), assemble final result
             if remaining <= 0:
-                logger.info(
+                self.logger.info(
                     f"All inferences complete for job {job_id}, assembling results..."
                 )
 
@@ -1245,10 +1219,10 @@ Respond with ONLY the JSON array:"""
                 self.redis_client.expire(assembly_lock_key, 3600)
 
                 if not acquired:
-                    logger.warning(
+                    self.logger.warning(
                         f"Assembly lock already held for job {job_id}, skipping duplicate assembly"
                     )
-                    jobs_total.labels(status="chunk_processed").inc()
+                    self.jobs_total.labels(status="chunk_processed").inc()
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                     return
 
@@ -1263,7 +1237,7 @@ Respond with ONLY the JSON array:"""
                             chunk_data = json.loads(raw_json)
                             assembled.append(chunk_data)
                         except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse intermediate result: {e}")
+                            self.logger.warning(f"Failed to parse intermediate result: {e}")
                             continue
 
                     # Sort by chunk_id for deterministic ordering
@@ -1285,21 +1259,21 @@ Respond with ONLY the JSON array:"""
                     # Publish progress
                     self.event_bus.publish_job_progress(job_id, 80, "inferences")
 
-                    logger.info(
+                    self.logger.info(
                         f"Inferences finalized for job: {job_id}, "
                         f"total chunks: {len(assembled)}, "
                         f"total inferences: {sum(len(c['inferences']) for c in assembled)}"
                     )
 
-                    jobs_total.labels(status="success").inc()
+                    self.jobs_total.labels(status="success").inc()
 
                 except Exception as e:
-                    logger.error(f"Error assembling final inferences: {e}")
+                    self.logger.error(f"Error assembling final inferences: {e}")
                     # Mark as failed
                     self.redis_client.hset(
                         f"orchestrator:job:{job_id}:steps", "inferences", "failed"
                     )
-                    jobs_total.labels(status="assembly_error").inc()
+                    self.jobs_total.labels(status="assembly_error").inc()
             else:
                 # Not the last chunk — publish incremental progress so clients see activity
                 chunks_done = total_chunks - remaining
@@ -1309,107 +1283,32 @@ Respond with ONLY the JSON array:"""
                     chunks_done=chunks_done,
                     chunks_total=total_chunks,
                 )
-                jobs_total.labels(status="chunk_processed").inc()
+                self.jobs_total.labels(status="chunk_processed").inc()
 
             duration = time.time() - start_time
-            job_duration.observe(duration)
+            self.job_duration.observe(duration)
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as e:
-            logger.error(f"Error processing inferences: {e}")
-            jobs_total.labels(status="error").inc()
+            self.logger.error(f"Error processing inferences: {e}")
+            self.jobs_total.labels(status="error").inc()
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
         finally:
             if _stopping and ch.is_open:
-                logger.info("Graceful shutdown: stopping consumer after current message")
+                self.logger.info("Graceful shutdown: stopping consumer after current message")
                 ch.stop_consuming()
 
 
 def signal_handler(signum, frame):
-    """
-    Handle graceful shutdown on SIGINT or SIGTERM.
-
-    Sets the global _stopping flag to stop the consumer loop after the current
-    message finishes processing. Does NOT call sys.exit() to avoid interrupting
-    a message in flight and leaving jobs in 'processing' state permanently.
-
-    Args:
-        signum (int): Signal number (signal.SIGINT or signal.SIGTERM)
-        frame: Signal frame object (unused)
-    """
-    logger.info("Received shutdown signal, initiating graceful shutdown...")
+    """Handle graceful shutdown signals."""
     global _stopping
     _stopping = True
 
 
 def main():
-    """
-    Entry point for the Inference Worker.
-
-    Orchestrates:
-        1. Signal registration: SIGINT/SIGTERM → graceful shutdown
-        2. Prometheus metrics server startup on METRICS_PORT
-        3. InferenceWorker initialization (Redis, model discovery)
-        4. RabbitMQ consumer loop (infinite with reconnection)
-
-    Workflow:
-        1. Log startup message
-        2. Register SIGINT/SIGTERM handlers for graceful shutdown
-        3. Start Prometheus HTTP server on METRICS_PORT (default: 8006)
-        4. Create InferenceWorker instance (triggers model discovery)
-        5. Infinite loop:
-           a. Connect to RabbitMQ
-           b. Declare inferences queue
-           c. Set prefetch_count for backpressure (default: 3)
-           d. Register worker.process as message callback
-           e. Start consuming messages
-           f. On connection error: log error, sleep 5s, retry
-
-    RabbitMQ Configuration:
-        - Queue name: QUEUE_NAME (default: "inferences")
-        - Prefetch count: PREFETCH_COUNT env var (default: 3)
-          - Limits how many messages consumer holds unacked
-          - Prevents overwhelming worker if backed up
-        - Auto-ack: False (manual ack/nack in process callback)
-        - Connection reconnect: Automatic with 5s retry interval
-
-    Model Discovery:
-        - Triggered in InferenceWorker.__init__() (one-time)
-        - vLLM /v1/models endpoint queried if LLM_URL configured
-        - Result logged (model_id and max_model_len discovered)
-        - Fallback to LLM_MODEL env var if discovery fails
-        - If both fail, inferences disabled (all extract_inferences calls return [])
-
-    Prometheus Metrics:
-        - Endpoint: http://localhost:{METRICS_PORT}/metrics
-        - Metrics exposed:
-          - inference_worker_jobs_total: Counter by status (success, error, assembly_error, etc.)
-          - inference_worker_job_duration_seconds: Histogram of processing time per chunk
-
-    Shutdown Sequence:
-        1. SIGINT/SIGTERM → signal_handler() → sets _stopping=True → consumer finishes current message → stop_consuming()
-        2. RabbitMQ channel cleanup (handled by context manager)
-        3. Unack messages returned to queue for reprocessing
-
-    Error Recovery:
-        - RabbitMQ connection errors: log, sleep 5s, retry in main loop
-        - Ensures worker is resilient to temporary network issues
-        - No exponential backoff (always 5s retry interval)
-
-    Dependencies (Environment Variables):
-        - REDIS_URL: Redis connection (default: redis://redis:6379)
-        - RABBITMQ_URL: RabbitMQ connection (default: amqp://rabbitmq:5672/)
-        - QUEUE_NAME: Queue name (default: inferences)
-        - LLM_URL: vLLM base URL (e.g., http://localhost:8000, may be empty)
-        - LLM_MODEL: Fallback model ID (optional, used if discovery fails)
-        - METRICS_PORT: Prometheus port (default: 8006)
-        - PREFETCH_COUNT: RabbitMQ prefetch (default: 3)
-    """
     import signal
-
-    logger.info("Starting Inference Worker")
 
     global _stopping
     _stopping = False
@@ -1417,31 +1316,26 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    start_http_server(METRICS_PORT)
-    logger.info(f"Metrics server started on port {METRICS_PORT}")
-
     worker = InferenceWorker()
 
     if BATCH_ENABLED:
-        logger.info(
+        worker.logger.info(
             f"Batch mode ENABLED: batch_size={BATCH_SIZE}, "
             f"timeout={BATCH_TIMEOUT_MS}ms, cache={'ON' if CACHE_ENABLED else 'OFF'}"
         )
     else:
-        logger.info(f"Batch mode DISABLED, cache={'ON' if CACHE_ENABLED else 'OFF'}")
+        worker.logger.info(f"Batch mode DISABLED, cache={'ON' if CACHE_ENABLED else 'OFF'}")
 
     while not _stopping:
         try:
-            with connect_rabbitmq(RABBITMQ_URL) as (connection, channel):
-                # Clear batch buffer on reconnect — stale channel/delivery_tag refs
-                # are invalid after a new connection. Unacked messages are requeued
-                # by RabbitMQ automatically when the old connection drops.
+            with parse_rabbitmq_url(worker.rabbitmq_url) as (connection, channel):
                 if BATCH_ENABLED:
                     with worker._batch_lock:
                         worker._batch_buffer.clear()
 
-                logger.info(f"Consuming from queue: {QUEUE_NAME}")
+                worker.logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
+                from pkg.worker_common.rabbitmq import declare_queue
                 declare_queue(channel, QUEUE_NAME)
 
                 if BATCH_ENABLED:
@@ -1449,15 +1343,7 @@ def main():
                 else:
                     prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
                 channel.basic_qos(prefetch_count=prefetch_count)
-                logger.info(f"Set prefetch_count to {prefetch_count}")
 
-                # Schedule recurring flush timer using pika's call_later.
-                # Runs on the same thread as message callbacks — no race conditions
-                # with channel operations. Reschedules itself on each tick.
-                # NOTE: Timer drift is possible — the next flush is scheduled AFTER
-                # the current one completes. In practice, with batch_size=5 and
-                # typical LLM latency of 5-10s, drift is negligible (<500ms).
-                # For precise interval timing, use absolute timestamps.
                 if BATCH_ENABLED:
                     def _schedule_flush():
                         if _stopping:
@@ -1465,14 +1351,14 @@ def main():
                         try:
                             worker.flush_batch_buffer()
                         except Exception as e:
-                            logger.error(f"Error in flush callback: {e}")
+                            worker.logger.error(f"Error in flush callback: {e}")
                         if not _stopping:
                             try:
                                 connection.call_later(
                                     BATCH_TIMEOUT_MS / 1000.0, _schedule_flush
                                 )
                             except Exception:
-                                pass  # Connection may be closing
+                                pass
 
                     connection.call_later(BATCH_TIMEOUT_MS / 1000.0, _schedule_flush)
 
@@ -1483,11 +1369,11 @@ def main():
                 channel.start_consuming()
 
         except Exception as e:
-            logger.error(f"RabbitMQ connection error: {e}")
+            worker.logger.error(f"RabbitMQ connection error: {e}")
             if not _stopping:
                 time.sleep(5)
 
-    logger.info("Inference worker shutdown complete")
+    worker.logger.info("Inference worker shutdown complete")
 
 
 if __name__ == "__main__":

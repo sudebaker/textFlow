@@ -272,6 +272,11 @@ class BaseWorker:
         )
         self._shutdown_requested = True
         self._stopping = True
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        """Hook for subclasses to release resources before shutdown."""
+        pass
 
     def _on_message_processed(self) -> None:
         """Call at the end of each message callback.

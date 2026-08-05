@@ -4,7 +4,7 @@ import time
 import msgpack
 from unittest.mock import MagicMock, patch
 
-from worker import CompletionWorker
+from completion_worker import CompletionWorker
 
 
 def _get_results(worker):

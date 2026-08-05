@@ -18,4 +18,4 @@ COPY cmd/completion-worker/ ./cmd/completion-worker/
 
 USER appuser
 
-CMD ["python", "cmd/completion-worker/worker.py"]
+CMD ["python", "cmd/completion-worker/completion_worker.py"]

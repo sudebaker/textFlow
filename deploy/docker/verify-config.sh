@@ -144,13 +144,13 @@ fi
 ***REMOVED***================
 print_header "🐍 PYTHON WORKER CONFIGURATION"
 
-if grep -q "local_files_only=True" cmd/entities-worker/worker.py; then
+if grep -q "local_files_only=True" cmd/entities-worker/entities_worker.py; then
     check_ok "entities-worker: local_files_only=True"
 else
     check_warn "entities-worker: local_files_only not enforced"
 fi
 
-if grep -q "HF_HUB_OFFLINE" cmd/embeddings-worker/worker.py; then
+if grep -q "HF_HUB_OFFLINE" cmd/embeddings-worker/embeddings_worker.py; then
     check_ok "embeddings-worker: Offline mode set"
 else
     check_warn "embeddings-worker: Offline mode check"

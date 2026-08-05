@@ -37,28 +37,22 @@ import sys
 import json
 import hashlib
 import hmac
-import logging
 import msgpack
 import time
 import redis
 import requests
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from prometheus_client import Counter, Histogram, start_http_server
 from rapidfuzz import fuzz
 from unidecode import unidecode
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
-from pkg.events_python import EventBus
+from pkg.worker_common.pubsub_base import BasePubSubWorker
+from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 from app.config.settings import Settings
 
 try:
@@ -66,14 +60,12 @@ try:
     import torch
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"sentence-transformers not available: {e}")
     SENTENCE_TRANSFORMERS_AVAILABLE = False
     SentenceTransformer = None
     torch = None
 
 _settings = Settings()
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
@@ -84,17 +76,8 @@ EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
 EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
-# Prometheus metrics
-jobs_finalized_total = Counter(
-    "completion_worker_jobs_finalized_total", "Total jobs finalized", ["status"]
-)
-job_finalization_duration = Histogram(
-    "completion_worker_job_finalization_duration_seconds",
-    "Job finalization duration in seconds",
-)
 
-
-class CompletionWorker:
+class CompletionWorker(BasePubSubWorker):
     """Aggregates job results and finalizes document processing.
 
     This worker subscribes to job progress events via Redis pub/sub and monitors
@@ -112,32 +95,12 @@ class CompletionWorker:
     """
 
     def __init__(self):
-        """Initialize the completion worker with Redis connection and event bus.
-
-        Sets up Redis client for pub/sub subscriptions and data retrieval, and
-        defines which pipeline steps are required for different document types.
-        Different pipeline variants have different required steps:
-          - Full pipeline (default): extraction, embeddings, entities, metadata
-          - Spreadsheet: extraction, entities (skips embeddings/metadata)
-          - With inferences: Adds 'inferences' to required_steps if feature requested
-
-        Raises:
-            redis.ConnectionError: If Redis connection cannot be established.
-        """
-        self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        # Raw client (no decode_responses) for binary keys like MsgPack embeddings
-        self.redis_raw = redis.from_url(REDIS_URL, decode_responses=False)
-        self.event_bus = EventBus(self.redis_client)
-        # Default required steps for full pipeline
-        self.default_required_steps = {
-            "extraction",
-            "embeddings",
-            "entities",
-            "metadata",
-        }
-        # Spreadsheet pipeline (no embeddings, no metadata)
+        super().__init__(
+            worker_name="completion-worker",
+            metrics_port=METRICS_PORT,
+        )
+        self.default_required_steps = {"extraction", "embeddings", "entities", "metadata"}
         self.spreadsheet_required_steps = {"extraction", "entities"}
-        # Initialize embedding service lazily (loaded on first use, not during startup)
         self._embedding_service = None
         self._embedding_service_loaded = False
 
@@ -147,7 +110,7 @@ class CompletionWorker:
             return self._embedding_service
 
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            logger.warning("sentence-transformers not available, inference embeddings disabled")
+            self.logger.warning("sentence-transformers not available, inference embeddings disabled")
             self._embedding_service_loaded = True
             return None
 
@@ -157,9 +120,9 @@ class CompletionWorker:
                 EMBEDDINGS_MODEL_PATH,
                 device=device
             )
-            logger.info(f"Embedding service loaded with device={device}")
+            self.logger.info(f"Embedding service loaded with device={device}")
         except Exception as e:
-            logger.warning(f"Failed to load embedding service: {e}")
+            self.logger.warning(f"Failed to load embedding service: {e}")
             self._embedding_service = None
 
         self._embedding_service_loaded = True
@@ -202,9 +165,9 @@ class CompletionWorker:
                     chunk_embeddings[f"inference_{idx}"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
 
                 inference_embeddings[chunk_id] = chunk_embeddings
-                logger.debug(f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}")
+                self.logger.debug(f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}")
             except Exception as e:
-                logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
+                self.logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
 
         return inference_embeddings
 
@@ -238,10 +201,10 @@ class CompletionWorker:
             file_path = os.path.join(RESULTS_PATH, f"{job_id}.json")
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
-            logger.info(f"Results saved to {file_path}")
+            self.logger.info(f"Results saved to {file_path}")
             return True
         except Exception as e:
-            logger.error(f"Failed to save results to file: {e}")
+            self.logger.error(f"Failed to save results to file: {e}")
             return False
 
     def send_webhook(
@@ -333,10 +296,10 @@ class CompletionWorker:
                 headers=headers,
             )
             response.raise_for_status()
-            logger.info(f"Webhook sent successfully for job {job_id}")
+            self.logger.info(f"Webhook sent successfully for job {job_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to send webhook: {e}")
+            self.logger.error(f"Failed to send webhook: {e}")
             return False
 
     def _check_and_notify_batch(self, job_id: str, status: str):
@@ -414,9 +377,9 @@ class CompletionWorker:
 
             response = requests.post(webhook_url, json=payload, timeout=10, headers=headers)
             response.raise_for_status()
-            logger.info(f"Batch webhook sent for {batch_id}")
+            self.logger.info(f"Batch webhook sent for {batch_id}")
         except Exception as e:
-            logger.error(f"Failed to send batch webhook: {e}")
+            self.logger.error(f"Failed to send batch webhook: {e}")
 
     def deduplicate_entities(self, entities: list) -> dict:
         """Deduplicate entities using fuzzy text matching, keeping highest confidence.
@@ -493,7 +456,7 @@ class CompletionWorker:
                 }
                 norm_index[eid] = norm_text
 
-        logger.info(
+        self.logger.info(
             f"Deduplicated entities: {len(entities)} raw → {len(result)} unique"
             f" (threshold={FUZZY_MATCH_THRESHOLD})"
         )
@@ -558,7 +521,7 @@ class CompletionWorker:
                 if status == "completed":
                     completed_steps.add(step)
 
-            logger.info(f"Job {job_id} completed steps: {completed_steps}")
+            self.logger.info(f"Job {job_id} completed steps: {completed_steps}")
 
             # Determine required steps based on document type and features
             document_metadata_json = self.redis_client.get(
@@ -593,19 +556,19 @@ class CompletionWorker:
 
             # Add inferences if features were requested
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
-            logger.debug(f"Job {job_id}: features_json={features_json}")
+            self.logger.debug(f"Job {job_id}: features_json={features_json}")
             if features_json:
                 try:
                     features = json.loads(features_json)
                     if "inferences" in features:
                         required_steps.add("inferences")
-                        logger.info(
+                        self.logger.info(
                             f"Job {job_id}: added 'inferences' to required_steps"
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to parse features: {e}")
+                    self.logger.warning(f"Failed to parse features: {e}")
 
-            logger.info(
+            self.logger.info(
                 f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "
                 f"required steps: {required_steps}"
             )
@@ -614,7 +577,7 @@ class CompletionWorker:
                 self.finalize_job(job_id)
 
         except Exception as e:
-            logger.error(f"Error checking job completion: {e}")
+            self.logger.error(f"Error checking job completion: {e}")
 
     def finalize_job(self, job_id: str):
         """Aggregate all worker results and finalize a completed job.
@@ -681,7 +644,7 @@ class CompletionWorker:
         """
         finalization_start_time = time.time()
         try:
-            logger.info(f"Finalizing job: {job_id}")
+            self.logger.info(f"Finalizing job: {job_id}")
 
             # Use Redis pipeline to fetch all required data in a single round-trip
             pipe = self.redis_client.pipeline()
@@ -715,7 +678,7 @@ class CompletionWorker:
             completed_at = datetime.fromtimestamp(int(time.time())).isoformat()
 
             if status_data and status_data.get("status") == "completed":
-                logger.info(f"Job {job_id} already finalized, skipping")
+                self.logger.info(f"Job {job_id} already finalized, skipping")
                 return
 
             text = text or ""
@@ -747,7 +710,7 @@ class CompletionWorker:
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
             entities_dict = self.deduplicate_entities(entities_raw) if entities_raw else {}
 
-            logger.info(
+            self.logger.info(
                 f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)"
             )
 
@@ -769,7 +732,7 @@ class CompletionWorker:
                 if source_classification_json:
                     source_classification = json.loads(source_classification_json)
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse source_classification JSON: {e}")
+                self.logger.warning(f"Failed to parse source_classification JSON: {e}")
 
             try:
                 if micro_inferences_json:
@@ -780,11 +743,11 @@ class CompletionWorker:
                             if cid:
                                 inferences_by_chunk[cid] = item.get("inferences", [])
                     else:
-                        logger.warning(
+                        self.logger.warning(
                             f"micro_inferences is not a list, got {type(micro_inferences_list)}"
                         )
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse micro_inferences JSON: {e}")
+                self.logger.warning(f"Failed to parse micro_inferences JSON: {e}")
 
             # --- Generate inference embeddings ONLY if feature is enabled ---
             # Read features from Redis to check if inference_embeddings is enabled
@@ -800,18 +763,18 @@ class CompletionWorker:
 
             if inference_embeddings_enabled:
                 if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
-                    logger.info("Feature 'inference_embeddings' enabled, generating embeddings...")
+                    self.logger.info("Feature 'inference_embeddings' enabled, generating embeddings...")
                     inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
                     if inference_embeddings_by_chunk:
                         try:
                             key = f"orchestrator:job:{job_id}:inference_embeddings"
                             packed = msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True)
                             self.redis_raw.set(key, packed)
-                            logger.info(f"Saved inference embeddings to Redis: {key}")
+                            self.logger.info(f"Saved inference embeddings to Redis: {key}")
                         except Exception as e:
-                            logger.warning(f"Failed to save inference embeddings to Redis: {e}")
+                            self.logger.warning(f"Failed to save inference embeddings to Redis: {e}")
             else:
-                logger.debug(f"Feature 'inference_embeddings' not enabled, skipping embedding generation")
+                self.logger.debug(f"Feature 'inference_embeddings' not enabled, skipping embedding generation")
 
             # --- Enrich chunks: embed embeddings, entity_ids, inferences ---
             enriched_chunks = []
@@ -835,7 +798,7 @@ class CompletionWorker:
                     expected = len(inferences)
                     actual = len(chunk_inf_emb)
                     if expected != actual:
-                        logger.warning(
+                        self.logger.warning(
                             f"Embedding count mismatch for chunk {cid}: "
                             f"expected {expected}, got {actual}"
                         )
@@ -867,7 +830,7 @@ class CompletionWorker:
             )
             if source_classification:
                 log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
-            logger.info(log_message)
+            self.logger.info(log_message)
 
             self.redis_client.set(
                 f"orchestrator:job:{job_id}:results",
@@ -889,11 +852,11 @@ class CompletionWorker:
             self.event_bus.publish_job_completed(job_id)
 
             # Record metrics
-            job_finalization_duration.observe(time.time() - finalization_start_time)
-            jobs_finalized_total.labels(status="success").inc()
+            self.job_duration.observe(time.time() - finalization_start_time)
+            self.jobs_total.labels(status="success").inc()
 
         except Exception as e:
-            logger.error(f"Error finalizing job: {e}", exc_info=True)
+            self.logger.error(f"Error finalizing job: {e}", exc_info=True)
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:status", "status", "failed"
             )
@@ -904,151 +867,31 @@ class CompletionWorker:
             self.event_bus.publish_job_failed(job_id, str(e))
 
             # Record failure metrics
-            job_finalization_duration.observe(time.time() - finalization_start_time)
-            jobs_finalized_total.labels(status="error").inc()
+            self.job_duration.observe(time.time() - finalization_start_time)
+            self.jobs_total.labels(status="error").inc()
 
-    def handle_event(self, message):
-        """Process incoming job progress event from Redis pub/sub.
+    def handle_event(self, event: Dict[str, Any]) -> None:
+        """Process parsed job progress event from Redis pub/sub.
 
-        This is the event handler called by Redis pub/sub listener for each
-        message on the job:events channel. It parses the event, extracts the
-        job_id and event_type, and triggers job completion checks if the
-        event is of type "job_progress".
-
-        Event structure:
-            {
-                "type": "message" (Redis pub/sub message type),
-                "data": JSON string containing:
-                    {
-                        "event_type": "job_progress" | other,
-                        "job_id": str,
-                        ...other fields...
-                    }
-            }
-
-        Behavior:
-            - Ignores non-"message" type events (e.g., "subscribe" confirmations)
-            - For "job_progress" events, calls check_job_completion(job_id)
-            - Logs event receipt for debugging
-
-        Args:
-            message: Dictionary from Redis pub/sub listener with keys:
-                - type: "message" | "subscribe" | "unsubscribe"
-                - channel: "job:events"
-                - data: JSON string containing event details
-
-        Returns:
-            None.
-
-        Raises:
-            Does not raise exceptions. Parsing errors are logged and ignored.
-
-        Note:
-            Exceptions during parsing or check_job_completion are caught
-            and logged at ERROR level without stopping the pub/sub listener.
+        The event dict is already parsed by BasePubSubWorker._parse_pubsub_message().
         """
         try:
-            if message["type"] != "message":
-                return
-
-            event = json.loads(message["data"])
             event_type = event.get("event_type")
             job_id = event.get("job_id")
 
-            logger.info(f"Received event: {event_type} for job {job_id}")
+            self.logger.info(f"Received event: {event_type} for job {job_id}")
 
             if event_type == "job_progress" and job_id:
                 self.check_job_completion(job_id)
 
         except Exception as e:
-            logger.error(f"Error handling event: {e}")
-
-    def start(self):
-        """Start the completion worker and listen for job progress events.
-
-        Main entry point for the worker. Subscribes to the job:events Redis
-        pub/sub channel and begins processing job progress notifications.
-
-        This method runs indefinitely and implements exponential backoff
-        reconnection logic to handle Redis connection failures gracefully:
-            - Initial backoff: 1 second
-            - Exponential increase with each reconnection
-            - Maximum backoff cap: 60 seconds
-
-        Connection failures are logged but do not halt the worker; instead,
-        the worker waits and reconnects automatically.
-
-        Process:
-            1. Connect to Redis and subscribe to job:events channel
-            2. For each message received, call handle_event()
-            3. On connection error, close pubsub connection and wait
-            4. Reconnect with exponential backoff
-
-        Returns:
-            Never returns under normal operation; runs indefinitely.
-
-        Raises:
-            Does not raise exceptions. All errors are logged and handled
-            with automatic reconnection.
-
-        Side effects:
-            - Logs "Completion worker started, listening for job events..."
-            - Logs connection errors and reconnection delays
-            - Calls handle_event() for each incoming message
-        """
-        backoff_time = 1
-        max_backoff_time = 60
-
-        while True:
-            try:
-                pubsub = self.redis_client.pubsub()
-                pubsub.subscribe("job:events")
-
-                logger.info("Completion worker started, listening for job events...")
-
-                for message in pubsub.listen():
-                    self.handle_event(message)
-
-            except Exception as e:
-                logger.error(f"Error in completion worker pubsub: {e}", exc_info=True)
-                try:
-                    pubsub.close()
-                except Exception:
-                    pass
-
-                # Exponential backoff with max cap
-                logger.info(f"Reconnecting in {backoff_time} seconds...")
-                time.sleep(backoff_time)
-                backoff_time = min(backoff_time * 2, max_backoff_time)
+            self.logger.error(f"Error handling event: {e}")
 
 
 def main():
-    """Entry point for the completion worker service.
-
-    Initializes Prometheus metrics server and starts the CompletionWorker
-    to listen for job progress events.
-
-    Prometheus metrics are exposed on METRICS_PORT (default 8005) at:
-        http://localhost:8005/metrics
-
-    Returns:
-        Never returns; runs indefinitely until process is terminated.
-
-    Raises:
-        Does not raise exceptions. All errors are handled within
-        CompletionWorker.start() with automatic reconnection logic.
-    """
-    # Start Prometheus metrics server
-    logger.info(f"Starting metrics server on port {METRICS_PORT}")
-    start_http_server(METRICS_PORT)
-
     worker = CompletionWorker()
     worker.start()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
     main()

@@ -25,7 +25,6 @@ def generate_go_docs() -> None:
     packages = [
         ("models", "./internal/models"),
         ("middleware", "./internal/middleware"),
-        ("pipeline", "./internal/pipeline"),
         ("events", "./internal/events"),
         ("redis", "./internal/redis"),
         ("cache", "./internal/cache"),

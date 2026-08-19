@@ -308,12 +308,6 @@ def generate_html_index() -> None:
                 </div>
                 <div class="doc-card">
                     <span class="status complete">Complete</span>
-                    <h3>Pipeline</h3>
-                    <p>Orchestration engine, fan-out, polling</p>
-                    <a href="go_pipeline.txt">View Documentation →</a>
-                </div>
-                <div class="doc-card">
-                    <span class="status complete">Complete</span>
                     <h3>Events</h3>
                     <p>Event bus, pub/sub, message routing</p>
                     <a href="go_events.txt">View Documentation →</a>

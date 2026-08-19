@@ -49,9 +49,10 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
-from pkg.worker_common.pubsub_base import BasePubSubWorker
+from app.config.settings import Settings
 from pkg.worker_common.entity_utils import deduplicate_entities
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
+from pkg.worker_common.pubsub_base import BasePubSubWorker
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -62,10 +63,13 @@ except ImportError as e:
     SentenceTransformer = None
     torch = None
 
+_settings = Settings()
+
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
+FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 
 EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
 EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
@@ -622,18 +626,21 @@ class CompletionWorker(BasePubSubWorker):
 
             # --- Entities: deduplicate → global dict {entity_id: {label, text, confidence}} ---
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
-            entities_dict = deduplicate_entities(entities_raw) if entities_raw else {}
+            entities_dict = (
+                deduplicate_entities(entities_raw, threshold=FUZZY_MATCH_THRESHOLD)
+                if entities_raw
+                else {}
+            )
 
             self.logger.info(
                 f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)"
             )
 
-            # --- Build per-chunk entity_ids index ---
+            # --- Build per-chunk entity_ids index (from deduplicated dict) ---
             entity_ids_by_chunk: dict = {}  # {chunk_id: [entity_id]}
-            for ent in entities_raw:
+            for eid, ent in entities_dict.items():
                 cid = ent.get("chunk_id")
-                eid = ent.get("entity_id")
-                if cid and eid:
+                if cid:
                     entity_ids_by_chunk.setdefault(cid, [])
                     if eid not in entity_ids_by_chunk[cid]:
                         entity_ids_by_chunk[cid].append(eid)

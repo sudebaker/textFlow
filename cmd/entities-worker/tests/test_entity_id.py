@@ -1,6 +1,6 @@
 import re
 
-from entities_worker import entity_id  # module-level helper, not method
+from pkg.worker_common.entity_utils import entity_id
 
 
 def test_entity_id_deterministic():

@@ -43,8 +43,6 @@ import redis
 import requests
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from rapidfuzz import fuzz
-from unidecode import unidecode
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -52,8 +50,8 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
 from pkg.worker_common.pubsub_base import BasePubSubWorker
+from pkg.worker_common.entity_utils import deduplicate_entities
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
-from app.config.settings import Settings
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -64,13 +62,10 @@ except ImportError as e:
     SentenceTransformer = None
     torch = None
 
-_settings = Settings()
-
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 RESULTS_PATH = os.getenv("RESULTS_PATH", "/app/data/results")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
-FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 
 EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
 EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
@@ -381,87 +376,6 @@ class CompletionWorker(BasePubSubWorker):
         except Exception as e:
             self.logger.error(f"Failed to send batch webhook: {e}")
 
-    def deduplicate_entities(self, entities: list) -> dict:
-        """Deduplicate entities using fuzzy text matching, keeping highest confidence.
-
-        Two entities merge when they share the same label AND their normalized texts
-        are similar enough (fuzz.ratio >= FUZZY_MATCH_THRESHOLD).  Normalization uses
-        unidecode + lower + strip so accented variants ("Educación" / "Educacion")
-        are treated as identical.
-
-        The threshold is read from FUZZY_MATCH_THRESHOLD env var (default 0.85).
-
-        Args:
-            entities: List of entity dicts, each expected to have:
-                - entity_id (optional): stable 12-char hex ID
-                - label, text, confidence
-
-        Returns:
-            Dict keyed by entity_id → {label, text, confidence}.
-            Per-chunk fields (chunk_id, start, end) are preserved as start_offset,
-            end_offset, chunk_id in the merged entity.
-            Falls back to generating entity_id from label:text if field missing.
-        """
-        if not entities:
-            return {}
-
-        def _normalize(text: str) -> str:
-            return unidecode(text).lower().strip()
-
-        def _generate_id(label: str, text: str) -> str:
-            key = f"{label}:{_normalize(text)}"
-            return hashlib.sha256(key.encode()).hexdigest()[:12]
-
-        # result maps entity_id → {label, text, confidence}
-        result: dict = {}
-        # norm_index maps entity_id → normalized text (for similarity lookup)
-        norm_index: dict = {}
-
-        for ent in entities:
-            label = ent.get("label", "")
-            text = ent.get("text", "")
-            confidence = ent.get("confidence", 0.0)
-            norm_text = _normalize(text)
-
-            # Find an existing entry with same label and similar enough text
-            matched_id = None
-            for existing_id, existing_norm in norm_index.items():
-                if result[existing_id]["label"] != label:
-                    continue
-                similarity = fuzz.ratio(norm_text, existing_norm) / 100.0
-                if similarity >= FUZZY_MATCH_THRESHOLD:
-                    matched_id = existing_id
-                    break
-
-            if matched_id:
-                if confidence > result[matched_id].get("confidence", 0):
-                    result[matched_id] = {
-                        "label": label,
-                        "text": text,
-                        "confidence": confidence,
-                        "start_offset": ent.get("start", 0),
-                        "end_offset": ent.get("end", 0),
-                        "chunk_id": ent.get("chunk_id", ""),
-                    }
-                    norm_index[matched_id] = _normalize(text)
-            else:
-                eid = ent.get("entity_id") or _generate_id(label, text)
-                result[eid] = {
-                    "label": label,
-                    "text": text,
-                    "confidence": confidence,
-                    "start_offset": ent.get("start", 0),
-                    "end_offset": ent.get("end", 0),
-                    "chunk_id": ent.get("chunk_id", ""),
-                }
-                norm_index[eid] = norm_text
-
-        self.logger.info(
-            f"Deduplicated entities: {len(entities)} raw → {len(result)} unique"
-            f" (threshold={FUZZY_MATCH_THRESHOLD})"
-        )
-        return result
-
     def get_job_creation_time(self, job_id: str) -> Optional[str]:
         """Retrieve the ISO 8601 creation timestamp for a job.
 
@@ -708,7 +622,7 @@ class CompletionWorker(BasePubSubWorker):
 
             # --- Entities: deduplicate → global dict {entity_id: {label, text, confidence}} ---
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
-            entities_dict = self.deduplicate_entities(entities_raw) if entities_raw else {}
+            entities_dict = deduplicate_entities(entities_raw) if entities_raw else {}
 
             self.logger.info(
                 f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)"

@@ -17,15 +17,13 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.insert(0, "/app")
 
 import json
-import hashlib
 from typing import Dict, List, Any
 
 import requests
-from unidecode import unidecode
-from rapidfuzz import fuzz
 from pathlib import Path
 
 from pkg.worker_common.base import BaseWorker
+from pkg.worker_common.entity_utils import entity_id
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 from app.config.settings import Settings as AppSettings
 from sliding_window import (
@@ -44,8 +42,6 @@ REGEX_ENTITY_EXTRACTOR_URL = os.getenv(
 app_settings = AppSettings()
 GLINER_MODEL_PATH = app_settings.gliner_model_path
 ENTITY_TYPES = os.getenv("ENTITY_TYPES", "PERSON,ORGANIZATION,LOCATION,DATE,MONEY,EMAIL")
-DEDUPLICATION_ENABLED = app_settings.deduplication_enabled
-FUZZY_MATCH_THRESHOLD = app_settings.fuzzy_match_threshold
 
 
 def _resolve_device() -> str:
@@ -61,12 +57,6 @@ def _resolve_device() -> str:
 
 ENTITIES_DEVICE = _resolve_device()
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
-
-
-def entity_id(label: str, text: str) -> str:
-    """Return a stable 12-char hex ID for a (label, text) pair."""
-    key = f"{label}:{text.lower().strip()}"
-    return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
 class EntitiesWorker(BaseWorker):
@@ -232,36 +222,6 @@ class EntitiesWorker(BaseWorker):
             self.logger.error(f"Error predicting entities: {e}")
             return []
 
-    def normalize_entity_text(self, text: str) -> str:
-        return unidecode(text).lower().strip()
-
-    def deduplicate_entities(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not DEDUPLICATION_ENABLED or not entities:
-            return entities
-        deduplicated = {}
-        original_count = len(entities)
-        for entity in entities:
-            text = entity["text"]
-            label = entity["label"]
-            normalized_key = f"{label}:{self.normalize_entity_text(text)}"
-            found_similar = False
-            for existing_key, existing_entity in deduplicated.items():
-                if existing_key.startswith(f"{label}:"):
-                    similarity = fuzz.ratio(self.normalize_entity_text(text), self.normalize_entity_text(existing_entity["text"])) / 100.0
-                    if similarity >= FUZZY_MATCH_THRESHOLD:
-                        if entity.get("confidence", 0) > existing_entity.get("confidence", 0):
-                            existing_entity["confidence"] = entity["confidence"]
-                            existing_entity["text"] = text
-                        if "positions" not in existing_entity:
-                            existing_entity["positions"] = []
-                        existing_entity["positions"].append({"chunk_id": entity.get("chunk_id"), "start": entity.get("start"), "end": entity.get("end")})
-                        found_similar = True
-                        break
-            if not found_similar:
-                deduplicated[normalized_key] = entity.copy()
-                deduplicated[normalized_key]["positions"] = []
-        return list(deduplicated.values())
-
     def _extract_regex_entities(self, text: str) -> list:
         try:
             payload = {"text": text}
@@ -372,9 +332,6 @@ class EntitiesWorker(BaseWorker):
                 all_entities.extend(regex_entities)
         except Exception as e:
             self.logger.warning(f"Failed to extract regex entities: {e}")
-
-        if DEDUPLICATION_ENABLED:
-            all_entities = self.deduplicate_entities(all_entities)
 
         entities_key = f"orchestrator:job:{job_id}:entities_raw"
         for ent in all_entities:

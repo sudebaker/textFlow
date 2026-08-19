@@ -77,7 +77,7 @@ Document ──▶ [Orchestrator] ───────▶ │  extract_text que
 | `completion-worker` | Python | — | Agregación de resultados, webhooks | No |
 | `audio-worker` | Python | — | Transcripción Whisper | Opcional |
 | `image-worker` | Python | — | Análisis multimodal LLM | Sí |
-| `regex-entity-extractor` | Python | 8081 | Extracción PII (email, teléfono, IBAN...) | No |
+| `regex-entity-extractor` | Go | 8081 | Extracción PII (email, teléfono, IBAN...) | No |
 
 ### Infraestructura
 
@@ -119,7 +119,7 @@ textflow/
 │   ├── completion-worker/        # Python - Agregador
 │   ├── audio-worker/             # Python - Whisper
 │   ├── image-worker/             # Python - Multimodal LLM
-│   └── regex-entity-extractor/   # Python - PII patterns
+│   └── regex-entity-extractor/   # Go - PII patterns
 ├── internal/                      # Paquetes Go compartidos
 │   ├── broker/                   # Cliente RabbitMQ
 │   ├── config/                   # Configuración

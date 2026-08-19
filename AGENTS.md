@@ -140,6 +140,14 @@ pkg/              # shared: logging/, metrics/, events_python.py, worker_common/
 
 **Redis keys:** `orchestrator:job:{id}:{status|text|chunks|embeddings|entities|metadata|results}`
 
+### DAG del pipeline (IMPORTANTE)
+
+El DAG **no** vive en el orchestrator Go. Vive en Python:
+- `cmd/extraction-worker/worker.py` — routing fan-out (embeddings/entities/metadata)
+- `cmd/completion-worker/completion_worker.py` — `required_steps`
+
+`internal/pipeline/` fue eliminado (dead code, 0 callers).
+
 ---
 
 ## Air-Gapped Deployment (CRITICAL)

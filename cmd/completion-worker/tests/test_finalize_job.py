@@ -5,6 +5,7 @@ import msgpack
 from unittest.mock import MagicMock, patch
 
 from completion_worker import CompletionWorker
+from pkg.worker_common.entity_utils import deduplicate_entities
 
 
 def _get_results(worker):
@@ -166,12 +167,11 @@ def test_no_top_level_embeddings_or_micro_inferences():
 
 def test_deduplicate_entities_fallback_without_entity_id():
     """deduplicate_entities() must generate entity_id for entities missing the field."""
-    worker = _make_worker()
     entities = [
         {"label": "ORG", "text": "ACME", "confidence": 0.8},  # no entity_id
         {"label": "ORG", "text": "ACME", "confidence": 0.9},  # no entity_id, same key
     ]
-    result = worker.deduplicate_entities(entities)
+    result = deduplicate_entities(entities)
     assert len(result) == 1
     eid = list(result.keys())[0]
     assert len(eid) == 12
@@ -184,12 +184,11 @@ def test_deduplicate_entities_fallback_without_entity_id():
 
 def test_deduplicate_entities_fuzzy_identical_text():
     """Entities with identical text and same label must merge into one."""
-    worker = _make_worker()
     entities = [
         {"label": "PER", "text": "María García", "confidence": 0.9, "entity_id": "aaa000000001"},
         {"label": "PER", "text": "María García", "confidence": 0.7, "entity_id": "aaa000000002"},
     ]
-    result = worker.deduplicate_entities(entities)
+    result = deduplicate_entities(entities)
     assert len(result) == 1, "identical text → must merge"
     eid = list(result.keys())[0]
     assert result[eid]["confidence"] == 0.9  # highest wins
@@ -197,13 +196,12 @@ def test_deduplicate_entities_fuzzy_identical_text():
 
 def test_deduplicate_entities_fuzzy_similar_text():
     """Entities with very similar text (>= threshold) and same label must merge."""
-    worker = _make_worker()
     # "Departamento de Educacion" vs "Departamento de Educación" — differ only in accent
     entities = [
         {"label": "ORG", "text": "Departamento de Educacion", "confidence": 0.8, "entity_id": "bbb000000001"},
         {"label": "ORG", "text": "Departamento de Educación", "confidence": 0.9, "entity_id": "bbb000000002"},
     ]
-    result = worker.deduplicate_entities(entities)
+    result = deduplicate_entities(entities)
     assert len(result) == 1, "accent-only difference → must merge after normalization"
     eid = list(result.keys())[0]
     assert result[eid]["confidence"] == 0.9  # highest wins
@@ -211,29 +209,26 @@ def test_deduplicate_entities_fuzzy_similar_text():
 
 def test_deduplicate_entities_fuzzy_different_text():
     """Entities with clearly different text must remain separate."""
-    worker = _make_worker()
     entities = [
         {"label": "PER", "text": "María García", "confidence": 0.9, "entity_id": "ccc000000001"},
         {"label": "PER", "text": "Juan López",   "confidence": 0.8, "entity_id": "ccc000000002"},
     ]
-    result = worker.deduplicate_entities(entities)
+    result = deduplicate_entities(entities)
     assert len(result) == 2, "clearly different texts → must stay separate"
 
 
 def test_deduplicate_entities_fuzzy_different_label_no_merge():
     """Same text but different label must NOT merge."""
-    worker = _make_worker()
     entities = [
         {"label": "PER", "text": "Aragón", "confidence": 0.9, "entity_id": "ddd000000001"},
         {"label": "LOC", "text": "Aragón", "confidence": 0.8, "entity_id": "ddd000000002"},
     ]
-    result = worker.deduplicate_entities(entities)
+    result = deduplicate_entities(entities)
     assert len(result) == 2, "same text but different label → must NOT merge"
 
 
 def test_entity_offsets_preserved():
     """Offsets from highest confidence entity must be preserved after deduplication."""
-    worker = _make_worker()
     entities = [
         {
             "label": "PER",
@@ -254,7 +249,7 @@ def test_entity_offsets_preserved():
             "chunk_id": "chunk_002",
         },
     ]
-    result = worker.deduplicate_entities(entities)
+    result = deduplicate_entities(entities)
     assert len(result) == 1
     eid = list(result.keys())[0]
     assert result[eid]["start_offset"] == 100

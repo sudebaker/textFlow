@@ -1,11 +1,21 @@
-import pytest
-import sys
 import os
+import sys
+from unittest.mock import MagicMock
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 
 # Import from the worker module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# langdetect and textstat are production dependencies (worker.py imports them
+# at module load) but SourceClassifier.classify() is pure regex and never calls
+# either. They are not installed in the air-gapped test env, so stub the
+# modules before importing worker to avoid ModuleNotFoundError.
+sys.modules.setdefault("langdetect", MagicMock())
+sys.modules.setdefault("textstat", MagicMock())
+
 from worker import SourceClassifier
 
 

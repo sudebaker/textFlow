@@ -142,11 +142,27 @@ pkg/              # shared: logging/, metrics/, events_python.py, worker_common/
 
 ### DAG del pipeline (IMPORTANTE)
 
-El DAG **no** vive en el orchestrator Go. Vive en Python:
-- `cmd/extraction-worker/worker.py` — routing fan-out (embeddings/entities/metadata)
-- `cmd/completion-worker/completion_worker.py` — `required_steps`
-
+El DAG **no** vive en el orchestrator Go. Vive en `configs/pipeline.json`
+(`PipelineDefinition`): routing fan-out en `cmd/extraction-worker/worker.py`
+(vía `PipelineDefinition.queues_for`) y `required_steps` en
+`cmd/completion-worker/completion_worker.py` (vía `PipelineDefinition.steps_for`).
 `internal/pipeline/` fue eliminado (dead code, 0 callers).
+
+### Migración big-bang del DAG (D4)
+
+El DAG declarativo vive en `configs/pipeline.json` (`PipelineDefinition`,
+cargado por `pkg/worker_common/pipeline_config.py`). `pipeline_version` en
+`JobMessage` (escape hatch): los workers lo leen pero lo ignoran si vale "v1".
+
+Runbook de migración (big-bang con drain, NO dual-run):
+1. Stop admission: no aceptar nuevos `POST /v1/documents` (pausar llamadas / LB).
+2. Drain: esperar `ZCard active_jobs == 0` (jobs en vuelo completan; `JobTimeout=60m`
+   acota el peor caso). Caveat: `ExpireStuckJobs` solo expira job-level
+   `pending`/`processing`/`extracting`.
+3. Deploy: subir imágenes nuevas (orchestrator con `pipeline_version`, workers con
+   `configs/pipeline.json`).
+4. Resume admission y verificar `GET /v1/documents/:id` con un job de prueba
+   (spreadsheet + full + features=["inferences"]).
 
 ### Entities-worker: regex en thread paralelo (D2)
 

@@ -56,14 +56,12 @@ class SegmentChunker:
             combined = " ".join(buffer_texts)
             prefix = f"[{buffer_speaker}]: " if buffer_speaker else ""
             full_text = f"{prefix}{combined}"
-            chunks.append({
-                "chunk_id": f"chunk_{chunk_num:03d}",
-                "text": full_text,
-                "start_offset": buffer_start,
-                "end_offset": end_offset,
-                "token_count": len(full_text) // CHARS_PER_TOKEN,
-            })
-            chunk_num += 1
+            for piece in _simple_chunk(full_text, self.max_chars):
+                piece["chunk_id"] = f"chunk_{chunk_num:03d}"
+                piece["start_offset"] = buffer_start
+                piece["end_offset"] = end_offset
+                chunks.append(piece)
+                chunk_num += 1
 
         for i, seg in enumerate(segments):
             if seg.speaker != buffer_speaker or (

@@ -1,6 +1,6 @@
 import pytest
 
-from cmd.audio_worker.segment_chunker import SegmentChunker, _simple_chunk
+from segment_chunker import SegmentChunker, _simple_chunk
 from pkg.audio_client.models import AudioSegment, TranscriptionResult
 
 

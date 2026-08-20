@@ -137,10 +137,8 @@ class EmbeddingsWorker(BaseWorker):
             self.gpu_memory_gb.set(torch.cuda.memory_allocated() / 1024**3)
 
         embeddings_key = f"orchestrator:job:{job_id}:embeddings"
-        self.redis_client.set(
-            embeddings_key,
-            msgpack.packb(embeddings_dict, use_bin_type=True)
-        )
+        embeddings_ref = STORE.put(msgpack.packb(embeddings_dict, use_bin_type=True))
+        self.redis_client.set(embeddings_key, embeddings_ref)
 
         self.redis_client.hset(
             f"orchestrator:job:{job_id}:steps", "embeddings", "completed"
@@ -170,12 +168,9 @@ class EmbeddingsWorker(BaseWorker):
                     )
 
                     if inference_embeddings:
-                        packed = msgpack.packb(inference_embeddings, use_bin_type=True)
                         ie_key = f"orchestrator:job:{job_id}:inference_embeddings"
-                        pipe = self.redis_client.pipeline()
-                        pipe.set(ie_key, packed)
-                        pipe.expire(ie_key, 86400)
-                        pipe.execute()
+                        ie_ref = STORE.put(msgpack.packb(inference_embeddings, use_bin_type=True))
+                        self.redis_client.set(ie_key, ie_ref)
 
                         self.redis_client.hset(
                             f"orchestrator:job:{job_id}:steps",

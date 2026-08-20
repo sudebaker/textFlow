@@ -2,6 +2,11 @@ package redis
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -9,6 +14,7 @@ import (
 	"github.com/alicebob/miniredis/v2/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vmihailenco/msgpack/v5"
 	"textflow/internal/config"
 	"textflow/internal/models"
 )
@@ -483,4 +489,138 @@ func TestGetJobResults_ChunkInferences(t *testing.T) {
 	assert.Equal(t, 0, len(results.Chunks[1].Inferences))
 	assert.Equal(t, 1, len(results.Entities))
 	assert.Equal(t, "ORG", results.Entities["abc000000001"].Label)
+}
+
+// writeArtifact writes content into the artifact store FS layout under root
+// and returns the sha256:<hex> reference for it.
+func writeArtifact(t *testing.T, root string, content []byte) string {
+	t.Helper()
+
+	digest := sha256.Sum256(content)
+	hexDigest := fmt.Sprintf("%x", digest)
+	path := filepath.Join(root, hexDigest[:2], hexDigest[2:4], hexDigest+".bin")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+
+	return artifactRefPrefix + hexDigest
+}
+
+func TestRedisClient_GetJobText_ResolvesArtifactRef(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	root := t.TempDir()
+	t.Setenv("ARTIFACT_PATH", root)
+	ctx := context.Background()
+	jobID := "test-job-ref-text"
+
+	content := []byte("This is the resolved text from the artifact store")
+	ref := writeArtifact(t, root, content)
+
+	err := client.client.Set(ctx, client.key("job", jobID, "text"), ref, 0).Err()
+	require.NoError(t, err)
+
+	text, err := client.GetJobText(ctx, jobID)
+	require.NoError(t, err)
+	assert.Equal(t, string(content), text)
+}
+
+func TestRedisClient_GetJobResults_ResolvesArtifactRef(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	root := t.TempDir()
+	t.Setenv("ARTIFACT_PATH", root)
+	ctx := context.Background()
+	jobID := "test-job-ref-results"
+
+	results := &models.JobResults{
+		Text: "Sample text",
+		Chunks: []models.Chunk{
+			{ChunkID: "chunk_0", Text: "hello", Embeddings: []float32{0.1, 0.2, 0.3}},
+		},
+	}
+	raw, err := json.Marshal(results)
+	require.NoError(t, err)
+	ref := writeArtifact(t, root, raw)
+
+	err = client.client.Set(ctx, client.key("job", jobID, "results"), ref, 0).Err()
+	require.NoError(t, err)
+
+	retrieved, err := client.GetJobResults(ctx, jobID)
+	require.NoError(t, err)
+	assert.Equal(t, results.Text, retrieved.Text)
+	assert.Equal(t, len(results.Chunks), len(retrieved.Chunks))
+	assert.InDeltaSlice(t, results.Chunks[0].Embeddings, retrieved.Chunks[0].Embeddings, 1e-6)
+}
+
+func TestRedisClient_GetJobEmbeddings_ResolvesArtifactRef(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	root := t.TempDir()
+	t.Setenv("ARTIFACT_PATH", root)
+	ctx := context.Background()
+	jobID := "test-job-ref-embeddings"
+
+	embeddings := map[string][]float32{
+		"chunk-1": {0.1, 0.2, 0.3},
+		"chunk-2": {0.4, 0.5, 0.6, 0.7},
+	}
+	raw, err := msgpack.Marshal(embeddings)
+	require.NoError(t, err)
+	ref := writeArtifact(t, root, raw)
+
+	err = client.client.Set(ctx, client.key("job", jobID, "embeddings"), ref, 0).Err()
+	require.NoError(t, err)
+
+	retrieved, err := client.GetJobEmbeddings(ctx, jobID)
+	require.NoError(t, err)
+	assert.Equal(t, len(embeddings), len(retrieved))
+	assert.InDeltaSlice(t, embeddings["chunk-1"], retrieved["chunk-1"], 1e-6)
+	assert.InDeltaSlice(t, embeddings["chunk-2"], retrieved["chunk-2"], 1e-6)
+}
+
+func TestRedisClient_GetJobText_LegacyRawPassthrough(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	root := t.TempDir()
+	t.Setenv("ARTIFACT_PATH", root)
+	ctx := context.Background()
+	jobID := "test-job-legacy-text"
+
+	expectedText := "This is a test document"
+	err := client.client.Set(ctx, client.key("job", jobID, "text"), expectedText, 0).Err()
+	require.NoError(t, err)
+
+	text, err := client.GetJobText(ctx, jobID)
+	require.NoError(t, err)
+	assert.Equal(t, expectedText, text)
+}
+
+func TestRedisClient_GetJobText_ArtifactMissing_ReturnsError(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	root := t.TempDir()
+	t.Setenv("ARTIFACT_PATH", root)
+	ctx := context.Background()
+	jobID := "test-job-ref-missing"
+
+	content := []byte("content that will never be written")
+	digest := sha256.Sum256(content)
+	ref := artifactRefPrefix + fmt.Sprintf("%x", digest)
+
+	err := client.client.Set(ctx, client.key("job", jobID, "text"), ref, 0).Err()
+	require.NoError(t, err)
+
+	_, err = client.GetJobText(ctx, jobID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "artifact not found")
 }

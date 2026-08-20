@@ -105,6 +105,20 @@ class TestExtractMetadata(TestMetadataWorker):
         assert metadata["source_url"] == "https://example.com/custom"
         assert "mime_type" not in metadata
 
+    def test_language_heuristic_uses_sample(self, worker, monkeypatch):
+        import worker as metadata_worker_module
+
+        monkeypatch.setattr(metadata_worker_module, "TEXT_ANALYSIS_SAMPLE_CHARS", 10)
+        # Spanish words only appear after char 10 -> sample has no Spanish.
+        text = "zzzzzzzzzz " + " el documento de la empresa "
+        metadata = worker._extract_metadata(text)
+
+        assert metadata["language"] == "unknown"
+        # Sample-insensitive fields stay computed on the FULL text.
+        assert metadata["text_length"] == len(text)
+        assert metadata["word_count"] == len(text.split())
+        assert metadata["content_hash"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     def test_content_hash_deterministic(self, worker):
         text = "Same text"
         m1 = worker._extract_metadata(text)

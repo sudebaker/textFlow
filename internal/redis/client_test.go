@@ -258,6 +258,9 @@ func TestRedisClient_DeleteJob(t *testing.T) {
 	err = client.SetJobText(ctx, jobID, "test text")
 	require.NoError(t, err)
 
+	err = client.client.Set(ctx, client.key("job", jobID, "inference_embeddings"), "sha256:test", 0).Err()
+	require.NoError(t, err)
+
 	// Verify data exists
 	_, err = client.GetJobStatus(ctx, jobID)
 	require.NoError(t, err)
@@ -270,6 +273,10 @@ func TestRedisClient_DeleteJob(t *testing.T) {
 	_, err = client.GetJobStatus(ctx, jobID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "job not found")
+
+	deleted, err := client.client.Exists(ctx, client.key("job", jobID, "inference_embeddings")).Result()
+	require.NoError(t, err)
+	assert.Zero(t, deleted)
 }
 
 func TestRedisClient_HealthCheck(t *testing.T) {

@@ -66,6 +66,20 @@ class Settings(BaseSettings):
         default=0.85, description="Fuzzy matching threshold for deduplication (0.0-1.0)"
     )
 
+    # Regex Entity Extractor Configuration
+    regex_service_url: str = Field(
+        default="http://regex-entity-extractor:8081",
+        description="URL of the regex-entity-extractor microservice",
+    )
+
+    regex_timeout: int = Field(
+        default=30, description="HTTP timeout in seconds for regex extraction"
+    )
+
+    regex_enabled: bool = Field(
+        default=True, description="Enable regex entity extraction"
+    )
+
     # Model Loading Configuration
     allow_remote_download: bool = Field(
         default=False,

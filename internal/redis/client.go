@@ -195,9 +195,11 @@ func (c *RedisClient) SetJobText(ctx context.Context, jobID string, text string)
 
 // GetJobText retrieves the extracted text for a job.
 // Redis key: {namespace}:job:{jobID}:text
-// Returns the raw text string on success.
+// If the stored value is an artifact reference (sha256:<hex>), the bytes are
+// resolved from the artifact store filesystem and decoded as text. Otherwise
+// the raw value is returned unchanged (legacy payload compatibility).
 // Returns error with "job text not found" message if key does not exist (redis.Nil).
-// Returns error if Redis operation fails.
+// Returns error if Redis operation, artifact resolution, or filesystem read fails.
 func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, error) {
 	key := c.key("job", jobID, "text")
 	text, err := c.client.Get(ctx, key).Result()
@@ -206,6 +208,14 @@ func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, err
 			return "", fmt.Errorf("job text not found: %s", jobID)
 		}
 		return "", fmt.Errorf("failed to get job text: %w", err)
+	}
+
+	resolved, wasRef, err := resolveArtifactBytes(ctx, text)
+	if err != nil {
+		return "", err
+	}
+	if wasRef {
+		return string(resolved), nil
 	}
 	return text, nil
 }
@@ -230,9 +240,12 @@ func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *
 
 // GetJobResults retrieves the complete pipeline results.
 // Redis key: {namespace}:job:{jobID}:results
+// If the stored value is an artifact reference (sha256:<hex>), the JSON is
+// resolved from the artifact store filesystem before unmarshaling. Otherwise
+// the raw value is unmarshaled unchanged (legacy payload compatibility).
 // Returns unmarshaled models.JobResults on success.
 // Returns error with "job results not found" message if key does not exist (redis.Nil).
-// Returns error if Redis operation or JSON unmarshaling fails.
+// Returns error if Redis operation, artifact resolution, or JSON unmarshaling fails.
 func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.JobResults, error) {
 	key := c.key("job", jobID, "results")
 	data, err := c.client.Get(ctx, key).Bytes()
@@ -241,6 +254,14 @@ func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.
 			return nil, fmt.Errorf("job results not found: %s", jobID)
 		}
 		return nil, fmt.Errorf("failed to get job results: %w", err)
+	}
+
+	resolved, wasRef, err := resolveArtifactBytes(ctx, string(data))
+	if err != nil {
+		return nil, err
+	}
+	if wasRef {
+		data = resolved
 	}
 
 	var results models.JobResults
@@ -271,9 +292,12 @@ func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embedd
 
 // GetJobEmbeddings retrieves chunk embedding vectors for a job.
 // Redis key: {namespace}:job:{jobID}:embeddings
+// If the stored value is an artifact reference (sha256:<hex>), the MessagePack
+// payload is resolved from the artifact store filesystem before unmarshaling.
+// Otherwise the raw value is unmarshaled unchanged (legacy payload compatibility).
 // Returns map[chunk_id][]float32 on success.
 // Returns error with "job embeddings not found" message if key does not exist (redis.Nil).
-// Returns error if Redis operation or MessagePack unmarshaling fails.
+// Returns error if Redis operation, artifact resolution, or MessagePack unmarshaling fails.
 func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) (map[string][]float32, error) {
 	key := c.key("job", jobID, "embeddings")
 	data, err := c.client.Get(ctx, key).Bytes()
@@ -283,6 +307,15 @@ func (c *RedisClient) GetJobEmbeddings(ctx context.Context, jobID string) (map[s
 		}
 		return nil, fmt.Errorf("failed to get job embeddings: %w", err)
 	}
+
+	resolved, wasRef, err := resolveArtifactBytes(ctx, string(data))
+	if err != nil {
+		return nil, err
+	}
+	if wasRef {
+		data = resolved
+	}
+
 	var embeddings map[string][]float32
 	if err := msgpack.Unmarshal(data, &embeddings); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embeddings: %w", err)

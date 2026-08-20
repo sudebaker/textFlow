@@ -554,6 +554,9 @@ class ExtractionWorker:
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.event_bus = EventBus(self.redis_client)
         self.temp_dir = tempfile.mkdtemp()
+        # Load the declarative DAG once at startup; routing per message reads
+        # this cached instance instead of re-parsing pipeline.json on every job.
+        self.pipeline = PipelineDefinition.load()
 
     def __del__(self):
         """Clean up temporary directory on worker deletion."""
@@ -1035,8 +1038,7 @@ class ExtractionWorker:
 
                 # Route to appropriate queues from the declarative PipelineDefinition
                 features = body.get("features") or []
-                pipeline = PipelineDefinition.load()
-                target_queues = pipeline.queues_for(
+                target_queues = self.pipeline.queues_for(
                     is_spreadsheet=is_spreadsheet, features=features
                 )
                 logger.info(

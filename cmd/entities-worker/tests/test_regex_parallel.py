@@ -158,3 +158,32 @@ def test_process_message_skips_regex_when_disabled():
     writes = {c[0][0]: c[0][1] for c in worker.redis_client.set.call_args_list}
     entities_raw = json.loads(writes["orchestrator:job:job-2:entities_raw"])
     assert entities_raw == []  # sin regex: solo GLiNER (mock devuelve [])
+
+
+def test_batch_metrics_registered():
+    """Throughput metrics (spec 33) are registered at module level."""
+    assert ew.batch_duration.collect()[0].name == "entities_worker_batch_duration_seconds"
+    assert ew.chunks_total.collect()[0].samples[0].name == "entities_worker_chunks_total"
+    assert ew.batch_duration._labelnames == ("batch_size",)
+    assert ew.chunks_total._labelnames == ("status",)
+
+
+def test_chunk_counter_increments_during_processing():
+    worker = _build_worker()
+    worker.redis_client.get.side_effect = lambda key: (
+        json.dumps("Juan trabaja en Madrid") if key.endswith(":text") else None
+    )
+    worker._extract_regex_entities = lambda text: []
+
+    before = ew.chunks_total.labels(status="success")._value.get()
+    worker.process_message(
+        {
+            "job_id": "job-m",
+            "chunks": [
+                {"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}
+            ],
+        }
+    )
+    after = ew.chunks_total.labels(status="success")._value.get()
+
+    assert after == before + 1

@@ -17,11 +17,13 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.insert(0, "/app")
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
-from pathlib import Path
+from prometheus_client import Counter, Histogram
 
 from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
@@ -56,6 +58,19 @@ def _resolve_device() -> str:
 
 ENTITIES_DEVICE = _resolve_device()
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
+
+# Throughput metrics (spec 33): batch duration histogram and per-chunk counter.
+# Kept at module level, alongside the existing BaseWorker job metrics.
+batch_duration = Histogram(
+    "entities_worker_batch_duration_seconds",
+    "Duration of one GLiNER batch",
+    ["batch_size"],
+)
+chunks_total = Counter(
+    "entities_worker_chunks_total",
+    "Chunks processed",
+    ["status"],
+)
 
 
 def extract_regex_parallel(
@@ -339,14 +354,19 @@ class EntitiesWorker(BaseWorker):
                         if score >= threshold_val:
                             g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
                             all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                    chunks_total.labels(status="success").inc()
                 except Exception as e:
                     self.logger.warning(f"Error extracting entities from large chunk {chunk_id}: {e}")
 
             for batch_start in range(0, len(batch_chunks), GLINER_BATCH_SIZE):
                 batch = batch_chunks[batch_start:batch_start + GLINER_BATCH_SIZE]
                 texts = [c[1] for c in batch]
+                batch_start_time = time.time()
                 try:
                     batch_predictions = self.model.predict_entities(texts, entity_types, threshold=0.1)
+                    batch_duration.labels(batch_size=len(batch)).observe(
+                        time.time() - batch_start_time
+                    )
                     for (chunk_id, chunk_text, chunk_offset), entities_items in zip(batch, batch_predictions):
                         if entities_items and isinstance(entities_items[0], list):
                             entities_items = entities_items[0]
@@ -357,6 +377,7 @@ class EntitiesWorker(BaseWorker):
                             if score >= threshold_val:
                                 g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
                                 all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                    chunks_total.labels(status="success").inc(len(batch))
                 except Exception as e:
                     self.logger.warning(f"Batch prediction failed: {e}")
                     for chunk_id, chunk_text, chunk_offset in batch:
@@ -371,6 +392,7 @@ class EntitiesWorker(BaseWorker):
                                 if score >= threshold_val:
                                     g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
                                     all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                            chunks_total.labels(status="success").inc()
                         except Exception as inner_e:
                             self.logger.warning(f"Error extracting entities from chunk {chunk_id}: {inner_e}")
             return all_entities

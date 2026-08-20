@@ -17,10 +17,13 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import json
+import time
 from typing import Dict, List, Any
 
 import msgpack
 import torch
+
+from prometheus_client import Counter, Histogram
 
 sys.path.insert(0, "/app")
 from pkg.worker_common.artifact_store import STORE, resolve_text
@@ -36,6 +39,19 @@ EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
 
 _device_env = os.getenv("EMBEDDINGS_DEVICE", "").strip()
 EMBEDDINGS_DEVICE = _device_env if _device_env else None
+
+# Throughput metrics (spec 33): batch duration histogram and per-chunk counter.
+# Kept at module level, alongside the existing BaseWorker job metrics.
+batch_duration = Histogram(
+    "embeddings_worker_batch_duration_seconds",
+    "Duration of one embedding batch",
+    ["batch_size"],
+)
+chunks_total = Counter(
+    "embeddings_worker_chunks_total",
+    "Chunks embedded",
+    ["status"],
+)
 
 
 def detect_gpu() -> bool:
@@ -120,13 +136,18 @@ class EmbeddingsWorker(BaseWorker):
             batch_texts = chunk_texts[batch_start:batch_end]
             batch_ids = chunk_ids[batch_start:batch_end]
 
+            batch_start_time = time.time()
             batch_embeddings = self.service.generate_embeddings(
                 batch_texts, batch_size=self.batch_size
+            )
+            batch_duration.labels(batch_size=len(batch_texts)).observe(
+                time.time() - batch_start_time
             )
 
             for chunk_id, embedding in zip(batch_ids, batch_embeddings):
                 if chunk_id:
                     embeddings_dict[chunk_id] = embedding
+                    chunks_total.labels(status="success").inc()
 
             processed = min(batch_end, total_chunks)
             self.logger.info(

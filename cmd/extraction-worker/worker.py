@@ -61,6 +61,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
+from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.rabbitmq_async import declare_queue_async
 
 logging.basicConfig(
@@ -970,7 +971,8 @@ class ExtractionWorker:
                     f"orchestrator:job:{job_id}:status", "status", "processing"
                 )
 
-                self.redis_client.set(f"orchestrator:job:{job_id}:text", text)
+                text_ref = STORE.put(text.encode("utf-8"))
+                self.redis_client.set(f"orchestrator:job:{job_id}:text", text_ref)
                 self.redis_client.set(f"orchestrator:job:{job_id}:chunks", json.dumps(chunks))
                 self.redis_client.set(
                     f"orchestrator:job:{job_id}:metadata:document",

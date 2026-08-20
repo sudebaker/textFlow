@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from typing import Dict, Optional
 
 sys.path.insert(0, "/app")
+from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
 
 logging.basicConfig(
@@ -61,7 +62,7 @@ class MetadataWorker(BaseWorker):
         logger.info(f"Processing metadata for job: {job_id}")
 
         text_key = f"orchestrator:job:{job_id}:text"
-        text_data = self.redis_client.get(text_key)
+        text_data = resolve_text(STORE, self.redis_client.get(text_key))
 
         if not text_data:
             raise ValueError(f"No text found in Redis for job: {job_id}")

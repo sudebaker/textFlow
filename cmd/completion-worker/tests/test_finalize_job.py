@@ -36,10 +36,12 @@ def _make_redis_pipeline(chunks, entities_raw, micro_inferences=None):
 
 
 def _make_worker():
-    with patch("redis.from_url"):
+    with patch("redis.from_url"), \
+         patch("pkg.worker_common.pubsub_base.Counter", return_value=MagicMock()), \
+         patch("pkg.worker_common.pubsub_base.Histogram", return_value=MagicMock()):
         w = CompletionWorker()
-        w.redis_client = MagicMock()
-        w.redis_raw = MagicMock()
+        w._redis_client = MagicMock()
+        w._redis_raw = MagicMock()
         return w
 
 
@@ -63,6 +65,35 @@ def test_embeddings_nested_inside_chunks():
     saved = _get_results(worker)
     assert "embeddings" not in saved, "Top-level 'embeddings' key must be removed"
     assert saved["chunks"][0]["embeddings"] == [0.1, 0.2, 0.3]
+
+
+def test_finalize_text_resolves_artifact_ref(monkeypatch, tmp_path):
+    """finalize_job() resolves a sha256 ref in :text via the artifact store."""
+    import completion_worker as cw
+    from pkg.worker_common.artifact_store import FSStore
+
+    store = FSStore(str(tmp_path))
+    ref = store.put("documento de prueba".encode("utf-8"))
+    monkeypatch.setattr(cw, "STORE", store)
+
+    worker = _make_worker()
+    chunks = [{"chunk_id": "chunk_000", "text": "hello"}]
+
+    pipe = MagicMock()
+    result = list(_make_redis_pipeline(chunks, []))
+    result[2] = ref  # replace raw text slot with an artifact ref
+    pipe.execute.return_value = tuple(result)
+    worker.redis_client.pipeline.return_value = pipe
+    worker.redis_raw.get.return_value = None
+    worker.redis_client.set = MagicMock()
+    worker.redis_client.hset = MagicMock()
+
+    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+         patch.object(worker.event_bus, "publish_job_completed"):
+        worker.finalize_job("job_abc")
+
+    saved = _get_results(worker)
+    assert saved["text"] == "documento de prueba"
 
 
 def test_entities_dict_with_ids():

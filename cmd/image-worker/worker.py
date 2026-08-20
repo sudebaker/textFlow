@@ -6,6 +6,7 @@ from typing import Dict, Any
 import aio_pika
 
 from pkg.image_client.client import MultimodalLLMClientPool
+from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.async_base import BaseAsyncWorker
 from pkg.worker_common.chunking import chunk_text
 from pkg.worker_common.security import validate_upload_path
@@ -51,10 +52,10 @@ class ImageWorker(BaseAsyncWorker):
 
             chunks = chunk_text(text)
 
-            self.redis_client.set(f"orchestrator:job:{job_id}:text", text)
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:chunks", json.dumps(chunks)
-            )
+            text_ref = STORE.put(text.encode("utf-8"))
+            self.redis_client.set(f"orchestrator:job:{job_id}:text", text_ref)
+            chunks_ref = STORE.put(json.dumps(chunks).encode("utf-8"))
+            self.redis_client.set(f"orchestrator:job:{job_id}:chunks", chunks_ref)
 
             image_metadata = {
                 "language": result.language,

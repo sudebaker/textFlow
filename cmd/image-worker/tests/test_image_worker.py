@@ -82,13 +82,17 @@ class TestProcessMessageSuccess:
             os.unlink(path)
 
     @pytest.mark.asyncio
-    async def test_stores_text_in_redis(self, mock_deps):
-        from image_worker import ImageWorker
+    async def test_stores_text_in_redis(self, mock_deps, monkeypatch, tmp_path):
+        import image_worker
+        from pkg.worker_common.artifact_store import FSStore
+
+        store = FSStore(str(tmp_path))
+        monkeypatch.setattr(image_worker, "STORE", store)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
         try:
-            w = ImageWorker()
+            w = image_worker.ImageWorker()
             w._channel = AsyncMock()
             mock_result = MagicMock()
             mock_result.extracted_text = "OCR text here"
@@ -96,8 +100,9 @@ class TestProcessMessageSuccess:
             mock_result.language = "es"
             with patch.object(w.llm_pool, "analyze", return_value=mock_result):
                 await w.process_message(_make_msg(path=path))
+            ref = store.put("OCR text here".encode("utf-8"))
             mock_deps["redis_client"].set.assert_any_call(
-                "orchestrator:job:j1:text", "OCR text here"
+                "orchestrator:job:j1:text", ref
             )
         finally:
             os.unlink(path)

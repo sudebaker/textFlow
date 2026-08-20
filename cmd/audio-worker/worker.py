@@ -7,6 +7,7 @@ import aio_pika
 
 from pkg.audio_client.client import WhisperClientPool
 from pkg.audio_client.exceptions import WhisperServiceError
+from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.async_base import BaseAsyncWorker
 from pkg.worker_common.security import validate_upload_path
 from segment_chunker import SegmentChunker
@@ -60,10 +61,10 @@ class AudioWorker(BaseAsyncWorker):
             text = result.text
             chunks = self.chunker.chunk(result)
 
-            self.redis_client.set(f"orchestrator:job:{job_id}:text", text)
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:chunks", json.dumps(chunks)
-            )
+            text_ref = STORE.put(text.encode("utf-8"))
+            self.redis_client.set(f"orchestrator:job:{job_id}:text", text_ref)
+            chunks_ref = STORE.put(json.dumps(chunks).encode("utf-8"))
+            self.redis_client.set(f"orchestrator:job:{job_id}:chunks", chunks_ref)
 
             audio_metadata = {
                 "language": result.language,

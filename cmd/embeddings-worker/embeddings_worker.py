@@ -23,6 +23,7 @@ import msgpack
 import torch
 
 sys.path.insert(0, "/app")
+from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 from app.services.embeddings import EmbeddingService
@@ -92,7 +93,9 @@ class EmbeddingsWorker(BaseWorker):
         )
 
         if not chunks:
-            chunks_json = self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+            chunks_json = resolve_text(
+                STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+            )
             if chunks_json:
                 chunks = json.loads(chunks_json)
             else:

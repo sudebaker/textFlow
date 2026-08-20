@@ -8,15 +8,6 @@ from completion_worker import CompletionWorker
 from pkg.worker_common.entity_utils import deduplicate_entities
 
 
-def _get_results(worker):
-    """Extract the results JSON from the redis_client.set call with ':results' key."""
-    results_call = next(
-        c for c in worker.redis_client.set.call_args_list
-        if c[0][0].endswith(":results")
-    )
-    return json.loads(results_call[0][1])
-
-
 def _make_redis_pipeline(chunks, entities_raw, micro_inferences=None):
     """Build the tuple returned by pipe.execute() in finalize_job()."""
     meta = {"created_at": str(int(time.time()))}
@@ -58,11 +49,12 @@ def test_embeddings_nested_inside_chunks():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
          patch.object(worker.event_bus, "publish_job_completed"):
         worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
 
-    saved = _get_results(worker)
     assert "embeddings" not in saved, "Top-level 'embeddings' key must be removed"
     assert saved["chunks"][0]["embeddings"] == [0.1, 0.2, 0.3]
 
@@ -88,11 +80,12 @@ def test_finalize_text_resolves_artifact_ref(monkeypatch, tmp_path):
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
          patch.object(worker.event_bus, "publish_job_completed"):
         worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
 
-    saved = _get_results(worker)
     assert saved["text"] == "documento de prueba"
 
 
@@ -112,11 +105,12 @@ def test_entities_dict_with_ids():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
          patch.object(worker.event_bus, "publish_job_completed"):
         worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
 
-    saved = _get_results(worker)
     assert isinstance(saved["entities"], dict), "entities must be a dict"
     assert "abc000000001" in saved["entities"]
     assert saved["entities"]["abc000000001"]["confidence"] == 0.9  # highest wins
@@ -140,11 +134,12 @@ def test_inferences_nested_in_chunks():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
          patch.object(worker.event_bus, "publish_job_completed"):
         worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
 
-    saved = _get_results(worker)
     assert "micro_inferences" not in saved, "Top-level micro_inferences must be removed"
     chunk = saved["chunks"][0]
     assert chunk["inferences"][0]["text"] == "fact one"
@@ -166,11 +161,12 @@ def test_entity_ids_in_chunks():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
          patch.object(worker.event_bus, "publish_job_completed"):
         worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
 
-    saved = _get_results(worker)
     chunk = saved["chunks"][0]
     assert "entity_ids" in chunk
     assert "abc000000001" in chunk["entity_ids"]
@@ -187,11 +183,12 @@ def test_no_top_level_embeddings_or_micro_inferences():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file"), patch.object(worker, "send_webhook"), \
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
          patch.object(worker.event_bus, "publish_job_completed"):
         worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
 
-    saved = _get_results(worker)
     assert "micro_inferences" not in saved
     assert "embeddings" not in saved
 

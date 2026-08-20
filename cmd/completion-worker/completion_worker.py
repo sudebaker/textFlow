@@ -536,7 +536,6 @@ class CompletionWorker(BasePubSubWorker):
             - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)
 
         Redis keys written:
-            - orchestrator:job:{job_id}:results (final aggregated results)
             - orchestrator:job:{job_id}:meta (add completed_at timestamp)
             - orchestrator:job:{job_id}:status (mark status="completed")
             - orchestrator:job:{job_id}:error (on failure only)
@@ -608,6 +607,7 @@ class CompletionWorker(BasePubSubWorker):
 
             text_metadata = json.loads(text_metadata_json) if text_metadata_json else {}
 
+            chunks_json = resolve_text(STORE, chunks_json)
             chunks = json.loads(chunks_json) if chunks_json else []
 
             # --- Embeddings: {chunk_id: [float]} ---
@@ -753,11 +753,6 @@ class CompletionWorker(BasePubSubWorker):
             if source_classification:
                 log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
             self.logger.info(log_message)
-
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:results",
-                json.dumps(results, ensure_ascii=False),
-            )
 
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:meta", "completed_at", str(int(time.time()))

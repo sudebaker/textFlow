@@ -197,3 +197,33 @@ class TestProcessMessageInferenceEmbeddings:
             for c in redis.set.call_args_list
         )
         worker_env["event_bus"].publish_job_progress.assert_called_with("j1", 33, "embedding")
+
+
+class TestBatchMetrics:
+    """Throughput metrics (spec 33): batch duration histogram + chunk counter."""
+
+    def test_metrics_registered(self, worker_env):
+        import embeddings_worker as worker
+
+        assert worker.batch_duration.collect()[0].name == "embeddings_worker_batch_duration_seconds"
+        assert worker.chunks_total.collect()[0].samples[0].name == "embeddings_worker_chunks_total"
+        assert worker.batch_duration._labelnames == ("batch_size",)
+        assert worker.chunks_total._labelnames == ("status",)
+
+    def test_chunk_counter_increments_during_processing(self, worker_env):
+        import embeddings_worker as worker
+
+        w = worker_env["worker"]
+        service = worker_env["service"]
+        service.generate_embeddings.return_value = [[0.1, 0.2]]
+        w.service = service
+        worker_env["redis_client"].exists.return_value = 0
+
+        before = worker.chunks_total.labels(status="success")._value.get()
+        result = w.process_message(
+            {"job_id": "j-m", "chunks": [{"chunk_id": "c0", "text": "hello world"}]}
+        )
+        after = worker.chunks_total.labels(status="success")._value.get()
+
+        assert result["status"] == "success"
+        assert after == before + 1

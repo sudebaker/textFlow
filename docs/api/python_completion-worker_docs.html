@@ -357,17 +357,16 @@ Error handling:
 Redis keys read:
     - orchestrator:job:{job_id}:meta (job metadata)
     - orchestrator:job:{job_id}:status (current status)
-    - orchestrator:job:{job_id}:text (raw text)
+    - orchestrator:job:{job_id}:text (artifact store ref sha256:&lt;hex&gt;, resolved via resolve_text)
     - orchestrator:job:{job_id}:metadata:document (MIME type, etc.)
     - orchestrator:job:{job_id}:metadata:text (text metadata)
-    - orchestrator:job:{job_id}:chunks (extracted chunks)
-    - orchestrator:job:{job_id}:embeddings (vector embeddings)
+    - orchestrator:job:{job_id}:chunks (artifact store ref sha256:&lt;hex&gt;, resolved via resolve)
+    - orchestrator:job:{job_id}:embeddings (artifact store ref sha256:&lt;hex&gt;, resolved via resolve)
     - orchestrator:job:{job_id}:entities_raw (raw entities before dedup)
     - orchestrator:job:{job_id}:source_classification (document classification)
     - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)
 
 Redis keys written:
-    - orchestrator:job:{job_id}:results (final aggregated results)
     - orchestrator:job:{job_id}:meta (add completed_at timestamp)
     - orchestrator:job:{job_id}:status (mark status="completed")
     - orchestrator:job:{job_id}:error (on failure only)

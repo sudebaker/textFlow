@@ -1,4 +1,4 @@
-package middleware // import "ia-text-orchestrator/internal/middleware"
+package middleware // import "textflow/internal/middleware"
 
 Package middleware provides HTTP middleware components for the orchestrator.
 
@@ -63,6 +63,7 @@ var (
 
 FUNCTIONS
 
+func APIKeyAuth(expectedKey string) gin.HandlerFunc
 func IsRetryableError(err error) bool
     IsRetryableError reports whether err is a RetryableError, at any depth in
     the error chain. It uses errors.As() to find wrapped instances.

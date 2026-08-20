@@ -1,22 +1,93 @@
-package broker // import "ia-text-orchestrator/internal/broker"
+package broker // import "textflow/internal/broker"
 
 
 CONSTANTS
 
 const (
+	ConfirmTimeout  = 5 * time.Second
+	DefaultPoolSize = 5
+	CheckoutTimeout = 10 * time.Second
+)
+const (
 	MaxReconnectAttempts   = 10
 	InitialBackoff         = 2 * time.Second
 	MaxBackoff             = 60 * time.Second
 	ChannelMonitorInterval = 5 * time.Second
+
+	DelayedExchangeName = "document_processor_delayed"
 )
 
+FUNCTIONS
+
+func IsQueueOverflowError(err error) bool
+    IsQueueOverflowError checks if an error is due to queue overflow
+    (x-max-length with reject-publish). When a queue has x-max-length
+    with overflow: reject-publish, RabbitMQ closes the channel with a
+    PRECONDITION_FAILED error. The amqp091-go library returns this as a
+    *amqp.Error.
+
+
 TYPES
+
+type ChannelPool struct {
+	// Has unexported fields.
+}
+    ChannelPool is a pool of AMQP channels with publisher confirms enabled.
+    It uses explicit checkout/return semantics: a caller obtains a channel
+    with Checkout(), uses it for one publish, then returns it with Return().
+    This prevents concurrent use of the same channel by multiple goroutines.
+
+    Channels are recreated lazily when they are detected as closed during
+    checkout.
+
+func NewChannelPool(conn *amqp.Connection, size int, logger zerolog.Logger) (*ChannelPool, error)
+
+func (p *ChannelPool) Available() int
+    Available returns the number of channels available for checkout.
+
+func (p *ChannelPool) CheckedOut() int64
+    CheckedOut returns the number of channels currently checked out.
+
+func (p *ChannelPool) Checkout(timeout time.Duration) (*poolChannel, error)
+    Checkout obtains a channel from the pool. The caller must call Return(p)
+    when done. Timeout prevents indefinite blocking when all channels are
+    checked out.
+
+func (p *ChannelPool) Close() error
+    Close closes all channels in the pool and marks it as closed.
+
+func (p *ChannelPool) NumGoroutine() int
+    NumGoroutine returns the approximate number of goroutines currently running
+    in the pool's listen goroutines. Used for leak detection in tests.
+
+func (p *ChannelPool) Recreate(index int, logger zerolog.Logger) error
+    Recreate replaces the channel at the given index. The channel must not be
+    checked out.
+
+func (p *ChannelPool) Return(pc *poolChannel)
+    Return gives a channel back to the pool. Panics if the channel was not
+    obtained via Checkout().
+
+func (p *ChannelPool) Size() int
+    Size returns the total number of channels in the pool.
 
 type QueueInfo struct {
 	Name      string `json:"name"`
 	Messages  int    `json:"messages"`
 	Consumers int    `json:"consumers"`
 }
+
+type QueueOverflowError struct {
+	Queue string
+	Err   error
+}
+    QueueOverflowError is returned when a publish is rejected because the
+    queue is full. This happens when x-max-length is set with overflow:
+    reject-publish.
+
+func (e *QueueOverflowError) Error() string
+
+func (e *QueueOverflowError) Unwrap() error
 
 type RabbitMQBroker struct {
 	// Has unexported fields.
@@ -27,12 +98,8 @@ func New(cfg *config.Config) (*RabbitMQBroker, error)
 func (b *RabbitMQBroker) Close() error
 
 func (b *RabbitMQBroker) Consume(queue string, handler func([]byte) error) error
-    Consume is deprecated, use ConsumeWithContext instead Maintained for
-    backwards compatibility
 
 func (b *RabbitMQBroker) ConsumeWithContext(ctx context.Context, queue string, handler func([]byte) error) error
-    ConsumeWithContext starts consuming messages with context cancelation
-    support
 
 func (b *RabbitMQBroker) GetQueueInfo(queue string) (*QueueInfo, error)
 
@@ -43,5 +110,4 @@ func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message inte
 func (b *RabbitMQBroker) PublishJobMessage(ctx context.Context, jobMsg *models.JobMessage) error
 
 func (b *RabbitMQBroker) UpdateQueueMetrics() error
-    UpdateQueueMetrics updates Prometheus metrics for all queues
 

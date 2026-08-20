@@ -135,12 +135,17 @@ The worker is designed for air-gapped deployments with offline models and no
 internet access at runtime. It uses RabbitMQ for async job processing with
 automatic retries and graceful error handling.
 
+This worker uses asyncio + aio_pika + aiohttp to enable concurrent processing
+of multiple Docling jobs simultaneously (up to EXTRACTION_CONCURRENCY at once),
+eliminating the serial bottleneck of blocking I/O.
+
 Environment variables:
     REDIS_URL: Redis connection URL (default: redis://localhost:6379)
     RABBITMQ_URL: RabbitMQ connection URL (default: amqp://localhost:5672/)
     DOCLING_URL: Docling API endpoint (default: http://docling:5001)
     QUEUE_NAME: Input queue for extraction jobs (default: extract_text)
-    PREFETCH_COUNT: Max jobs to prefetch from queue (default: 3)
+    EXTRACTION_CONCURRENCY: Max concurrent Docling jobs (default: 5)
+    PREFETCH_COUNT: Backwards-compat alias for EXTRACTION_CONCURRENCY (default: 5)
     METRICS_PORT: Prometheus metrics port (default: 8004)
     CHUNK_SIZE_TOKENS: Tokens per chunk (default: 512)
     CHUNK_OVERLAP_TOKENS: Overlap between chunks (default: 50)
@@ -206,7 +211,7 @@ Note:
         
         <div class="class-section">
             <h3 class="class-name">ExtractionWorker</h3>
-            <p class="docstring">RabbitMQ consumer for document extraction and metadata pipeline.
+            <p class="docstring">Async RabbitMQ consumer for document extraction and metadata pipeline.
 
 Processes documents from the extraction queue by:
 1. Downloading documents (file path, base64, or URL)
@@ -220,18 +225,22 @@ Processes documents from the extraction queue by:
 
 This is the first step in the document processing pipeline. Results are stored
 in Redis under keys like orchestrator:job:{job_id}:{text,chunks,metadata:document}.
-The :text and :chunks keys hold artifact store refs (sha256:&lt;hex&gt;) whose payloads
+The :text and :chunks keys hold artifact store refs (sha256:<hex>) whose payloads
 live on the FS artifact store and are resolved by downstream readers; the
 :metadata:document key stays a raw JSON value.
 
+Concurrent processing is enabled via asyncio.create_task(): up to PREFETCH_COUNT
+Docling jobs can run simultaneously, with each independently polling Docling
+using non-blocking aiohttp calls.
+
 Attributes:
-    redis_client: Redis connection for result storage.
+    redis_client: Sync Redis connection (fast I/O, no need for async).
     event_bus: EventBus instance for job progress updates.
     temp_dir: Temporary directory for storing intermediate files.</p>
             <div class="methods">
                 <div class="method">
                     <h4>__init__</h4>
-                    <p>Initialize extraction worker with Redis and RabbitMQ clients.
+                    <p>Initialize extraction worker with Redis client.
 
 Sets up Redis connection for result storage, initializes event bus for
 job progress updates, and creates temporary directory for intermediate
@@ -244,177 +253,6 @@ Raises:
                 <div class="method">
                     <h4>__del__</h4>
                     <p>Clean up temporary directory on worker deletion.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>_docling_convert</h4>
-                    <p>Submit document to Docling async endpoint and poll until completion.
-
-Implements async conversion with long-polling to avoid uvicorn's per-request
-timeout (~120s), which is insufficient for large PDFs on CPU. Uses exponential
-backoff (5-30s) between polls.
-
-Args:
-    document_bytes: Raw binary content of document.
-    filename: Filename for Docling processing (determines file type).
-
-Returns:
-    Dictionary with Docling result:
-        document (dict): Extracted document with md_content/text_content.
-        pages (list): List of extracted pages (if applicable).
-        (other fields): Task metadata.
-
-Raises:
-    TimeoutError: If conversion exceeds DOCLING_CONVERSION_TIMEOUT (1800s default).
-    RuntimeError: If Docling returns failure/error status.
-    requests.RequestException: On HTTP errors or connection failures.
-
-Note:
-    Uses Docling's ?wait= parameter for server-side long-polling to reduce
-    API call frequency. Minimum 5s sleep between polls to prevent busy-waiting.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>extract_text_from_base64</h4>
-                    <p>Extract text from base64-encoded document.
-
-Decodes base64 content and passes to Docling. Auto-detects PDF format
-from magic bytes if filename doesn't have .pdf extension.
-
-Args:
-    document_base64: Base64-encoded document bytes.
-    filename: Original filename (used for type detection).
-
-Returns:
-    Dictionary with:
-        text (str): Extracted text (markdown or plain).
-        metadata (dict): Extraction metadata (pages, method="base64").
-
-Raises:
-    ValueError: If base64 decoding fails.
-    TimeoutError: If Docling conversion times out.
-    RuntimeError: If Docling fails.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>extract_text_from_file</h4>
-                    <p>Extract text from document file on disk.
-
-Reads file from disk and passes to Docling for text extraction.
-
-Args:
-    file_path: Absolute path to document file.
-    filename: Filename for Docling (may differ from path basename).
-
-Returns:
-    Dictionary with:
-        text (str): Extracted text (markdown or plain).
-        metadata (dict): Extraction metadata (pages, method="file").
-
-Raises:
-    FileNotFoundError: If file_path doesn't exist.
-    TimeoutError: If Docling conversion times out.
-    RuntimeError: If Docling fails.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>extract_text_from_url</h4>
-                    <p>Extract text from document at URL.
-
-Handles internal docling: URLs with path traversal protection, and
-remote HTTP(S) URLs. Internal URLs are resolved to local paths and
-read from disk; external URLs are fetched via HTTP.
-
-Args:
-    document_url: URL to document (docling:// or http(s)://).
-
-Returns:
-    Dictionary with:
-        text (str): Extracted text (markdown or plain).
-        metadata (dict): Extraction metadata (pages, method="url").
-
-Raises:
-    ValueError: If path traversal attempted or URL is invalid.
-    requests.RequestException: If HTTP fetch fails.
-    TimeoutError: If Docling conversion times out.
-    RuntimeError: If Docling fails.
-
-Note:
-    Path traversal is validated by ensuring resolved path stays within
-    /app directory tree. Prevents accessing files outside container.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>process_message</h4>
-                    <p>Process a single extraction job from RabbitMQ queue.
-
-Main message handler that orchestrates the full extraction pipeline:
-1. Parse job message (JSON with document_path, document_base64, or document_url)
-2. Extract text via Docling (async polling)
-3. Extract document metadata (author, creation date, page count, etc.)
-4. Analyze text (language, readability, patterns)
-5. Chunk text into overlapping token-based segments
-6. Classify document source type
-7. Store all results to Redis (text/chunks as artifact refs; sync — fast I/O)
-8. Route to downstream queues (embeddings, entities, metadata)
-9. Publish job progress update
-
-Input message format (JSON):
-    {
-        "job_id": str,              # Unique job identifier
-        "document_path": str,       # Optional: absolute file path
-        "document_base64": str,     # Optional: base64-encoded content
-        "document_url": str,        # Optional: URL to document
-        "filename": str,            # Optional: original filename
-        "mime_type": str,           # Optional: declared MIME type
-        "entity_types": [str],      # Optional: entity types to extract
-    }
-
-Either document_path, document_base64, or document_url must be present.
-
-Redis storage (keys created):
-    orchestrator:job:{job_id}:status -> hash with status field
-    orchestrator:job:{job_id}:text -> artifact store ref (sha256:&lt;hex&gt;), payload on FS
-    orchestrator:job:{job_id}:chunks -> artifact store ref (sha256:&lt;hex&gt;), payload on FS
-    orchestrator:job:{job_id}:metadata:document -> document metadata JSON
-    orchestrator:job:{job_id}:metadata:text -> text analytics JSON
-    orchestrator:job:{job_id}:source_classification -> classification result
-    orchestrator:job:{job_id}:steps -> hash with extraction="completed"
-
-Queue publishing:
-    - Publishes to "embeddings" queue (all non-spreadsheet documents)
-    - Publishes to "entities" queue (all documents)
-    - Publishes to "metadata" queue (non-spreadsheet documents)
-    - Spreadsheets (csv, xls, xlsx) route to "entities" only
-
-Message published to queues contains:
-    {
-        "job_id": str,
-        "chunks": [chunk dicts],
-        "document_metadata": metadata dict,
-        "entity_types": [str],          # Optional, if provided
-    }
-
-Error handling:
-    - Docling timeouts: Raises TimeoutError, job marked as failed
-    - Empty text: Raises ValueError, includes MIME type mismatch details
-    - Source classification: Logged as warning, doesn't fail job
-    - exiftool missing: Gracefully degraded, metadata partially filled
-    - Any exception: Job status set to "failed", error stored to Redis,
-      published to failed queue, message nacked (not requeued)
-
-Metrics recorded:
-    - extraction_worker_jobs_total (counter): success/error labels
-    - extraction_worker_job_duration_seconds (histogram): job duration
-
-Temporary files:
-    - Base64 documents: Created in temp directory, cleaned up in finally
-    - File paths: Used directly, not copied
-
-Raises:
-    Never raises exceptions. All errors are caught, logged, and converted
-    to failed job status in Redis. This allows RabbitMQ to move on to
-    next job without requeuing.</p>
                 </div>
             </div>
         </div>
@@ -565,39 +403,10 @@ Example:
         </div>
         
         <div class="function">
-            <h3>signal_handler</h3>
-            <p>Handle termination signals (SIGTERM, SIGINT) gracefully.
-
-Logs shutdown notice and exits cleanly, allowing RabbitMQ connection to close
-and temporary files to be cleaned up by ExtractionWorker.__del__.
-
-Args:
-    signum: Signal number (SIGINT=2, SIGTERM=15).
-    frame: Current stack frame.</p>
-        </div>
-        
-        <div class="function">
             <h3>main</h3>
             <p>Main entry point for extraction worker.
 
-Initializes infrastructure and starts consuming from RabbitMQ extraction queue.
-Sets up signal handlers for graceful shutdown (SIGINT/SIGTERM) and Prometheus
-metrics endpoint. Implements auto-reconnect with 5-second backoff on connection
-failures.
-
-Metrics endpoint:
-    Prometheus metrics available at http://localhost:METRICS_PORT/metrics
-    Tracks:
-        - extraction_worker_jobs_total (counter): Jobs by status (success/error)
-        - extraction_worker_job_duration_seconds (histogram): Job duration
-
-Queue configuration:
-    Input queue: QUEUE_NAME (extract_text by default)
-    Prefetch count: PREFETCH_COUNT (3 by default) - max jobs to prefetch from queue
-
-Error recovery:
-    If RabbitMQ connection fails, waits 5 seconds and retries. Continues
-    indefinitely until signal received.</p>
+Initialises the async event loop and runs _run() until termination signal.</p>
         </div>
         
         

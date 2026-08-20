@@ -1,0 +1,24 @@
+{
+  "version": "v1",
+  "default_pipeline": {
+    "name": "full",
+    "steps": ["extraction", "embeddings", "entities", "metadata"],
+    "publish_queues": ["embeddings", "entities", "metadata"]
+  },
+  "pipelines": {
+    "spreadsheet": {
+      "name": "spreadsheet",
+      "steps": ["extraction", "entities"],
+      "publish_queues": ["entities"]
+    }
+  },
+  "feature_extras": {
+    "inferences": {
+      "step": "inferences",
+      "queue": "inferences"
+    }
+  },
+  "rules": {
+    "audio_replaces_extraction": true
+  }
+}

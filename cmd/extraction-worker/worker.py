@@ -62,6 +62,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
 from pkg.worker_common.artifact_store import STORE
+from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.rabbitmq_async import declare_queue_async
 
 logging.basicConfig(
@@ -1029,16 +1030,16 @@ class ExtractionWorker:
                     if path_lower.endswith((".csv", ".xls", ".xlsx")):
                         is_spreadsheet = True
 
-                # Route to appropriate queues
+                # Route to appropriate queues from the declarative PipelineDefinition
                 features = body.get("features") or []
-                if is_spreadsheet:
-                    target_queues = ["entities"]
-                    logger.info(f"Detected spreadsheet, routing to entities-only pipeline")
-                else:
-                    target_queues = ["embeddings", "entities", "metadata"]
-
-                if "inferences" in features:
-                    target_queues.append("inferences")
+                pipeline = PipelineDefinition.load()
+                target_queues = pipeline.queues_for(
+                    is_spreadsheet=is_spreadsheet, features=features
+                )
+                logger.info(
+                    f"Detected {'spreadsheet' if is_spreadsheet else 'full'} pipeline, "
+                    f"routing to queues: {target_queues}"
+                )
 
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in target_queues:

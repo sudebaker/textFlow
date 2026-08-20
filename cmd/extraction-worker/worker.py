@@ -905,10 +905,12 @@ class ExtractionWorker:
         Message published to queues contains:
             {
                 "job_id": str,
-                "chunks": [chunk dicts],
                 "document_metadata": metadata dict,
                 "entity_types": [str],          # Optional, if provided
             }
+        Chunks are NOT inlined in the message (spec 26): downstream workers
+        resolve them from Redis via the :chunks key (artifact store ref), which
+        is always written before publishing.
 
         Error handling:
             - Docling timeouts: TimeoutError, job marked as failed, message nacked
@@ -1032,7 +1034,6 @@ class ExtractionWorker:
 
                 job_message = {
                     "job_id": job_id,
-                    "chunks": chunks,
                     "document_metadata": document_metadata,
                     "pipeline_version": body.get("pipeline_version", "v1"),
                 }

@@ -89,7 +89,6 @@ class AudioWorker(BaseAsyncWorker):
 
             job_message = {
                 "job_id": job_id,
-                "chunks": chunks,
                 "document_metadata": audio_metadata,
             }
             if message.get("entity_types"):

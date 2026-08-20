@@ -157,6 +157,17 @@ Degrade silencioso: si el servicio regex falla, se retorna solo GLiNER. Control:
 `REGEX_ENABLED` (default true), `REGEX_SERVICE_URL`, `REGEX_TIMEOUT` (vía
 `app/config/settings.py`).
 
+### Artifact store FS (D3)
+
+Blobs grandes salen de Redis (`maxmemory 1gb + noeviction`) hacia FS local con
+hash sharding en `pkg/worker_common/artifact_store.py` (`FSStore`, path
+`data/{ab}/{cd}/{sha256}.bin`, 65k buckets, escritura atómica). Keys migradas:
+`:text`, `:chunks`, `:embeddings`, `:inference_embeddings`, `:results`. En Redis
+quedan solo refs `sha256:<hex>` + control/locks + `:micro_inferences_raw`.
+Compat: un valor que NO empieza con `sha256:` se interpreta como payload legacy
+(raw) — lectores usan `resolve()`/`resolve_text()`. Sin TTL en FS (limpieza GC
+fuera de alcance). Volumen `artifacts-data` montado en `/app/data/artifacts`.
+
 ---
 
 ## Air-Gapped Deployment (CRITICAL)

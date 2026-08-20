@@ -7,11 +7,13 @@ ArtifactStore interface allows a future S3Store without changing callers.
 
 import hashlib
 import os
+import re
 import tempfile
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 
 ARTIFACT_REF_PREFIX = "sha256:"
+_ARTIFACT_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 DEFAULT_ARTIFACT_PATH = "/app/data/artifacts"
 
 
@@ -73,8 +75,10 @@ STORE = get_store()
 def is_artifact_ref(value: Union[str, bytes, None]) -> bool:
     """Return True if value is an artifact reference (sha256:<hex>)."""
     if isinstance(value, bytes):
-        return value.startswith(ARTIFACT_REF_PREFIX.encode())
-    return isinstance(value, str) and value.startswith(ARTIFACT_REF_PREFIX)
+        return bool(_ARTIFACT_REF_RE.match(value.decode("ascii", errors="ignore")))
+    if isinstance(value, str):
+        return bool(_ARTIFACT_REF_RE.match(value))
+    return False
 
 
 def resolve(store: ArtifactStore, value: Union[str, bytes, None]) -> Optional[bytes]:

@@ -68,6 +68,9 @@ def test_is_artifact_ref():
     assert is_artifact_ref("plain text") is False
     assert is_artifact_ref(None) is False
     assert is_artifact_ref(b"sha256:" + b"0" * 64) is True
+    assert is_artifact_ref("sha256:short") is False
+    assert is_artifact_ref("sha256:" + "z" * 64) is False
+    assert is_artifact_ref("sha256:" + "A" * 64) is False
 
 
 def test_resolve_ref_and_legacy(tmp_path):

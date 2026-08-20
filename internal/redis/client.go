@@ -571,6 +571,7 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 		c.key("job", jobID, "text"),
 		c.key("job", jobID, "results"),
 		c.key("job", jobID, "embeddings"),
+		c.key("job", jobID, "inference_embeddings"),
 		c.key("job", jobID, "entities"),
 		c.key("job", jobID, "entities_raw"),
 		c.key("job", jobID, "metadata"),

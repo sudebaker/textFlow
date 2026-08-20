@@ -1,4 +1,4 @@
-package logging // import "ia-text-orchestrator/pkg/logging"
+package logging // import "textflow/pkg/logging"
 
 
 FUNCTIONS

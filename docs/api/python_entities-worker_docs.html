@@ -120,7 +120,7 @@
         <h1>🐍 Entities Worker</h1>
         
         <h2>Module Documentation</h2>
-        <p class="docstring">Entities Worker for IA Text Orchestrator
+        <p class="docstring">Entities Worker for textFlow
 Consumes messages from RabbitMQ and extracts entities using GLiNER</p>
         
         <h2>Classes</h2>
@@ -135,14 +135,7 @@ Consumes messages from RabbitMQ and extracts entities using GLiNER</p>
             
                 <div class="method">
                     <h4>_normalize_entity_types</h4>
-                    <p>Normalize entity_types from various formats to a clean list.
-
-Handles:
-- List: ["PER", "ORG"] -> ["PER", "ORG"]
-- JSON string: '["PER", "ORG"]' -> ["PER", "ORG"]
-- Comma-separated: "PER,ORG" -> ["PER", "ORG"]
-
-Returns a clean list without brackets or quotes.</p>
+                    <p>No documentation</p>
                 </div>
             
                 <div class="method">
@@ -177,56 +170,26 @@ Returns a clean list without brackets or quotes.</p>
             
                 <div class="method">
                     <h4>predict_entities</h4>
-                    <p>Predict entities using rule-based patterns and heuristics.
-
-Args:
-    text: Input text to extract entities from
-    entity_types: List of entity types to extract
-    threshold: Minimum confidence score
-
-Returns:
-    List of entity predictions with text, label, score, start, end</p>
-                </div>
-            
-                <div class="method">
-                    <h4>normalize_entity_text</h4>
-                    <p>Normalize entity text for deduplication.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>deduplicate_entities</h4>
-                    <p>Deduplicate entities using fuzzy matching and normalization.
-
-Args:
-    entities: List of extracted entities with positions
-
-Returns:
-    List of deduplicated entities</p>
+                    <p>No documentation</p>
                 </div>
             
                 <div class="method">
                     <h4>_extract_regex_entities</h4>
-                    <p>Call the regex entity extractor service to extract structured entities.
-
-Returns a list of entities from regex patterns (EMAIL, PHONE, IBAN, DNI, NIF, etc.)
-on error, returns empty list (graceful degradation).</p>
+                    <p>No documentation</p>
                 </div>
             
                 <div class="method">
                     <h4>calculate_global_position</h4>
-                    <p>Calculate global position in document from chunk offset and local positions.
-
-Args:
-    chunk_offset: Start position of chunk in document
-    local_start: Start position within chunk
-    local_end: End position within chunk
-
-Returns:
-    Tuple of (global_start, global_end)</p>
+                    <p>No documentation</p>
                 </div>
             
                 <div class="method">
-                    <h4>process</h4>
+                    <h4>process_message</h4>
+                    <p>No documentation</p>
+                </div>
+            
+                <div class="method">
+                    <h4>cleanup</h4>
                     <p>No documentation</p>
                 </div>
             </div>
@@ -234,8 +197,25 @@ Returns:
         
         <h2>Functions</h2>
         <div class="function">
-            <h3>signal_handler</h3>
+            <h3>_resolve_device</h3>
             <p>No documentation</p>
+        </div>
+        
+        <div class="function">
+            <h3>extract_regex_parallel</h3>
+            <p>Run regex extraction in a background thread concurrent with gliner_fn.
+
+Returns gliner_fn() results merged with regex results. Degrades silently:
+if regex_fn is None, text is empty, or regex_fn raises, only gliner_fn()
+results are returned.
+
+Args:
+    text: Full document text (regex input). Fetched before dispatch.
+    regex_fn: Callable taking text and returning a list of entities.
+    gliner_fn: Callable taking no args; runs in the caller thread (GLiNER).
+
+Returns:
+    Merged entity list (gliner results first, then regex results).</p>
         </div>
         
         <div class="function">

@@ -1,4 +1,4 @@
-package cache // import "ia-text-orchestrator/internal/cache"
+package cache // import "textflow/internal/cache"
 
 
 TYPES
@@ -44,16 +44,17 @@ func (c *ContentCache) Get(ctx context.Context, key string) (interface{}, error)
         fails
 
 func (c *ContentCache) GetOrCompute(ctx context.Context, key string, compute func() (interface{}, error)) (interface{}, error)
-    GetOrCompute implements a cache-aside (lazy-loading) pattern: retrieves a
-    cached value if available, otherwise computes it by invoking the provided
-    function and stores the result for future use.
+    GetOrCompute implements a cache-aside (lazy-loading) pattern with
+    singleflight protection: retrieves a cached value if available, otherwise
+    computes it by invoking the provided function and stores the result for
+    future use.
 
     The cache key is derived from the input key using SHA-256 hashing.
     If a cached value exists and is successfully unmarshaled, it is returned
-    immediately without invoking compute(). If no cached value exists or
-    unmarshaling fails, the compute function is called synchronously without
-    holding any lock (not a critical section). The computed result is then
-    JSON-marshaled and stored in Redis with the default TTL.
+    immediately without invoking compute(). If no cached value exists,
+    singleflight ensures that only ONE computation runs even if multiple
+    goroutines request the same key concurrently, preventing the "thundering
+    herd" problem where 100 requests could trigger 100 expensive computations.
 
     Parameters:
       - ctx: Context for Redis operations
@@ -65,8 +66,8 @@ func (c *ContentCache) GetOrCompute(ctx context.Context, key string, compute fun
       - An error if the compute function fails, JSON marshaling fails, or Redis
         operations fail
 
-    Note: The compute function is called without synchronization, so the cache
-    is suitable for idempotent operations only.
+    Note: Singleflight deduplication applies only while compute() is running.
+    Once the result is cached, subsequent calls retrieve it directly from Redis.
 
 func (c *ContentCache) Invalidate(ctx context.Context, key string) error
     Invalidate removes a cached entry by key, immediately expiring it.

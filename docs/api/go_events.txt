@@ -1,4 +1,4 @@
-package events // import "ia-text-orchestrator/internal/events"
+package events // import "textflow/internal/events"
 
 
 TYPES
@@ -36,10 +36,10 @@ func (eb *EventBus) Publish(ctx context.Context, channel string, event *JobEvent
     semantics).
 
 func (eb *EventBus) PublishJobCompleted(ctx context.Context, jobID string, metadata map[string]interface{}) error
-    PublishJobCompleted broadcasts a job completion event to the "job:events"
-    channel. Called by the orchestrator when all processing is finished and
-    results are stored. Signals to subscribers that the job has finished
-    successfully.
+    PublishJobCompleted broadcasts a job completion event to both the broadcast
+    "job:events" channel and the job-specific "job:{jobID}:events" channel.
+    Called by the orchestrator when all processing is finished and results are
+    stored. Signals to subscribers that the job has finished successfully.
 
     Note: This is a notification event only. The authoritative job status is
     in Redis storage (key "orchestrator:job:{jobID}:status"). Clients should
@@ -54,10 +54,10 @@ func (eb *EventBus) PublishJobCompleted(ctx context.Context, jobID string, metad
     Returns an error if publishing fails.
 
 func (eb *EventBus) PublishJobCreated(ctx context.Context, jobID string) error
-    PublishJobCreated broadcasts a job creation event to the "job:events"
-    channel. Called by the orchestrator when a new job is created and stored
-    in Redis. Signals to subscribers that a job with the given jobID is now
-    pending.
+    PublishJobCreated broadcasts a job creation event to both the broadcast
+    "job:events" channel and the job-specific "job:{jobID}:events" channel.
+    Called by the orchestrator when a new job is created and stored in Redis.
+    Signals to subscribers that a job with the given jobID is now pending.
 
     Returns an error if publishing fails.
 
@@ -78,7 +78,8 @@ func (eb *EventBus) PublishJobEvent(ctx context.Context, jobID string, event *Jo
     Returns an error if publishing fails.
 
 func (eb *EventBus) PublishJobFailed(ctx context.Context, jobID string, errMsg string) error
-    PublishJobFailed broadcasts a job failure event to the "job:events" channel.
+    PublishJobFailed broadcasts a job failure event to both the broadcast
+    "job:events" channel and the job-specific "job:{jobID}:events" channel.
     Called by the orchestrator or workers when processing fails (e.g.,
     unstructured API error, worker crash, invalid input). Signals to subscribers
     that the job has terminated with an error.
@@ -94,10 +95,10 @@ func (eb *EventBus) PublishJobFailed(ctx context.Context, jobID string, errMsg s
     Returns an error if publishing fails.
 
 func (eb *EventBus) PublishJobProgress(ctx context.Context, jobID string, progress int, status string) error
-    PublishJobProgress broadcasts a job progress event to the "job:events"
-    channel. Called by workers (embeddings, entities, extraction, metadata,
-    completion) during processing to report incremental progress and status
-    updates.
+    PublishJobProgress broadcasts a job progress event to both the broadcast
+    "job:events" channel and the job-specific "job:{jobID}:events" channel.
+    Called by workers (embeddings, entities, extraction, metadata, completion)
+    during processing to report incremental progress and status updates.
 
     Parameters:
       - jobID: The job identifier

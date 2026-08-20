@@ -120,7 +120,7 @@
         <h1>🐍 Completion Worker</h1>
         
         <h2>Module Documentation</h2>
-        <p class="docstring">Completion Worker: Final aggregator in the IA Text Orchestrator pipeline.
+        <p class="docstring">Completion Worker: Final aggregator in the textFlow pipeline.
 
 This module monitors job completion across all workers via Redis pub/sub and
 aggregates their results into a single finalized JSON structure. It acts as the
@@ -165,24 +165,28 @@ webhook notifications.
 Attributes:
     redis_client: Redis client for pub/sub and data retrieval.
     event_bus: EventBus instance for publishing job completion/failure events.
-    default_required_steps: Set of steps required for full pipeline jobs
-        (extraction, embeddings, entities, metadata).
-    spreadsheet_required_steps: Set of steps required for spreadsheet jobs
-        (extraction, entities only).</p>
+    pipeline: PipelineDefinition with the declarative DAG steps for each
+        pipeline variant (full, spreadsheet) and feature extras.</p>
             <div class="methods">
                 <div class="method">
                     <h4>__init__</h4>
-                    <p>Initialize the completion worker with Redis connection and event bus.
+                    <p>No documentation</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_get_embedding_service</h4>
+                    <p>Lazy loading of embedding service to avoid blocking startup.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_generate_inference_embeddings</h4>
+                    <p>Generate embeddings for inference texts.
 
-Sets up Redis client for pub/sub subscriptions and data retrieval, and
-defines which pipeline steps are required for different document types.
-Different pipeline variants have different required steps:
-  - Full pipeline (default): extraction, embeddings, entities, metadata
-  - Spreadsheet: extraction, entities (skips embeddings/metadata)
-  - With inferences: Adds 'inferences' to required_steps if feature requested
+Args:
+    inferences_by_chunk: Dict mapping chunk_id to list of inference dicts
 
-Raises:
-    redis.ConnectionError: If Redis connection cannot be established.</p>
+Returns:
+    Dict mapping chunk_id to {inference_idx: embedding_vector}</p>
                 </div>
             
                 <div class="method">
@@ -218,13 +222,22 @@ Raises:
 
 Posts a notification to the configured WEBHOOK_URL with job completion
 or failure details. The webhook is only sent if WEBHOOK_URL environment
-variable is set; if not configured, this method returns False silently.
+variable is set or per-job webhook is configured; if not configured,
+this method returns False silently.
+
+Per-job webhooks are read from Redis :meta hash (webhook_url, webhook_secret).
+Falls back to global WEBHOOK_URL if no per-job webhook is set.
+
+When webhook_secret is present, computes HMAC-SHA256 signature using:
+    signature = hmac.new(secret.encode(), json.dumps(payload).encode(), hashlib.sha256).hexdigest()
+Adds headers X-Webhook-Signature and X-Webhook-Timestamp.
 
 Webhook payload structure:
     {
         "job_id": str,
         "status": "completed" | "failed",
         "download_url": f"{API_BASE_URL}/v1/documents/{job_id}/download",
+        "completed_at": str (ISO 8601 format),
         "error": str (only if status="failed")
     }
 
@@ -247,36 +260,17 @@ Raises:
 Note:
     - Webhook timeout is 10 seconds
     - HTTP errors are logged at ERROR level
-    - Optional WEBHOOK_URL env var determines if webhooks are enabled</p>
+    - Optional WEBHOOK_URL env var or per-job webhook determines if webhooks are enabled</p>
                 </div>
             
                 <div class="method">
-                    <h4>deduplicate_entities</h4>
-                    <p>Deduplicate entities using exact text match (no fuzzy matching).
-
-Removes duplicate entities by exact (label, text) key match while
-preserving all text variations. For exact duplicates, keeps the entity
-with the highest confidence score.
-
-Examples of preserved variations:
-    - "María Pérez" and "María Pérez" are kept as different
-    - "PER:John Smith" (confidence 0.95) replaces "PER:John Smith" (0.85)
-
-Args:
-    entities: List of entity dictionaries with keys:
-        - label: Entity type (e.g., "PER", "ORG", "LOC")
-        - text: Exact entity text
-        - confidence: Confidence score (0-1)
-
-Returns:
-    Deduplicated list of entities, preserving order of first occurrence.
-    Exact duplicates with lower confidence are removed and replaced
-    with higher-confidence versions.
-
-Note:
-    This is called during finalize_job() to clean up entities collected
-    from multiple chunks. Uses grouping by (label, text) without fuzzy
-    matching to preserve intentional variations.</p>
+                    <h4>_check_and_notify_batch</h4>
+                    <p>Check if job is part of a batch and notify when batch completes.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_send_batch_webhook</h4>
+                    <p>Send batch completion webhook.</p>
                 </div>
             
                 <div class="method">
@@ -357,11 +351,11 @@ Error handling:
 Redis keys read:
     - orchestrator:job:{job_id}:meta (job metadata)
     - orchestrator:job:{job_id}:status (current status)
-    - orchestrator:job:{job_id}:text (artifact store ref sha256:&lt;hex&gt;, resolved via resolve_text)
+    - orchestrator:job:{job_id}:text (artifact store ref sha256:<hex>, resolved via resolve_text)
     - orchestrator:job:{job_id}:metadata:document (MIME type, etc.)
     - orchestrator:job:{job_id}:metadata:text (text metadata)
-    - orchestrator:job:{job_id}:chunks (artifact store ref sha256:&lt;hex&gt;, resolved via resolve)
-    - orchestrator:job:{job_id}:embeddings (artifact store ref sha256:&lt;hex&gt;, resolved via resolve)
+    - orchestrator:job:{job_id}:chunks (artifact store ref sha256:<hex>, resolved via resolve)
+    - orchestrator:job:{job_id}:embeddings (artifact store ref sha256:<hex>, resolved via resolve)
     - orchestrator:job:{job_id}:entities_raw (raw entities before dedup)
     - orchestrator:job:{job_id}:source_classification (document classification)
     - orchestrator:job:{job_id}:micro_inferences (per-chunk inferences)
@@ -394,79 +388,9 @@ Note:
             
                 <div class="method">
                     <h4>handle_event</h4>
-                    <p>Process incoming job progress event from Redis pub/sub.
+                    <p>Process parsed job progress event from Redis pub/sub.
 
-This is the event handler called by Redis pub/sub listener for each
-message on the job:events channel. It parses the event, extracts the
-job_id and event_type, and triggers job completion checks if the
-event is of type "job_progress".
-
-Event structure:
-    {
-        "type": "message" (Redis pub/sub message type),
-        "data": JSON string containing:
-            {
-                "event_type": "job_progress" | other,
-                "job_id": str,
-                ...other fields...
-            }
-    }
-
-Behavior:
-    - Ignores non-"message" type events (e.g., "subscribe" confirmations)
-    - For "job_progress" events, calls check_job_completion(job_id)
-    - Logs event receipt for debugging
-
-Args:
-    message: Dictionary from Redis pub/sub listener with keys:
-        - type: "message" | "subscribe" | "unsubscribe"
-        - channel: "job:events"
-        - data: JSON string containing event details
-
-Returns:
-    None.
-
-Raises:
-    Does not raise exceptions. Parsing errors are logged and ignored.
-
-Note:
-    Exceptions during parsing or check_job_completion are caught
-    and logged at ERROR level without stopping the pub/sub listener.</p>
-                </div>
-            
-                <div class="method">
-                    <h4>start</h4>
-                    <p>Start the completion worker and listen for job progress events.
-
-Main entry point for the worker. Subscribes to the job:events Redis
-pub/sub channel and begins processing job progress notifications.
-
-This method runs indefinitely and implements exponential backoff
-reconnection logic to handle Redis connection failures gracefully:
-    - Initial backoff: 1 second
-    - Exponential increase with each reconnection
-    - Maximum backoff cap: 60 seconds
-
-Connection failures are logged but do not halt the worker; instead,
-the worker waits and reconnects automatically.
-
-Process:
-    1. Connect to Redis and subscribe to job:events channel
-    2. For each message received, call handle_event()
-    3. On connection error, close pubsub connection and wait
-    4. Reconnect with exponential backoff
-
-Returns:
-    Never returns under normal operation; runs indefinitely.
-
-Raises:
-    Does not raise exceptions. All errors are logged and handled
-    with automatic reconnection.
-
-Side effects:
-    - Logs "Completion worker started, listening for job events..."
-    - Logs connection errors and reconnection delays
-    - Calls handle_event() for each incoming message</p>
+The event dict is already parsed by BasePubSubWorker._parse_pubsub_message().</p>
                 </div>
             </div>
         </div>
@@ -474,20 +398,7 @@ Side effects:
         <h2>Functions</h2>
         <div class="function">
             <h3>main</h3>
-            <p>Entry point for the completion worker service.
-
-Initializes Prometheus metrics server and starts the CompletionWorker
-to listen for job progress events.
-
-Prometheus metrics are exposed on METRICS_PORT (default 8005) at:
-    http://localhost:8005/metrics
-
-Returns:
-    Never returns; runs indefinitely until process is terminated.
-
-Raises:
-    Does not raise exceptions. All errors are handled within
-    CompletionWorker.start() with automatic reconnection logic.</p>
+            <p>No documentation</p>
         </div>
         
         

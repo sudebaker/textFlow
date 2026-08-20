@@ -1,4 +1,4 @@
-package config // import "ia-text-orchestrator/internal/config"
+package config // import "textflow/internal/config"
 
 
 FUNCTIONS
@@ -26,11 +26,28 @@ type Config struct {
 	ExtractQueue       string        `env:"EXTRACT_QUEUE" default:"extract_text"`
 	MetadataQueue      string        `env:"METADATA_QUEUE" default:"metadata"`
 	InferencesQueue    string        `env:"INFERENCES_QUEUE" default:"inferences"`
+	AudioQueue         string        `env:"AUDIO_QUEUE" default:"audio"`
+	ImageQueue         string        `env:"IMAGE_QUEUE" default:"image"`
 	AllowLocalURLs     bool          `env:"ALLOW_LOCAL_URLS" default:"false"`
 	WebhookURL         string        `env:"WEBHOOK_URL" default:""`
 	UploadPath         string        `env:"UPLOAD_PATH" default:"/app/data/uploads"`
 	ResultsPath        string        `env:"RESULTS_PATH" default:"/app/data/results"`
 	EntityTypes        []string      `env:"ENTITY_TYPES" envSeparator:","  default:"PERSON,ORGANIZATION,LOCATION"`
+	MaxDocumentSizeMB  int           `env:"MAX_DOCUMENT_SIZE_MB" default:"10"`
+	MaxFeaturesPerJob  int           `env:"MAX_FEATURES_PER_JOB" default:"2"`
+	RabbitMQPoolSize   int           `env:"RABBITMQ_POOL_SIZE" default:"5"`
+
+	// Admission Control
+	IngestionRateLimit        float64 `env:"INGESTION_RATE_LIMIT" default:"10"`
+	IngestionRateBurst        int     `env:"INGESTION_RATE_BURST" default:"20"`
+	MaxConcurrentJobs         int     `env:"MAX_CONCURRENT_JOBS" default:"30"`
+	QueueDepthRejectThreshold int     `env:"QUEUE_DEPTH_REJECT_THRESHOLD" default:"500"`
+
+	// RabbitMQ Queue Limits
+	QueueMaxLength int `env:"QUEUE_MAX_LENGTH" default:"1000"`
+
+	// API Key for orchestrator auth (empty = disabled, for dev mode)
+	APIKey string `env:"API_KEY" default:""`
 }
 
 func Load() (*Config, error)
@@ -39,6 +56,8 @@ func LoadWithValidation(allowWarnings bool) (*Config, error)
     LoadWithValidation loads configuration and validates connectivity
 
 func (c *Config) ParseLogLevel() zerolog.Level
+
+func (c *Config) Validate() error
 
 type ValidationResult struct {
 	Component string

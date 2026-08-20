@@ -120,10 +120,10 @@
         <h1>🐍 Embeddings Worker</h1>
         
         <h2>Module Documentation</h2>
-        <p class="docstring">Embeddings Worker for IA Text Orchestrator
+        <p class="docstring">Embeddings Worker for textFlow
 Consumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3
 
-⭐ GPU Features:
+GPU Features:
 - Automatic GPU detection via torch.cuda
 - Adaptive batching (GPU=32, CPU=2)
 - FP16 optimization for GPU (in EmbeddingService)</p>
@@ -144,7 +144,12 @@ Consumes messages from RabbitMQ and generates embeddings for each chunk using BA
                 </div>
             
                 <div class="method">
-                    <h4>process</h4>
+                    <h4>process_message</h4>
+                    <p>No documentation</p>
+                </div>
+            
+                <div class="method">
+                    <h4>cleanup</h4>
                     <p>No documentation</p>
                 </div>
             </div>
@@ -154,11 +159,6 @@ Consumes messages from RabbitMQ and generates embeddings for each chunk using BA
         <div class="function">
             <h3>detect_gpu</h3>
             <p>Check if GPU is available.</p>
-        </div>
-        
-        <div class="function">
-            <h3>signal_handler</h3>
-            <p>No documentation</p>
         </div>
         
         <div class="function">

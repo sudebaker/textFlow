@@ -1,4 +1,4 @@
-package metrics // import "ia-text-orchestrator/pkg/metrics"
+package metrics // import "textflow/pkg/metrics"
 
 
 VARIABLES
@@ -169,6 +169,15 @@ var (
 		[]string{"cache_type"},
 	)
 
+	// Feature validation metrics
+	InvalidFeaturesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_invalid_features_total",
+			Help: "Total number of invalid features rejected or ignored",
+		},
+		[]string{"reason"},
+	)
+
 	// Circuit breaker metrics
 	CircuitBreakerState = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -200,6 +209,31 @@ var (
 			Help: "Total number of circuit breaker errors",
 		},
 		[]string{"name"},
+	)
+
+	// Admission control metrics
+	AdmissionRejected = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_admission_rejected_total",
+			Help: "Total number of jobs rejected by admission control",
+		},
+		[]string{"reason"},
+	)
+
+	AdmissionAccepted = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ia_text_admission_accepted_total",
+			Help: "Total number of jobs accepted by admission control",
+		},
+	)
+
+	// Queue overflow metrics
+	QueueOverflowTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ia_text_queue_overflow_total",
+			Help: "Total number of messages rejected due to queue overflow (x-max-length)",
+		},
+		[]string{"queue"},
 	)
 )
 

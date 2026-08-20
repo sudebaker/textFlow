@@ -141,9 +141,9 @@ def generate_python_docs() -> None:
     
     workers = [
         "cmd/extraction-worker/worker.py",
-        "cmd/completion-worker/worker.py",
+        "cmd/completion-worker/completion_worker.py",
         "cmd/metadata-worker/worker.py",
-        "cmd/inference-worker/worker.py",
+        "cmd/inference-worker/inference_worker.py",
         "cmd/embeddings-worker/embeddings_worker.py",
         "cmd/entities-worker/entities_worker.py",
     ]
@@ -447,9 +447,9 @@ def generate_python_html_docs() -> None:
     
     workers = [
         ("extraction-worker", "cmd/extraction-worker/worker.py"),
-        ("completion-worker", "cmd/completion-worker/worker.py"),
+        ("completion-worker", "cmd/completion-worker/completion_worker.py"),
         ("metadata-worker", "cmd/metadata-worker/worker.py"),
-        ("inference-worker", "cmd/inference-worker/worker.py"),
+        ("inference-worker", "cmd/inference-worker/inference_worker.py"),
         ("embeddings-worker", "cmd/embeddings-worker/embeddings_worker.py"),
         ("entities-worker", "cmd/entities-worker/entities_worker.py"),
     ]

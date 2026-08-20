@@ -120,7 +120,7 @@
         <h1>🐍 Inference Worker</h1>
         
         <h2>Module Documentation</h2>
-        <p class="docstring">Inference Worker for IA Text Orchestrator.
+        <p class="docstring">Inference Worker for textFlow.
 
 Extracts micro-inferences (facts) from document chunks using an external LLM (vLLM).
 This is an OPTIONAL feature — only activated when a job requests features=["inferences"].
@@ -128,7 +128,7 @@ This is an OPTIONAL feature — only activated when a job requests features=["in
 Architecture:
     - Consumes messages from RabbitMQ inferences queue
     - For each chunk, calls vLLM /v1/chat/completions API to extract facts
-    - Each fact includes confidence score and referenced entities
+    - Each fact includes confidence score and entity_refs (referenced entity names)
     - Stores raw results in Redis intermediate keys
     - Assembles final results when all chunks complete
     - Publishes progress events to Event Bus
@@ -149,7 +149,7 @@ Input (RabbitMQ Message):
 
 Output (Redis):
     - micro_inferences: Final assembled list of all extracted facts from all chunks
-    - Each inference: {"text": str, "confidence": 0.0-1.0, "entities": [str]}
+    - Each inference: {"text": str, "confidence": 0.0-1.0, "entity_refs": [str]}
 
 Environment Variables:
     - REDIS_URL: Redis connection URL (default: redis://redis:6379)
@@ -159,6 +159,16 @@ Environment Variables:
     - LLM_MODEL: Fallback model ID (optional, used if auto-discovery fails)
     - METRICS_PORT: Prometheus metrics port (default: 8006)
     - PREFETCH_COUNT: RabbitMQ prefetch count (default: 3)
+    - MAX_CHUNK_WORDS: Maximum chunk size in words before skipping (default: 5000)
+    - INFERENCE_BATCH_ENABLED: Enable batch processing (default: true)
+    - INFERENCE_BATCH_SIZE: Chunks per batch LLM call (default: 3, range: 2-10)
+    - INFERENCE_BATCH_TIMEOUT_MS: Flush timeout in ms (default: 500)
+    - INFERENCE_CACHE_ENABLED: Enable Redis cache (default: true)
+    - INFERENCE_CACHE_TTL: Cache TTL in seconds (default: 86400)
+    - INFERENCE_RAW_TTL: TTL for intermediate Redis results in seconds (default: 86400)
+    - INFERENCE_LLM_TIMEOUT: LLM request timeout in seconds (default: 60)
+    - INFERENCE_LLM_RETRIES: Max retries on timeout/connection error (default: 2)
+    - INFERENCE_LLM_RETRY_BACKOFF: Base backoff in seconds, doubled per attempt (default: 2.0)
 
 Key Features:
     - Thinking-tag handling: Removes <think>...</think> blocks from LLM responses
@@ -180,7 +190,7 @@ by detected entities.
 Lifecycle:
     1. __init__: Connect to Redis, discover LLM model (one-time at startup), set up Event Bus
     2. process: Consume messages from RabbitMQ, extract inferences per chunk, assemble results
-    3. Graceful shutdown: SIGINT/SIGTERM triggers sys.exit()
+    3. Graceful shutdown: SIGINT/SIGTERM sets _stopping=True; consumer drains current message then stops
 
 State:
     - redis_client: Redis connection for storing intermediate and final results
@@ -197,27 +207,7 @@ Key Behavior:
             <div class="methods">
                 <div class="method">
                     <h4>__init__</h4>
-                    <p>Initialize the inference worker with Redis connection and model discovery.
-
-Behavior:
-    1. Connects to Redis using REDIS_URL
-    2. Creates Event Bus for publishing progress
-    3. If LLM_URL is configured:
-       a. Attempts to discover available models from vLLM /v1/models API
-       b. If discovery succeeds, caches model_id and max_model_len
-       c. If discovery fails but LLM_MODEL env var set, falls back to that value
-       d. If both fail, sets llm_model_id to None (inferences permanently disabled)
-    4. If LLM_URL is not configured, disables inferences entirely
-
-State Invariants:
-    - self.llm_model_id is set once and never changes (no re-discovery)
-    - self.llm_max_model_len may be None (use default 4096 as fallback)
-    - If llm_model_id is None, extract_inferences() always returns []
-
-Side Effects:
-    - Logs INFO message if model discovered
-    - Logs INFO message if fallback to LLM_MODEL triggered
-    - Logs WARNING message if model discovery fails (only if LLM_URL set)</p>
+                    <p>No documentation</p>
                 </div>
             
                 <div class="method">
@@ -285,6 +275,26 @@ Error Handling:
                 </div>
             
                 <div class="method">
+                    <h4>_cache_key</h4>
+                    <p>Generate a deterministic cache key from chunk content, source type, model, and config.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_validate_cached_inferences</h4>
+                    <p>Validate and filter cached inferences by confidence threshold.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_get_cached</h4>
+                    <p>Retrieve cached inferences from Redis. Returns None on miss or error.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_set_cached</h4>
+                    <p>Store inferences in Redis cache with TTL.</p>
+                </div>
+            
+                <div class="method">
                     <h4>extract_inferences</h4>
                     <p>Extract micro-inferences (facts) from chunk text using an external LLM.
 
@@ -294,12 +304,13 @@ structured facts.
 
 Input Processing:
     - Uses full chunk text (no truncation) for fact extraction
-    - Entity names are included in prompt as context for the LLM
+    - Entity names are NOT included in prompt (entities parameter is received for
+      backward compatibility but not used in the LLM call)
     - Source type (notariado, catastro, etc.) is provided for document context
 
 LLM Prompt Structure:
-    - System prompt: Instructs LLM to extract concrete, verifiable facts
-    - User prompt: Provides chunk text, entity list, and max inference count
+    - System prompt: Instructs LLM to synthesize condensed facts (not copy text)
+    - User prompt: Provides chunk text and dynamic_max inference count
     - Temperature: 0.1 (low randomness, deterministic)
     - Thinking disabled: enable_thinking=False to avoid <think> tags
 
@@ -308,7 +319,8 @@ Response Processing:
     2. Removes thinking tags: <think>...</think> blocks (some models output these)
     3. Extracts outermost JSON array using bracket counting
     4. Parses JSON and validates each item has "text" field
-    5. Normalizes fields: text (string), confidence (float), entities (list)
+    5. Normalizes fields: text (string), confidence (float), entity_refs (list)
+    6. Filters out inferences below MIN_CONFIDENCE_THRESHOLD (silent filter)
 
 vLLM API Contract:
     - Endpoint: POST {LLM_URL}/v1/chat/completions
@@ -321,20 +333,25 @@ Args:
                      (notariado, catastro documents). Full text sent to LLM
                      (no truncation).
     entities (List[Dict[str, Any]]): Named entities detected in this chunk.
-                                     Each entity dict includes at least a "text" field.
-                                     Entity names provided in prompt to guide inference.
+                                     Received for backward compatibility with
+                                     RabbitMQ message schema but NOT used in
+                                     the LLM prompt.
     source_type (str): Document source type (e.g., "notariado", "catastro", "bancario").
-                      Used for context but not currently interpolated in prompt.
-    max_inferences (int): Maximum number of inferences to extract (default: 8).
-                         Passed to LLM in prompt to guide response length.
+                       Used for context but not currently interpolated in prompt.
+    max_inferences is no longer a parameter — the inference count is determined
+    dynamically by word_count (len(chunk_text.split())):
+        - < 200 words  → MAX_INFERENCES_SHORT
+        - 200-499 words → MAX_INFERENCES_MEDIUM
+        - >= 500 words  → MAX_INFERENCES_LONG
 
 Returns:
     List[Dict[str, Any]]: List of extracted inferences, each with structure:
         {
-            "text": str,           # The factual statement
-            "confidence": float,   # Confidence score 0.0-1.0
-            "entities": List[str]  # Names of entities mentioned in the fact
+            "text": str,              # The factual statement (synthesized, not copied)
+            "confidence": float,      # Confidence score 0.0-1.0
+            "entity_refs": List[str]  # Names of entities referenced in the fact
         }
+    Only inferences with confidence >= MIN_CONFIDENCE_THRESHOLD are returned.
     Returns empty list [] if:
         - No LLM configured (LLM_URL empty or not set)
         - Model discovery failed and no LLM_MODEL fallback (llm_model_id is None)
@@ -363,7 +380,67 @@ Token Management:
                 </div>
             
                 <div class="method">
+                    <h4>extract_inferences_batch</h4>
+                    <p>Extract inferences from multiple chunks in a single LLM call.
+
+Sends all chunks to the LLM at once with a batch prompt.
+Falls back to individual processing if the batch call fails.
+
+Args:
+    chunks_data: List of dicts, each with chunk_id, text, source_type, entities
+
+Returns:
+    Dict mapping chunk_id -> list of inference dicts</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_parse_batch_response</h4>
+                    <p>Parse batch LLM response and map results to individual chunk_ids.
+
+Returns dict mapping chunk_id -> list of validated inferences.</p>
+                </div>
+            
+                <div class="method">
                     <h4>process</h4>
+                    <p>Process an inference job from RabbitMQ inferences queue.
+
+When batch processing is enabled, messages are accumulated in a buffer
+and processed together when the buffer is full or a timeout expires.
+When batch processing is disabled, each message is processed individually.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>flush_batch_buffer</h4>
+                    <p>Flush any pending messages in the batch buffer. Called by pika call_later callback.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_store_empty_result</h4>
+                    <p>Store empty inference result and ACK the message. Used for skipped/oversized chunks.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_process_batch</h4>
+                    <p>Process a batch of accumulated messages using a single LLM call.
+
+For each chunk in the batch:
+1. Check cache (skip LLM if hit)
+2. Group uncached chunks for batch LLM call
+3. Fallback to individual processing if batch fails</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_assemble_final_results</h4>
+                    <p>Assemble final inference results when all chunks complete.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>cleanup</h4>
+                    <p>Flush pending batch and join timer thread on shutdown.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_process_single</h4>
                     <p>Process an inference job from RabbitMQ inferences queue.
 
 This is the RabbitMQ message callback. Orchestrates the full inference workflow:
@@ -455,84 +532,12 @@ Side Effects:
         <h2>Functions</h2>
         <div class="function">
             <h3>signal_handler</h3>
-            <p>Handle graceful shutdown on SIGINT or SIGTERM.
-
-Triggered by:
-    - SIGTERM: Container/orchestrator shutdown signal
-    - SIGINT: Ctrl+C from user
-
-Behavior:
-    - Logs INFO message indicating shutdown
-    - Calls sys.exit(0) to terminate process
-    - RabbitMQ channel cleanup handled by context manager (connect_rabbitmq)
-
-Args:
-    signum (int): Signal number (signal.SIGINT or signal.SIGTERM)
-    frame: Signal frame object (unused)</p>
+            <p>Handle graceful shutdown signals.</p>
         </div>
         
         <div class="function">
             <h3>main</h3>
-            <p>Entry point for the Inference Worker.
-
-Orchestrates:
-    1. Signal registration: SIGINT/SIGTERM → graceful shutdown
-    2. Prometheus metrics server startup on METRICS_PORT
-    3. InferenceWorker initialization (Redis, model discovery)
-    4. RabbitMQ consumer loop (infinite with reconnection)
-
-Workflow:
-    1. Log startup message
-    2. Register SIGINT/SIGTERM handlers for graceful shutdown
-    3. Start Prometheus HTTP server on METRICS_PORT (default: 8006)
-    4. Create InferenceWorker instance (triggers model discovery)
-    5. Infinite loop:
-       a. Connect to RabbitMQ
-       b. Declare inferences queue
-       c. Set prefetch_count for backpressure (default: 3)
-       d. Register worker.process as message callback
-       e. Start consuming messages
-       f. On connection error: log error, sleep 5s, retry
-
-RabbitMQ Configuration:
-    - Queue name: QUEUE_NAME (default: "inferences")
-    - Prefetch count: PREFETCH_COUNT env var (default: 3)
-      - Limits how many messages consumer holds unacked
-      - Prevents overwhelming worker if backed up
-    - Auto-ack: False (manual ack/nack in process callback)
-    - Connection reconnect: Automatic with 5s retry interval
-
-Model Discovery:
-    - Triggered in InferenceWorker.__init__() (one-time)
-    - vLLM /v1/models endpoint queried if LLM_URL configured
-    - Result logged (model_id and max_model_len discovered)
-    - Fallback to LLM_MODEL env var if discovery fails
-    - If both fail, inferences disabled (all extract_inferences calls return [])
-
-Prometheus Metrics:
-    - Endpoint: http://localhost:{METRICS_PORT}/metrics
-    - Metrics exposed:
-      - inference_worker_jobs_total: Counter by status (success, error, assembly_error, etc.)
-      - inference_worker_job_duration_seconds: Histogram of processing time per chunk
-
-Shutdown Sequence:
-    1. SIGINT/SIGTERM → signal_handler() → sys.exit(0)
-    2. RabbitMQ channel cleanup (handled by context manager)
-    3. Unack messages returned to queue for reprocessing
-
-Error Recovery:
-    - RabbitMQ connection errors: log, sleep 5s, retry in main loop
-    - Ensures worker is resilient to temporary network issues
-    - No exponential backoff (always 5s retry interval)
-
-Dependencies (Environment Variables):
-    - REDIS_URL: Redis connection (default: redis://redis:6379)
-    - RABBITMQ_URL: RabbitMQ connection (default: amqp://rabbitmq:5672/)
-    - QUEUE_NAME: Queue name (default: inferences)
-    - LLM_URL: vLLM base URL (e.g., http://localhost:8000, may be empty)
-    - LLM_MODEL: Fallback model ID (optional, used if discovery fails)
-    - METRICS_PORT: Prometheus port (default: 8006)
-    - PREFETCH_COUNT: RabbitMQ prefetch (default: 3)</p>
+            <p>No documentation</p>
         </div>
         
         

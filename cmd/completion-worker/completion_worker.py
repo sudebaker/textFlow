@@ -50,7 +50,7 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
 from app.config.settings import Settings
-from pkg.worker_common.artifact_store import STORE, resolve_text
+from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
 from pkg.worker_common.entity_utils import deduplicate_entities
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 from pkg.worker_common.pubsub_base import BasePubSubWorker
@@ -588,8 +588,12 @@ class CompletionWorker(BasePubSubWorker):
             ) = pipe.execute()
 
             # Embeddings are stored as MsgPack binary — use raw client (no decode_responses)
-            embeddings_raw_bytes = self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings")
-            inference_embeddings_raw = self.redis_raw.get(f"orchestrator:job:{job_id}:inference_embeddings")
+            embeddings_raw_bytes = resolve(
+                STORE, self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings")
+            )
+            inference_embeddings_raw = resolve(
+                STORE, self.redis_raw.get(f"orchestrator:job:{job_id}:inference_embeddings")
+            )
 
             created_at_timestamp = int(meta.get("created_at", time.time()))
             created_at = datetime.fromtimestamp(created_at_timestamp).isoformat()
@@ -690,8 +694,8 @@ class CompletionWorker(BasePubSubWorker):
                     if inference_embeddings_by_chunk:
                         try:
                             key = f"orchestrator:job:{job_id}:inference_embeddings"
-                            packed = msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True)
-                            self.redis_raw.set(key, packed)
+                            ie_ref = STORE.put(msgpack.packb(inference_embeddings_by_chunk, use_bin_type=True))
+                            self.redis_raw.set(key, ie_ref.encode("utf-8"))
                             self.logger.info(f"Saved inference embeddings to Redis: {key}")
                         except Exception as e:
                             self.logger.warning(f"Failed to save inference embeddings to Redis: {e}")

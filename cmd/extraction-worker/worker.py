@@ -1012,6 +1012,7 @@ class ExtractionWorker:
                     "job_id": job_id,
                     "chunks": chunks,
                     "document_metadata": document_metadata,
+                    "pipeline_version": body.get("pipeline_version", "v1"),
                 }
 
                 if body.get("entity_types"):

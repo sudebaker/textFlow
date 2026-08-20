@@ -154,15 +154,16 @@ type Entity struct {
 // with the document provided either as base64-encoded content or as a path/URL reference.
 // The NotifyWebhook field is optional for asynchronous completion notifications.
 type JobMessage struct {
-	JobID          string      `json:"job_id"`
-	DocumentPath   string      `json:"document_path,omitempty"`
-	DocumentBase64 string      `json:"document_base64,omitempty"`
-	DocumentURL    string      `json:"document_url,omitempty"`
-	Filename       string      `json:"filename,omitempty"`
-	MIMEType       string      `json:"mime_type,omitempty"`
-	ContentType    ContentType `json:"content_type,omitempty"`
-	Diarize        bool        `json:"diarize,omitempty"`
-	Features       []string    `json:"features,omitempty"`
+	JobID           string      `json:"job_id"`
+	DocumentPath    string      `json:"document_path,omitempty"`
+	DocumentBase64  string      `json:"document_base64,omitempty"`
+	DocumentURL     string      `json:"document_url,omitempty"`
+	Filename        string      `json:"filename,omitempty"`
+	MIMEType        string      `json:"mime_type,omitempty"`
+	ContentType     ContentType `json:"content_type,omitempty"`
+	Diarize         bool        `json:"diarize,omitempty"`
+	Features        []string    `json:"features,omitempty"`
+	PipelineVersion string      `json:"pipeline_version,omitempty"`
 }
 
 // ContentType identifies the type of uploaded content.

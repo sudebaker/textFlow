@@ -104,6 +104,9 @@ class EntitiesWorker(BaseWorker):
         self.model = None
         self.device = ENTITIES_DEVICE
         self.default_entities = [e.strip() for e in ENTITY_TYPES.split(",")]
+        self.regex_enabled = app_settings.regex_enabled
+        self.regex_service_url = app_settings.regex_service_url
+        self.regex_timeout = app_settings.regex_timeout
 
     @staticmethod
     def _normalize_entity_types(entity_types) -> list:
@@ -259,7 +262,11 @@ class EntitiesWorker(BaseWorker):
     def _extract_regex_entities(self, text: str) -> list:
         try:
             payload = {"text": text}
-            response = requests.post(f"{REGEX_ENTITY_EXTRACTOR_URL}/preprocess", json=payload, timeout=30)
+            response = requests.post(
+                f"{self.regex_service_url}/preprocess",
+                json=payload,
+                timeout=self.regex_timeout,
+            )
             response.raise_for_status()
             data = response.json()
             entities_by_chunk = data.get("entities", {})
@@ -296,7 +303,6 @@ class EntitiesWorker(BaseWorker):
                 self.jobs_total.labels(status="no_chunks").inc()
                 return {"status": "no_chunks"}
 
-        all_entities = []
         GLINER_BATCH_SIZE = int(os.getenv("GLINER_BATCH_SIZE", "32"))
         batch_chunks = []
         large_chunks = []
@@ -312,29 +318,19 @@ class EntitiesWorker(BaseWorker):
             else:
                 batch_chunks.append((chunk_id, chunk_text, chunk_offset))
 
-        for chunk_id, chunk_text, chunk_offset in large_chunks:
-            try:
-                def predict_with_thresholds(text, entity_types, threshold=0.1):
-                    return self.model.predict_entities(text, entity_types, threshold=threshold)
-                entities_items = process_with_sliding_window(chunk_text, predict_with_thresholds, entity_types, threshold=0.1)
-                for e in entities_items:
-                    label = e.get("label", "")
-                    score = e.get("score", 0.0)
-                    threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
-                    if score >= threshold_val:
-                        g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
-                        all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
-            except Exception as e:
-                self.logger.warning(f"Error extracting entities from large chunk {chunk_id}: {e}")
+        try:
+            text = self.redis_client.get(f"orchestrator:job:{job_id}:text")
+        except Exception as e:
+            self.logger.warning(f"Failed to read document text: {e}")
+            text = None
 
-        for batch_start in range(0, len(batch_chunks), GLINER_BATCH_SIZE):
-            batch = batch_chunks[batch_start:batch_start + GLINER_BATCH_SIZE]
-            texts = [c[1] for c in batch]
-            try:
-                batch_predictions = self.model.predict_entities(texts, entity_types, threshold=0.1)
-                for (chunk_id, chunk_text, chunk_offset), entities_items in zip(batch, batch_predictions):
-                    if entities_items and isinstance(entities_items[0], list):
-                        entities_items = entities_items[0]
+        def gliner_extract() -> list:
+            all_entities = []
+            for chunk_id, chunk_text, chunk_offset in large_chunks:
+                try:
+                    def predict_with_thresholds(text, entity_types, threshold=0.1):
+                        return self.model.predict_entities(text, entity_types, threshold=threshold)
+                    entities_items = process_with_sliding_window(chunk_text, predict_with_thresholds, entity_types, threshold=0.1)
                     for e in entities_items:
                         label = e.get("label", "")
                         score = e.get("score", 0.0)
@@ -342,30 +338,44 @@ class EntitiesWorker(BaseWorker):
                         if score >= threshold_val:
                             g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
                             all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
-            except Exception as e:
-                self.logger.warning(f"Batch prediction failed: {e}")
-                for chunk_id, chunk_text, chunk_offset in batch:
-                    try:
-                        entities = self.model.predict_entities(chunk_text, entity_types, threshold=0.1)
-                        if entities and isinstance(entities[0], list):
-                            entities = entities[0]
-                        for e in entities:
+                except Exception as e:
+                    self.logger.warning(f"Error extracting entities from large chunk {chunk_id}: {e}")
+
+            for batch_start in range(0, len(batch_chunks), GLINER_BATCH_SIZE):
+                batch = batch_chunks[batch_start:batch_start + GLINER_BATCH_SIZE]
+                texts = [c[1] for c in batch]
+                try:
+                    batch_predictions = self.model.predict_entities(texts, entity_types, threshold=0.1)
+                    for (chunk_id, chunk_text, chunk_offset), entities_items in zip(batch, batch_predictions):
+                        if entities_items and isinstance(entities_items[0], list):
+                            entities_items = entities_items[0]
+                        for e in entities_items:
                             label = e.get("label", "")
                             score = e.get("score", 0.0)
                             threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
                             if score >= threshold_val:
                                 g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
                                 all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
-                    except Exception as inner_e:
-                        self.logger.warning(f"Error extracting entities from chunk {chunk_id}: {inner_e}")
+                except Exception as e:
+                    self.logger.warning(f"Batch prediction failed: {e}")
+                    for chunk_id, chunk_text, chunk_offset in batch:
+                        try:
+                            entities = self.model.predict_entities(chunk_text, entity_types, threshold=0.1)
+                            if entities and isinstance(entities[0], list):
+                                entities = entities[0]
+                            for e in entities:
+                                label = e.get("label", "")
+                                score = e.get("score", 0.0)
+                                threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
+                                if score >= threshold_val:
+                                    g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
+                                    all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                        except Exception as inner_e:
+                            self.logger.warning(f"Error extracting entities from chunk {chunk_id}: {inner_e}")
+            return all_entities
 
-        try:
-            text = self.redis_client.get(f"orchestrator:job:{job_id}:text")
-            if text:
-                regex_entities = self._extract_regex_entities(text)
-                all_entities.extend(regex_entities)
-        except Exception as e:
-            self.logger.warning(f"Failed to extract regex entities: {e}")
+        regex_fn = self._extract_regex_entities if self.regex_enabled else None
+        all_entities = extract_regex_parallel(text, regex_fn, gliner_extract)
 
         entities_key = f"orchestrator:job:{job_id}:entities_raw"
         for ent in all_entities:

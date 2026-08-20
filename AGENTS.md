@@ -148,6 +148,15 @@ El DAG **no** vive en el orchestrator Go. Vive en Python:
 
 `internal/pipeline/` fue eliminado (dead code, 0 callers).
 
+### Entities-worker: regex en thread paralelo (D2)
+
+`entities_worker.py:extract_regex_parallel()` ejecuta la extracción regex
+(microservicio Go vía HTTP, I/O-bound) en un `ThreadPoolExecutor(max_workers=1)`
+concurrente a GLiNER (CPU/GPU-bound). El `:text` se fetcha antes del dispatch.
+Degrade silencioso: si el servicio regex falla, se retorna solo GLiNER. Control:
+`REGEX_ENABLED` (default true), `REGEX_SERVICE_URL`, `REGEX_TIMEOUT` (vía
+`app/config/settings.py`).
+
 ---
 
 ## Air-Gapped Deployment (CRITICAL)

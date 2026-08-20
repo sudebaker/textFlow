@@ -148,6 +148,16 @@ El DAG **no** vive en el orchestrator Go. Vive en `configs/pipeline.json`
 `cmd/completion-worker/completion_worker.py` (vía `PipelineDefinition.steps_for`).
 `internal/pipeline/` fue eliminado (dead code, 0 callers).
 
+### Features del pipeline
+
+`metadata_deep` (opcional): por defecto extraction-worker solo calcula metadata
+FAST (`filename`, `file_size_bytes`, `sha256`, `mime_type` vía libmagic, barato).
+Con `features=["metadata_deep"]` además enriquece vía exiftool (author, title,
+page_count, exif_data, ...). Sin el feature los campos deep quedan `None` en
+`orchestrator:job:{id}:metadata:document`. Split en
+`cmd/extraction-worker/worker.py`: `extract_metadata_fast()` /
+`extract_metadata_deep()`.
+
 ### Migración big-bang del DAG (D4)
 
 El DAG declarativo vive en `configs/pipeline.json` (`PipelineDefinition`,

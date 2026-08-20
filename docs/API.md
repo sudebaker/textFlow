@@ -91,7 +91,7 @@ curl http://localhost:8080/health
 - `document_base64` (string, conditional): Base64-encoded document. Required if `document_url` is not provided.
 - `document_url` (string, conditional): URL to the document. Required if `document_base64` is not provided. Must be a valid HTTP/HTTPS URL.
 - `filename` (string, optional): Original filename for metadata tracking.
-- `features` (array, optional): Extra pipeline stages to enable. Supported: `"inferences"` (requires vLLM/inference-worker), `"inference_embeddings"` (generates vector embeddings for inferences, requires `"inferences"`).
+- `features` (array, optional): Extra pipeline stages to enable. Supported: `"inferences"` (requires vLLM/inference-worker), `"inference_embeddings"` (generates vector embeddings for inferences, requires `"inferences"`), `"metadata_deep"` (extracts rich EXIF/XMP document metadata via exiftool).
 - `webhook_url` (string, optional): URL to notify when job completes.
 - `webhook_secret` (string, optional): Secret for `X-Signature-256` HMAC verification.
 
@@ -176,6 +176,7 @@ https://example.com/webhook
 - `features` (string, optional): Comma-separated list of extra pipeline features. Supported:
    - `inferences` — Generate micro-inferences from extracted text (requires vLLM).
    - `inference_embeddings` — Generate vector embeddings for inferences (requires `inferences`).
+   - `metadata_deep` — Extract rich EXIF/XMP document metadata (author, title, page count, etc.) via exiftool. Default is fast metadata only (filename, size, hash, MIME type).
    - Max features per job and max characters per name are configurable (see **Data Constraints** section). Invalid features are silently ignored with a warning.
 - `diarize` (boolean, optional): **Audio files only.** When `true`, identifies speakers in audio transcription via Whisper's diarization. Default: `false`. Ignored for non-audio files.
 - `notify_webhook` (string, optional): Webhook URL to notify when job completes. If not provided, uses `WEBHOOK_URL` from server config.

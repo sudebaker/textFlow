@@ -130,16 +130,15 @@ def compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def extract_pdf_metadata(file_path: str, filename: str) -> Dict[str, Any]:
-    """Extract document-level metadata using exiftool.
+def extract_metadata_fast(file_path: str, filename: str) -> Dict[str, Any]:
+    """Extract cheap, deterministic document-level metadata.
 
-    Parses EXIF and XMP metadata from PDF, DOCX, images, and other document
-    types using the exiftool binary. Gracefully handles missing exiftool or
-    corrupted files by returning partially filled metadata.
-
-    Falls back to filesystem attributes (size, MIME type) if metadata extraction
-    fails. All fields are populated with None/empty values on extraction failure
-    rather than raising exceptions, ensuring downstream processing can continue.
+    Computes file size, SHA-256 hash, and MIME type (libmagic). Deep EXIF/XMP
+    fields (author, title, page_count, etc.) are initialized to None/empty and
+    filled by :func:`extract_metadata_deep` only when the job requests the
+    ``metadata_deep`` feature. All fields are populated with None/empty values
+    on failure rather than raising exceptions, ensuring downstream processing
+    can continue.
 
     Args:
         file_path: Absolute path to document file on disk.
@@ -164,10 +163,6 @@ def extract_pdf_metadata(file_path: str, filename: str) -> Dict[str, Any]:
 
     Raises:
         No exceptions raised. All failures result in None/empty values in metadata.
-
-    Note:
-        exiftool is called with a 30-second timeout to avoid hanging on large
-        or corrupt files. Requires exiftool binary at EXIFTOOL_PATH.
     """
     metadata = {
         "filename": filename,
@@ -193,44 +188,69 @@ def extract_pdf_metadata(file_path: str, filename: str) -> Dict[str, Any]:
 
         metadata["mime_type"] = magic.from_file(file_path, mime=True)
 
-        try:
-            result = subprocess.run(
-                [EXIFTOOL_PATH, "-j", file_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                exif_data = json.loads(result.stdout)
-                if exif_data:
-                    exif = exif_data[0]
+    return metadata
 
-                    metadata["author"] = exif.get("Author") or exif.get("Creator")
-                    metadata["title"] = exif.get("Title") or exif.get("DocumentTitle")
-                    metadata["subject"] = exif.get("Subject")
-                    metadata["creator"] = exif.get("Creator") or exif.get("Software")
-                    metadata["producer"] = exif.get("Producer")
 
-                    if "CreateDate" in exif:
-                        metadata["creation_date"] = exif["CreateDate"]
-                    elif "CreationDate" in exif:
-                        metadata["creation_date"] = exif["CreationDate"]
+def extract_metadata_deep(file_path: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Enrich metadata with exiftool EXIF/XMP extraction (optional, expensive).
 
-                    if "ModifyDate" in exif:
-                        metadata["modification_date"] = exif["ModifyDate"]
+    Parses EXIF and XMP metadata from PDF, DOCX, images, and other document
+    types using the exiftool binary. Only invoked when the job requests the
+    ``metadata_deep`` feature; without it, deep fields stay None/empty from
+    :func:`extract_metadata_fast`. Gracefully handles missing exiftool or
+    corrupted files by returning metadata partially filled.
 
-                    if "PageCount" in exif:
-                        metadata["page_count"] = int(exif["PageCount"])
+    Args:
+        file_path: Absolute path to document file on disk.
+        metadata: Metadata dict from :func:`extract_metadata_fast` to enrich
+            in place. Returns a new dict or the same dict mutated.
 
-                    metadata["encrypted"] = exif.get("Encrypted", False)
+    Returns:
+        The enriched metadata dictionary with deep fields populated where
+        exiftool could extract them.
 
-                    metadata["exif_data"] = {
-                        k: v
-                        for k, v in exif.items()
-                        if k not in ["SourceFile", "File:FileSize", "File:MIMEType"]
-                    }
-        except Exception as e:
-            logger.warning(f"exiftool extraction failed: {e}")
+    Note:
+        exiftool is called with a 30-second timeout to avoid hanging on large
+        or corrupt files. Requires exiftool binary at EXIFTOOL_PATH.
+    """
+    try:
+        result = subprocess.run(
+            [EXIFTOOL_PATH, "-j", file_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            exif_data = json.loads(result.stdout)
+            if exif_data:
+                exif = exif_data[0]
+
+                metadata["author"] = exif.get("Author") or exif.get("Creator")
+                metadata["title"] = exif.get("Title") or exif.get("DocumentTitle")
+                metadata["subject"] = exif.get("Subject")
+                metadata["creator"] = exif.get("Creator") or exif.get("Software")
+                metadata["producer"] = exif.get("Producer")
+
+                if "CreateDate" in exif:
+                    metadata["creation_date"] = exif["CreateDate"]
+                elif "CreationDate" in exif:
+                    metadata["creation_date"] = exif["CreationDate"]
+
+                if "ModifyDate" in exif:
+                    metadata["modification_date"] = exif["ModifyDate"]
+
+                if "PageCount" in exif:
+                    metadata["page_count"] = int(exif["PageCount"])
+
+                metadata["encrypted"] = exif.get("Encrypted", False)
+
+                metadata["exif_data"] = {
+                    k: v
+                    for k, v in exif.items()
+                    if k not in ["SourceFile", "File:FileSize", "File:MIMEType"]
+                }
+    except Exception as e:
+        logger.warning(f"exiftool extraction failed: {e}")
 
     return metadata
 
@@ -972,10 +992,15 @@ class ExtractionWorker:
                     finally:
                         os.close(temp_fd)
 
-                document_metadata = extract_pdf_metadata(
+                features = body.get("features") or []
+                document_metadata = extract_metadata_fast(
                     temp_file_path,
                     os.path.basename(body.get("document_path", "document.pdf")),
                 )
+                if "metadata_deep" in features:
+                    document_metadata = extract_metadata_deep(
+                        temp_file_path, document_metadata
+                    )
 
                 # Guard: fail if Docling returned empty text (likely file type mismatch)
                 if not text:
@@ -1053,7 +1078,6 @@ class ExtractionWorker:
                         is_spreadsheet = True
 
                 # Route to appropriate queues from the declarative PipelineDefinition
-                features = body.get("features") or []
                 target_queues = self.pipeline.queues_for(
                     is_spreadsheet=is_spreadsheet, features=features
                 )

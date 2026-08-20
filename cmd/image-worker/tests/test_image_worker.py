@@ -265,6 +265,30 @@ class TestRouting:
         finally:
             os.unlink(path)
 
+    @pytest.mark.asyncio
+    async def test_publish_body_has_no_inline_chunks(self, mock_deps):
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.extracted_text = "text"
+            mock_result.description = None
+            mock_result.language = "en"
+            with patch.object(w.llm_pool, "analyze", return_value=mock_result):
+                await w.process_message(_make_msg(path=path))
+            for call in w._channel.default_exchange.publish.call_args_list:
+                msg = call.args[0]
+                body = json.loads(msg.body)
+                assert "chunks" not in body
+                assert body["job_id"] == "j1"
+                assert "document_metadata" in body
+        finally:
+            os.unlink(path)
+
 
 # --- Metadata ---
 

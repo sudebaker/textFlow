@@ -72,7 +72,6 @@ class ImageWorker(BaseAsyncWorker):
 
             job_message = {
                 "job_id": job_id,
-                "chunks": chunks,
                 "document_metadata": image_metadata,
             }
             if message.get("entity_types"):

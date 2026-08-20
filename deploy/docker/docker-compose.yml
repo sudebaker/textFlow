@@ -184,6 +184,7 @@ services:
     volumes:
     - uploads-data:/app/data/uploads:ro
     - /tmp/tiktoken_cache:/tmp/tiktoken_cache
+    - artifacts-data:/app/data/artifacts
   embeddings-worker:
     build:
       context: ../../
@@ -192,6 +193,7 @@ services:
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
       \ set it}:/models"
+    - artifacts-data:/app/data/artifacts
     environment:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -240,6 +242,7 @@ services:
       \ set it}:/models"
     - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
       \ set it}:/models"
+    - artifacts-data:/app/data/artifacts
     environment:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -401,6 +404,8 @@ services:
         limits:
           cpus: '1'
           memory: 1G
+    volumes:
+    - artifacts-data:/app/data/artifacts
   completion-worker:
     build:
       context: ../../
@@ -415,6 +420,7 @@ services:
     volumes:
     - results-data:/app/data/results
     - ${MODELS_PATH:?MODELS_PATH is not set}/bge-m3:/models/bge-m3:ro
+    - artifacts-data:/app/data/artifacts
     depends_on:
       redis:
         condition: service_healthy
@@ -606,4 +612,6 @@ volumes:
   uploads-data:
     driver: local
   results-data:
+    driver: local
+  artifacts-data:
     driver: local

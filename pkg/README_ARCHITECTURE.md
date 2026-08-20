@@ -453,13 +453,12 @@ class EmbeddingsWorker(BaseWorker):
         
         # Embed
         embeddings = self.model.encode(text, convert_to_tensor=True)
-        
-        # Store
-        self.redis.hset(
-            f"orchestrator:job:{job_id}:embeddings",
-            mapping={"vector": embeddings.tolist(), "model": "bge-m3"}
-        )
-        
+
+        # Store (D3: payload to FS artifact store, ref sha256:<hex> in Redis)
+        embeddings_key = f"orchestrator:job:{job_id}:embeddings"
+        embeddings_ref = STORE.put(msgpack.packb(embeddings, use_bin_type=True))
+        self.redis_client.set(embeddings_key, embeddings_ref)
+
         # Signal
         self.redis.hset(f"orchestrator:job:{job_id}:steps", "embeddings", "completed")
 ```

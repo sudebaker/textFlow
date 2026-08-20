@@ -179,11 +179,15 @@ func (c *RedisClient) GetJobStatus(ctx context.Context, jobID string) (models.Jo
 	return models.JobStatus(status), nil
 }
 
-// SetJobText stores the extracted text from document processing.
+// SetJobText stores the job text value.
 // Redis key: {namespace}:job:{jobID}:text
 // TTL: jobTTL (typically 24 hours), set on initial write.
-// Stores raw text output from extraction workers (via Unstructured API or local Docling).
-// Returns error if marshaling or Redis operation fails.
+// Writes the value exactly as received: either a raw text payload (legacy) or an
+// artifact store reference (sha256:<hex>). The extraction worker writes a ref whose
+// payload lives on the FS artifact store; Python readers resolve it via
+// artifact_store.resolve_text(). This method has no production callers (dead code
+// since the D3 artifact store migration) and is retained for compatibility and tests.
+// Returns error if the Redis operation fails.
 func (c *RedisClient) SetJobText(ctx context.Context, jobID string, text string) error {
 	key := c.key("job", jobID, "text")
 	err := c.client.Set(ctx, key, text, c.jobTTL).Err()
@@ -220,11 +224,13 @@ func (c *RedisClient) GetJobText(ctx context.Context, jobID string) (string, err
 	return text, nil
 }
 
-// SetJobResults stores the complete pipeline results as JSON.
+// SetJobResults would store the complete pipeline results as JSON.
 // Redis key: {namespace}:job:{jobID}:results
 // TTL: jobTTL (typically 24 hours), set on initial write.
-// Contains models.JobResults: aggregated outputs from all processing stages.
-// Returns error if marshaling or Redis operation fails.
+// This Redis write was removed from the pipeline during the D3 migration: the
+// completion worker now persists aggregated results to results-data/{jobID}.json.
+// The method is retained for compatibility and tests; it has no production callers.
+// Returns error if marshaling or the Redis operation fails.
 func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *models.JobResults) error {
 	key := c.key("job", jobID, "results")
 	data, err := json.Marshal(results)
@@ -271,12 +277,14 @@ func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.
 	return &results, nil
 }
 
-// SetJobEmbeddings stores chunk embedding vectors using MessagePack binary serialization.
+// SetJobEmbeddings would store chunk embedding vectors using MessagePack binary serialization.
 // Redis key: {namespace}:job:{jobID}:embeddings
 // TTL: jobTTL (typically 24 hours), set on initial write.
-// Stores a map of chunk_id -> dense float32 vector from embeddings worker (BAAI/bge-m3).
-// MsgPack encoding reduces storage ~75% vs JSON for float32 vectors.
-// Returns error if marshaling or Redis operation fails.
+// The embeddings worker (BAAI/bge-m3) now writes an artifact store reference
+// (sha256:<hex>) whose MessagePack payload lives on the FS artifact store, instead of
+// the raw blob. This method has no production callers (dead code since the D3 artifact
+// store migration) and is retained for compatibility and tests.
+// Returns error if marshaling or the Redis operation fails.
 func (c *RedisClient) SetJobEmbeddings(ctx context.Context, jobID string, embeddings map[string][]float32) error {
 	key := c.key("job", jobID, "embeddings")
 	data, err := msgpack.Marshal(embeddings)

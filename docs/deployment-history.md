@@ -172,7 +172,7 @@ DLX is declared in queue arguments. Implementation can be enhanced if needed.
 ```
 1. Client → POST /v1/documents/process
 2. Orchestrator validates input (SSRF/DoS), creates job in Redis, publishes to extract_text queue
-3. Extraction Worker consumes, calls Unstructured API, stores text in Redis, publishes to parallel queues
+3. Extraction Worker consumes, calls Unstructured API, stores text ref in Redis, publishes to parallel queues
 4. Parallel Processing: embeddings-worker, entities-worker, metadata-worker (independent)
 5. Completion Worker listens to events, detects all steps complete, aggregates results
 6. Client GET /v1/documents/{job_id} — returns aggregated results
@@ -182,11 +182,11 @@ DLX is declared in queue arguments. Implementation can be enhanced if needed.
 
 ```
 orchestrator:job:{jobID}:status       → Hash: {status: "completed"}
-orchestrator:job:{jobID}:text         → String: extracted text
-orchestrator:job:{jobID}:embeddings   → JSON: embeddings array
+orchestrator:job:{jobID}:text         → ref sha256:<hex> (payload on FS artifact store) [since D3]
+orchestrator:job:{jobID}:embeddings   → ref sha256:<hex> (payload on FS artifact store) [since D3]
 orchestrator:job:{jobID}:entities     → JSON: entities array
 orchestrator:job:{jobID}:metadata     → JSON: metadata object
-orchestrator:job:{jobID}:results      → JSON: aggregated results
+orchestrator:job:{jobID}:results      → not in Redis [since D3]; completion writes results-data/{jobID}.json
 orchestrator:job:{jobID}:steps        → Hash: {extraction: "completed", ...}
 orchestrator:job:{jobID}:meta         → Hash: {created_at, completed_at}
 orchestrator:job:{jobID}:error        → String: error message (if failed)

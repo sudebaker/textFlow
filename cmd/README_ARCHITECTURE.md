@@ -61,7 +61,7 @@ graph TB
 3. Chunk text (sliding window, 512 tokens default)
 4. Classify source (journal article, news, etc.)
 5. Extract metadata (language, length, keywords)
-6. Store text, chunks in Redis
+6. Store text, chunks refs (FS artifact store)
 7. Publish to downstream queues (embeddings, entities, metadata, inferences if enabled)
 8. ACK message
 
@@ -78,14 +78,14 @@ graph TB
 ## Embeddings Worker
 
 **Input**: `embeddings` queue → Text
-**Output**: Redis `embeddings` key + signal completion
+**Output**: Redis `embeddings` key (artifact store ref `sha256:`) + signal completion
 
 **Process**:
 1. Load BAAI/bge-m3 model (1024-dim, 48 attention heads)
 2. Receive text chunks
 3. Embed each chunk → float32 vector
 4. Average vectors (if multiple chunks) → single 1024-dim vector
-5. Store in Redis
+5. Store embeddings ref in Redis
 6. Update step status → "completed"
 7. ACK message
 
@@ -507,7 +507,7 @@ Workers are safe to restart:
 3. **Duplicate handling**: Job ID + step name uniquely identify work
    - If processing same job again, overwrites previous results (safe)
    - Deduplication via cache key (SHA-256 of input)
-4. **TTL cleanup**: Redis keys expire after 24h (automatic garbage collection)
+4. **TTL cleanup**: Redis keys (refs, control) expire after 24h via jobTTL; FS artifact store blobs do not expire
 
 **Crash Scenario**:
 ```

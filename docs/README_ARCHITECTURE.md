@@ -31,7 +31,7 @@ graph TB
     
     Q_Extract --> ExtractionWorker["Extraction Worker<br/>(Python)"]
     ExtractionWorker -->|Docling REST| Docling["Docling<br/>(port 5001)"]
-    ExtractionWorker -->|store text,chunks| Redis
+    ExtractionWorker -->|store text,chunks refs (FS artifact store)| Redis
     ExtractionWorker -->|publish| Q_Embed["RabbitMQ<br/>embeddings"]
     ExtractionWorker -->|publish| Q_Ent["RabbitMQ<br/>entities"]
     ExtractionWorker -->|publish| Q_Meta["RabbitMQ<br/>metadata"]
@@ -42,7 +42,7 @@ graph TB
     Q_Meta --> MetadataWorker["Metadata Worker<br/>(text analytics)"]
     Q_Inf --> InferenceWorker["Inference Worker<br/>(vLLM)"]
     
-    EmbeddingsWorker -->|store embeddings| Redis
+    EmbeddingsWorker -->|store embeddings ref (FS)| Redis
     EntitiesWorker -->|store entities| Redis
     MetadataWorker -->|store metadata| Redis
     InferenceWorker -->|vLLM REST| vLLM["vLLM<br/>(optional)"]
@@ -71,7 +71,7 @@ The typical document processing flow:
 1. **Upload**: Client performs `POST /documents` with `document_base64` or `document_url`
 2. **Creation**: Orchestrator creates job, stores in Redis, publishes to extraction queue
 3. **Extraction**: Extraction worker downloads/decodes, extracts text, chunks it, classifies source, publishes to embeddings/entities/metadata/inferences queues
-4. **Processing**: 4 workers (or 3 if no inferences) process in parallel, store results in Redis
+4. **Processing**: 4 workers (or 3 if no inferences) process in parallel, store results in Redis (text/chunks/embeddings as `sha256:` refs pointing to the FS artifact store; entities/metadata as raw values)
 5. **Completion**: CompletionWorker watches Redis pub/sub, when all steps done, finalizes job, saves to file, sends webhook
 
 ## Redis Key Schema
@@ -85,10 +85,12 @@ Status/Lifecycle:
   orchestrator:job:abc123:created_at → 1234567890
   orchestrator:job:abc123:completed_at → 1234567999
 
-Data Results:
-  orchestrator:job:abc123:text → "extracted text..."
-  orchestrator:job:abc123:chunks → JSON array
-  orchestrator:job:abc123:embeddings → float32 vector
+Data Results (artifact refs → FS artifact store):
+  orchestrator:job:abc123:text → ref sha256:<hex> (payload on FS)
+  orchestrator:job:abc123:chunks → ref sha256:<hex> (payload on FS)
+  orchestrator:job:abc123:embeddings → ref sha256:<hex> (payload on FS)
+
+Data Results (raw in Redis):
   orchestrator:job:abc123:entities → JSON array
   orchestrator:job:abc123:metadata → JSON object
 
@@ -97,7 +99,8 @@ Processing State:
   orchestrator:job:abc123:features → JSON array (requested features)
 
 Results:
-  orchestrator:job:abc123:results → full JobResults JSON
+  :results no longer lives in Redis; the completion worker writes aggregated
+  results to results-data/{jobID}.json
 
 Optional:
   orchestrator:job:abc123:inferences → JSON array (if requested)
@@ -105,7 +108,7 @@ Optional:
   orchestrator:job:abc123:llm_max_len → 512
 ```
 
-All keys expire after **24 hours** (configurable via `JOB_TTL` env var).
+Redis keys (refs, control) expire after **24 hours** (configurable via `JOB_TTL` env var); FS artifact store blobs do not expire.
 
 ## Environment Variables
 

@@ -7,7 +7,7 @@ This module implements the first step in the document processing pipeline:
 3. Extract document metadata (author, creation date, page count, MIME type, etc.)
 4. Chunk text into overlapping token-based segments
 5. Classify document source type (notariado, catastro, bancario, etc.)
-6. Store results to Redis for downstream workers
+6. Store results (text/chunks as artifact refs) to Redis for downstream workers
 7. Publish extraction completion to embeddings, entities, and metadata queues
 
 The worker is designed for air-gapped deployments with offline models and no
@@ -522,11 +522,14 @@ class ExtractionWorker:
     4. Analyzing text for language, readability, and patterns
     5. Chunking text into overlapping token-based segments
     6. Classifying document source type (notariado, catastro, etc.)
-    7. Storing results to Redis (sync — fast, acceptable brief blocking)
+    7. Storing results to Redis (text/chunks as artifact refs; sync — fast, acceptable brief blocking)
     8. Publishing job to downstream queues (embeddings, entities, metadata)
 
     This is the first step in the document processing pipeline. Results are stored
     in Redis under keys like orchestrator:job:{job_id}:{text,chunks,metadata:document}.
+    The :text and :chunks keys hold artifact store refs (sha256:<hex>) whose payloads
+    live on the FS artifact store and are resolved by downstream readers; the
+    :metadata:document key stays a raw JSON value.
 
     Concurrent processing is enabled via asyncio.create_task(): up to PREFETCH_COUNT
     Docling jobs can run simultaneously, with each independently polling Docling
@@ -849,7 +852,7 @@ class ExtractionWorker:
         4. Analyze text (language, readability, patterns)
         5. Chunk text into overlapping token-based segments
         6. Classify document source type
-        7. Store all results to Redis (sync — fast I/O)
+        7. Store all results to Redis (text/chunks as artifact refs; sync — fast I/O)
         8. Route to downstream queues (embeddings, entities, metadata) via aio_pika
         9. Publish job progress update
 
@@ -868,8 +871,8 @@ class ExtractionWorker:
 
         Redis storage (keys created):
             orchestrator:job:{job_id}:status -> hash with status field
-            orchestrator:job:{job_id}:text -> full extracted text
-            orchestrator:job:{job_id}:chunks -> JSON array of chunks
+            orchestrator:job:{job_id}:text -> artifact store ref (sha256:<hex>), payload on FS
+            orchestrator:job:{job_id}:chunks -> artifact store ref (sha256:<hex>), payload on FS
             orchestrator:job:{job_id}:metadata:document -> document metadata JSON
             orchestrator:job:{job_id}:metadata:text -> text analytics JSON
             orchestrator:job:{job_id}:source_classification -> classification result

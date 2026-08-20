@@ -194,6 +194,18 @@ Compat: un valor que NO empieza con `sha256:` se interpreta como payload legacy
 (raw) — lectores usan `resolve()`/`resolve_text()`. Sin TTL en FS (limpieza GC
 fuera de alcance). Volumen `artifacts-data` montado en `/app/data/artifacts`.
 
+### Inference-worker: AdaptiveSemaphore (diferido a benchmarks W6)
+
+`cmd/inference-worker/adaptive_semaphore.py` (AIMD congestion control, thread-safe,
+con tests unitarios) es DEAD CODE: NO está conectado al worker. El worker es pika
+`BlockingConnection` single-threaded — un semáforo sin concurrencia quedaría clavado
+en `min_concurrency=1` y solo aportaría overhead. Concurrencia efectiva hoy: réplicas
+(`INFERENCE_WORKER_REPLICAS`, default 4) × `INFERENCE_BATCH_SIZE` (multiplexa chunks
+por llamada LLM). NO conectar el semáforo al flujo actual; la integración correcta
+(ThreadPoolExecutor solo para las llamadas LLM + acks vía `add_callback_threadsafe` +
+prefetch dinámico) se hace junto con los benchmarks de la Fase 2 (W6), donde hay GPU
+para medir antes/después. Plan de diseño: `docs/plan-adaptive-flow-control.md`.
+
 ---
 
 ## Air-Gapped Deployment (CRITICAL)

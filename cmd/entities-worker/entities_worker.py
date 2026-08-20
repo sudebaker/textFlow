@@ -17,7 +17,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.insert(0, "/app")
 
 import json
-from typing import Dict, List, Any
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 from pathlib import Path
@@ -57,6 +58,39 @@ def _resolve_device() -> str:
 
 ENTITIES_DEVICE = _resolve_device()
 ENTITY_THRESHOLDS = app_settings.get_threshold_map()
+
+
+def extract_regex_parallel(
+    text: str,
+    regex_fn: Optional[Callable[[str], list]],
+    gliner_fn: Callable[[], list],
+) -> list:
+    """Run regex extraction in a background thread concurrent with gliner_fn.
+
+    Returns gliner_fn() results merged with regex results. Degrades silently:
+    if regex_fn is None, text is empty, or regex_fn raises, only gliner_fn()
+    results are returned.
+
+    Args:
+        text: Full document text (regex input). Fetched before dispatch.
+        regex_fn: Callable taking text and returning a list of entities.
+        gliner_fn: Callable taking no args; runs in the caller thread (GLiNER).
+
+    Returns:
+        Merged entity list (gliner results first, then regex results).
+    """
+    regex_future = None
+    executor = ThreadPoolExecutor(max_workers=1)
+    if text and regex_fn is not None:
+        regex_future = executor.submit(regex_fn, text)
+    entities = gliner_fn()
+    if regex_future is not None:
+        try:
+            entities.extend(regex_future.result())
+        except Exception:
+            pass
+    executor.shutdown(wait=True)
+    return entities
 
 
 class EntitiesWorker(BaseWorker):

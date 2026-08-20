@@ -29,11 +29,12 @@ Environment variables:
     METRICS_PORT (default: 8003): Prometheus metrics server port
 """
 
+import hashlib
 import json
 import logging
-import sys
-import hashlib
 import mimetypes
+import os
+import sys
 from datetime import UTC, datetime
 from typing import Dict, Optional
 
@@ -45,6 +46,12 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Language heuristic sampling (spec 16): the word-list scan is only
+# statistically meaningful and would otherwise pay a full-text lower() copy,
+# so it runs on a bounded prefix sample. Counts and content hash stay on the
+# full text (deterministic, cheap; the hash is document identity).
+TEXT_ANALYSIS_SAMPLE_CHARS = int(os.getenv("TEXT_ANALYSIS_SAMPLE_CHARS", "20000"))
 
 
 class MetadataWorker(BaseWorker):
@@ -87,6 +94,20 @@ class MetadataWorker(BaseWorker):
     def _extract_metadata(
         self, text: str, document_url: Optional[str] = None
     ) -> Dict:
+        """Extract lightweight, deterministic metadata from extracted text.
+
+        Sample-insensitive fields, computed on the FULL text (deterministic
+        and cheap): text_length, word_count, line_count, char_count,
+        content_hash, has_urls, has_emails, has_numbers and
+        avg_sentence_length. The content hash is document identity and the
+        boolean flags are single linear scans, so sampling them would lose
+        correctness for no measurable gain.
+
+        Sample-based field, computed on ``text[:TEXT_ANALYSIS_SAMPLE_CHARS]``:
+        ``language``. The word-list heuristic is only statistically
+        meaningful and a prefix sample avoids paying a full-text ``lower()``
+        copy over huge documents.
+        """
         metadata = {
             "extracted_at": datetime.now(UTC).isoformat(),
             "text_length": len(text),
@@ -103,7 +124,8 @@ class MetadataWorker(BaseWorker):
             if mime_type:
                 metadata["mime_type"] = mime_type
 
-        metadata["language"] = self._detect_language(text)
+        sample = text[:TEXT_ANALYSIS_SAMPLE_CHARS]
+        metadata["language"] = self._detect_language(sample)
 
         metadata["has_urls"] = "http://" in text or "https://" in text
         metadata["has_emails"] = "@" in text and "." in text

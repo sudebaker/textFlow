@@ -97,6 +97,12 @@ DOCLING_OCR_ENGINE = os.getenv("DOCLING_OCR_ENGINE", "rapidocr")
 # Maximum seconds to wait for a single docling conversion (async polling).
 DOCLING_CONVERSION_TIMEOUT = int(os.getenv("DOCLING_CONVERSION_TIMEOUT", "1800"))
 
+# Text analytics sampling (spec 16): language detection and readability are
+# statistical/costly over hundreds of thousands of characters without adding
+# information, so they run on a bounded prefix sample. Regex/URL/email/number
+# flags and the cheap deterministic counts stay on the full text.
+TEXT_ANALYSIS_SAMPLE_CHARS = int(os.getenv("TEXT_ANALYSIS_SAMPLE_CHARS", "20000"))
+
 try:
     tokenizer = tiktoken.get_encoding("cl100k_base")
 except Exception:
@@ -363,6 +369,14 @@ def analyze_text(text: str) -> Dict[str, Any]:
         - 60-70: Standard (8th-9th grade)
         - 0-30: Difficult (college level)
 
+        Costly statistical features (language detection, readability) run only
+        on ``text[:TEXT_ANALYSIS_SAMPLE_CHARS]`` — a prefix sample is
+        representative enough and avoids paying their cost over huge documents.
+        The boolean regex flags (has_urls/has_emails/has_numbers) and the
+        deterministic counts (char_count/word_count/line_count) stay on the
+        FULL text: they are single linear scans and full-document correctness
+        matters for downstream feature filtering.
+
         Failures in language detection or readability calculation do not raise
         exceptions; fields are left as 'unknown' or omitted.
 
@@ -373,6 +387,7 @@ def analyze_text(text: str) -> Dict[str, Any]:
         >>> analysis['language']
         'en'
     """
+    sample = text[:TEXT_ANALYSIS_SAMPLE_CHARS]
     analysis = {
         "char_count": len(text),
         "word_count": len(text.split()),
@@ -385,7 +400,7 @@ def analyze_text(text: str) -> Dict[str, Any]:
     }
 
     try:
-        analysis["language"] = langdetect.detect(text)
+        analysis["language"] = langdetect.detect(sample)
     except Exception as e:
         logger.warning(f"Language detection failed: {e}")
         analysis["language"] = "unknown"
@@ -399,7 +414,7 @@ def analyze_text(text: str) -> Dict[str, Any]:
     analysis["has_numbers"] = len(numbers) > 0
 
     try:
-        analysis["readability_score"] = textstat.flesch_reading_ease(text)
+        analysis["readability_score"] = textstat.flesch_reading_ease(sample)
     except Exception as e:
         logger.warning(f"Readability calculation failed: {e}")
 

@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 from pathlib import Path
 
+from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
 from pkg.worker_common.entity_utils import entity_id
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
@@ -315,7 +316,9 @@ class EntitiesWorker(BaseWorker):
                 batch_chunks.append((chunk_id, chunk_text, chunk_offset))
 
         try:
-            text = self.redis_client.get(f"orchestrator:job:{job_id}:text")
+            text = resolve_text(
+                STORE, self.redis_client.get(f"orchestrator:job:{job_id}:text")
+            )
         except Exception as e:
             self.logger.warning(f"Failed to read document text: {e}")
             text = None

@@ -503,6 +503,7 @@ services:
     - datastore
     volumes:
     - uploads-data:/app/data/uploads
+    - artifacts-data:/app/data/artifacts
     environment:
     - RABBITMQ_URL=${RABBITMQ_URL}
     - REDIS_URL=${REDIS_URL}
@@ -566,6 +567,7 @@ services:
     - datastore
     volumes:
     - uploads-data:/app/data/uploads
+    - artifacts-data:/app/data/artifacts
     environment:
     - RABBITMQ_URL=${RABBITMQ_URL}
     - REDIS_URL=${REDIS_URL}

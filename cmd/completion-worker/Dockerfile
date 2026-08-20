@@ -15,6 +15,7 @@ RUN addgroup --gid 101 appgroup && \
 
 COPY pkg/ ./pkg/
 COPY cmd/completion-worker/ ./cmd/completion-worker/
+COPY configs/pipeline.json /app/configs/pipeline.json
 
 USER appuser
 

@@ -154,6 +154,7 @@ services:
     - LOG_LEVEL=debug
     - METRICS_PORT=8004
     - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
+    - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
     depends_on:
       redis:
         condition: service_healthy
@@ -417,6 +418,7 @@ services:
     - LOG_LEVEL=debug
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
+    - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
     volumes:
     - results-data:/app/data/results
     - ${MODELS_PATH:?MODELS_PATH is not set}/bge-m3:/models/bge-m3:ro

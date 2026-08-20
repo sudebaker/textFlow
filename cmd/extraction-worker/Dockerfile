@@ -26,6 +26,7 @@ RUN adduser --disabled-password --gecos "" app && \
 
 COPY pkg/ ./pkg/
 COPY cmd/extraction-worker/ ./cmd/extraction-worker/
+COPY configs/pipeline.json /app/configs/pipeline.json
 
 USER app
 

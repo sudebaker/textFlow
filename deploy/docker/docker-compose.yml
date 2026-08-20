@@ -112,6 +112,7 @@ services:
     volumes:
     - uploads-data:/app/data/uploads
     - results-data:/app/data/results
+    - artifacts-data:/app/data/artifacts
   resource-manager:
     build:
       context: ../../

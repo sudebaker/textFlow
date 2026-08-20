@@ -973,7 +973,8 @@ class ExtractionWorker:
 
                 text_ref = STORE.put(text.encode("utf-8"))
                 self.redis_client.set(f"orchestrator:job:{job_id}:text", text_ref)
-                self.redis_client.set(f"orchestrator:job:{job_id}:chunks", json.dumps(chunks))
+                chunks_ref = STORE.put(json.dumps(chunks).encode("utf-8"))
+                self.redis_client.set(f"orchestrator:job:{job_id}:chunks", chunks_ref)
                 self.redis_client.set(
                     f"orchestrator:job:{job_id}:metadata:document",
                     json.dumps(document_metadata),

@@ -292,7 +292,9 @@ class EntitiesWorker(BaseWorker):
         self.logger.info(f"Processing entities for job: {job_id} with {len(chunks)} chunks")
 
         if not chunks:
-            chunks_json = self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+            chunks_json = resolve_text(
+                STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+            )
             if chunks_json:
                 chunks = json.loads(chunks_json)
             else:

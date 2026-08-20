@@ -36,9 +36,6 @@ from sliding_window import (
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 INFERENCES_QUEUE = os.getenv("INFERENCES_QUEUE", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
-REGEX_ENTITY_EXTRACTOR_URL = os.getenv(
-    "REGEX_ENTITY_EXTRACTOR_URL", "http://regex-entity-extractor:8081"
-)
 
 app_settings = AppSettings()
 GLINER_MODEL_PATH = app_settings.gliner_model_path
@@ -79,17 +76,16 @@ def extract_regex_parallel(
     Returns:
         Merged entity list (gliner results first, then regex results).
     """
-    regex_future = None
-    executor = ThreadPoolExecutor(max_workers=1)
-    if text and regex_fn is not None:
-        regex_future = executor.submit(regex_fn, text)
-    entities = gliner_fn()
-    if regex_future is not None:
-        try:
-            entities.extend(regex_future.result())
-        except Exception:
-            pass
-    executor.shutdown(wait=True)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        regex_future = None
+        if text and regex_fn is not None:
+            regex_future = executor.submit(regex_fn, text)
+        entities = gliner_fn()
+        if regex_future is not None:
+            try:
+                entities.extend(regex_future.result())
+            except Exception:
+                pass
     return entities
 
 

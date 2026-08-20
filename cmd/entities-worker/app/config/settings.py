@@ -2,9 +2,11 @@
 Configuration settings for the entities worker.
 """
 
-from pydantic_settings import BaseSettings
-from pydantic import Field
+import os
 from typing import Dict
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -68,7 +70,7 @@ class Settings(BaseSettings):
 
     # Regex Entity Extractor Configuration
     regex_service_url: str = Field(
-        default="http://regex-entity-extractor:8081",
+        default=os.getenv("REGEX_ENTITY_EXTRACTOR_URL", "http://regex-entity-extractor:8081"),
         description="URL of the regex-entity-extractor microservice",
     )
 

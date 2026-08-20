@@ -1,10 +1,22 @@
 """Unit tests for extract_regex_parallel and regex settings wiring."""
 
+import importlib
 import json
 import time
 from unittest.mock import MagicMock
 
+import app.config.settings as settings_module
 import entities_worker as ew
+
+
+def test_settings_regex_service_url_falls_back_to_old_env_var(monkeypatch):
+    monkeypatch.delenv("REGEX_SERVICE_URL", raising=False)
+    monkeypatch.setenv("REGEX_ENTITY_EXTRACTOR_URL", "http://regex-custom:9999")
+
+    settings_module_reloaded = importlib.reload(settings_module)
+    settings = settings_module_reloaded.Settings()
+
+    assert settings.regex_service_url == "http://regex-custom:9999"
 
 
 def test_merges_regex_and_gliner_results():
@@ -83,12 +95,17 @@ def _build_worker():
 def test_process_message_merges_regex_into_entities_raw():
     worker = _build_worker()
     worker.redis_client.get.side_effect = lambda key: (
-        json.dumps("Juan trabaja en Madrid")
-        if key.endswith(":text")
-        else None
+        json.dumps("Juan trabaja en Madrid") if key.endswith(":text") else None
     )
     worker._extract_regex_entities = lambda text: [
-        {"text": "Madrid", "label": "LOC", "confidence": 1.0, "start": 0, "end": 0, "chunk_id": "c1"}
+        {
+            "text": "Madrid",
+            "label": "LOC",
+            "confidence": 1.0,
+            "start": 0,
+            "end": 0,
+            "chunk_id": "c1",
+        }
     ]
     message = {
         "job_id": "job-1",
@@ -113,7 +130,14 @@ def test_process_message_skips_regex_when_disabled():
         json.dumps("Juan trabaja en Madrid") if key.endswith(":text") else None
     )
     worker._extract_regex_entities = lambda text: [
-        {"text": "Madrid", "label": "LOC", "confidence": 1.0, "start": 0, "end": 0, "chunk_id": "c1"}
+        {
+            "text": "Madrid",
+            "label": "LOC",
+            "confidence": 1.0,
+            "start": 0,
+            "end": 0,
+            "chunk_id": "c1",
+        }
     ]
     message = {
         "job_id": "job-2",

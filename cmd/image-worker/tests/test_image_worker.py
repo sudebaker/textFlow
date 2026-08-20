@@ -2,22 +2,22 @@ import asyncio
 import json
 import os
 import tempfile
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from pkg.worker_common.async_base import BaseAsyncWorker
 
 
 @pytest.fixture
 def mock_deps():
-    with patch("pkg.worker_common.base.redis") as mock_redis_mod, \
-         patch("pkg.worker_common.base.EventBus") as mock_event_bus_cls:
-        mock_redis_client = MagicMock()
-        mock_redis_client.hset = MagicMock()
-        mock_redis_client.set = MagicMock()
-        mock_redis_client.get = MagicMock()
-        mock_redis_mod.from_url.return_value = mock_redis_client
-        mock_event_bus = MagicMock()
-        mock_event_bus_cls.return_value = mock_event_bus
+    mock_redis_client = MagicMock()
+    mock_event_bus = MagicMock()
+    with patch.object(BaseAsyncWorker, "redis_client", mock_redis_client), \
+         patch.object(BaseAsyncWorker, "event_bus", mock_event_bus), \
+         patch("pkg.worker_common.async_base.Counter"), \
+         patch("pkg.worker_common.async_base.Histogram"), \
+         patch("pkg.worker_common.async_base.Gauge"):
         yield {
             "redis_client": mock_redis_client,
             "event_bus": mock_event_bus,
@@ -41,17 +41,17 @@ def _make_msg(job_id="j1", filename="test.png", entity_types=None, features=None
 
 class TestImageWorkerInit:
     def test_has_worker_name(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         w = ImageWorker()
         assert w.worker_name == "image-worker"
 
     def test_has_queue_name(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         w = ImageWorker()
         assert w.queue_name == os.getenv("IMAGE_QUEUE", "image")
 
     def test_creates_llm_pool(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         w = ImageWorker()
         assert w.llm_pool is not None
 
@@ -61,7 +61,7 @@ class TestImageWorkerInit:
 class TestProcessMessageSuccess:
     @pytest.mark.asyncio
     async def test_sets_status_analyzing(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -83,7 +83,7 @@ class TestProcessMessageSuccess:
 
     @pytest.mark.asyncio
     async def test_stores_text_in_redis(self, mock_deps, monkeypatch, tmp_path):
-        import image_worker
+        import worker as image_worker
         from pkg.worker_common.artifact_store import FSStore
 
         store = FSStore(str(tmp_path))
@@ -109,7 +109,7 @@ class TestProcessMessageSuccess:
 
     @pytest.mark.asyncio
     async def test_publishes_to_downstream_queues(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -128,7 +128,7 @@ class TestProcessMessageSuccess:
 
     @pytest.mark.asyncio
     async def test_publishes_without_inferences_queue(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -147,7 +147,7 @@ class TestProcessMessageSuccess:
 
     @pytest.mark.asyncio
     async def test_steps_marked_completed(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -172,7 +172,7 @@ class TestProcessMessageSuccess:
 class TestProcessMessageError:
     @pytest.mark.asyncio
     async def test_marks_job_failed_on_llm_error(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -190,7 +190,7 @@ class TestProcessMessageError:
 
     @pytest.mark.asyncio
     async def test_sets_error_message_in_redis(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -208,7 +208,7 @@ class TestProcessMessageError:
 
     @pytest.mark.asyncio
     async def test_publishes_job_failed_event(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -228,7 +228,7 @@ class TestProcessMessageError:
 class TestRouting:
     @pytest.mark.asyncio
     async def test_inferences_feature_publishes_4_queues(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -248,7 +248,7 @@ class TestRouting:
 
     @pytest.mark.asyncio
     async def test_no_entity_types_does_not_fail(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -271,7 +271,7 @@ class TestRouting:
 class TestMetadata:
     @pytest.mark.asyncio
     async def test_stores_image_metadata(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name
@@ -284,7 +284,7 @@ class TestMetadata:
             mock_result.language = "en"
             with patch.object(w.llm_pool, "analyze", return_value=mock_result):
                 await w.process_message(_make_msg(path=path))
-            stored = json.loads(mock_deps["redis_client"].set.call_args_list[-3][0][1])
+            stored = json.loads(mock_deps["redis_client"].set.call_args_list[-1][0][1])
             assert stored["language"] == "en"
             assert stored["description"] == "A cat photo"
         finally:
@@ -292,7 +292,7 @@ class TestMetadata:
 
     @pytest.mark.asyncio
     async def test_chunks_stored_in_redis(self, mock_deps):
-        from image_worker import ImageWorker
+        from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
             path = f.name

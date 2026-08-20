@@ -6,6 +6,7 @@ another worker that pytest may have loaded first (all conftest files load
 before any test module is imported).
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,10 @@ for _p in (_w, _r):
         sys.path.remove(_p)
 sys.path.insert(0, _r)
 sys.path.insert(0, _w)
+
+# Point PipelineDefinition.load() at the repo config (Docker mounts it at
+# /app/configs/pipeline.json).
+os.environ.setdefault("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
 
 # Evict stale 'worker' module so Python re-imports from the updated sys.path
 sys.modules.pop("worker", None)

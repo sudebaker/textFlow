@@ -53,6 +53,7 @@ from app.config.settings import Settings
 from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
 from pkg.worker_common.entity_utils import deduplicate_entities
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
+from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.pubsub_base import BasePubSubWorker
 
 try:
@@ -88,10 +89,8 @@ class CompletionWorker(BasePubSubWorker):
     Attributes:
         redis_client: Redis client for pub/sub and data retrieval.
         event_bus: EventBus instance for publishing job completion/failure events.
-        default_required_steps: Set of steps required for full pipeline jobs
-            (extraction, embeddings, entities, metadata).
-        spreadsheet_required_steps: Set of steps required for spreadsheet jobs
-            (extraction, entities only).
+        pipeline: PipelineDefinition with the declarative DAG steps for each
+            pipeline variant (full, spreadsheet) and feature extras.
     """
 
     def __init__(self):
@@ -99,8 +98,7 @@ class CompletionWorker(BasePubSubWorker):
             worker_name="completion-worker",
             metrics_port=METRICS_PORT,
         )
-        self.default_required_steps = {"extraction", "embeddings", "entities", "metadata"}
-        self.spreadsheet_required_steps = {"extraction", "entities"}
+        self.pipeline = PipelineDefinition.load()
         self._embedding_service = None
         self._embedding_service_loaded = False
 
@@ -462,30 +460,19 @@ class CompletionWorker(BasePubSubWorker):
             # Check if it's an audio job (has audio step instead of extraction)
             is_audio = "audio" in completed_steps
 
-            required_steps = (
-                self.spreadsheet_required_steps
-                if is_spreadsheet
-                else self.default_required_steps.copy()
-            )
-
-            # Audio pipeline uses 'audio' step instead of 'extraction'
-            if is_audio and "extraction" in required_steps:
-                required_steps.discard("extraction")
-                required_steps.add("audio")
-
-            # Add inferences if features were requested
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
-            self.logger.debug(f"Job {job_id}: features_json={features_json}")
+            features = []
             if features_json:
                 try:
                     features = json.loads(features_json)
-                    if "inferences" in features:
-                        required_steps.add("inferences")
-                        self.logger.info(
-                            f"Job {job_id}: added 'inferences' to required_steps"
-                        )
                 except Exception as e:
                     self.logger.warning(f"Failed to parse features: {e}")
+
+            required_steps = self.pipeline.steps_for(
+                is_spreadsheet=is_spreadsheet,
+                is_audio=is_audio,
+                features=features,
+            )
 
             self.logger.info(
                 f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "

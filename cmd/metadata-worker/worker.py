@@ -5,7 +5,7 @@ Metadata extraction worker for textFlow.
 This worker extracts lightweight text-level metadata without requiring ML models,
 making it fast and deterministic. It consumes extracted text from the extraction
 worker via RabbitMQ, computes document statistics (character count, word count,
-language heuristic, readability score, etc.), and stores results in Redis.
+language heuristic, readability score, etc.), and stores the metadata in Redis (raw).
 
 Key characteristics:
     - No ML model dependencies (unlike embeddings, entities workers)
@@ -16,7 +16,8 @@ Key characteristics:
       detection, and MIME type guessing.
 
 Architecture:
-    Input: Extracted text from extraction worker (stored in Redis)
+    Input: Extracted text from extraction worker (stored in Redis; may be an artifact
+           store ref sha256:<hex>, resolved via resolve_text)
     Queue: RabbitMQ metadata queue (default: "metadata")
     Output: Metadata dict stored in Redis at orchestrator:job:{job_id}:metadata
     Events: Publishes job progress events via EventBus (status=metadata, 100%)

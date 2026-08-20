@@ -138,7 +138,7 @@ pkg/              # shared: logging/, metrics/, events_python.py, worker_common/
 | entities-worker | Python | - | GLiNER ⚠️ offline |
 | extraction-worker | Python | - | Unstructured API |
 
-**Redis keys:** `orchestrator:job:{id}:{status|text|chunks|embeddings|entities|metadata|results}`
+**Redis keys:** control/raw: `orchestrator:job:{id}:{status|steps|features|error|entities|metadata|entities_raw}` + refs `sha256:<hex>` para `:text|:chunks|:embeddings|:inference_embeddings` (blobs en FS artifact store); resultados en `results-data/{jobID}.json`.
 
 ### DAG del pipeline (IMPORTANTE)
 

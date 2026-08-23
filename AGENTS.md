@@ -194,17 +194,31 @@ Compat: un valor que NO empieza con `sha256:` se interpreta como payload legacy
 (raw) — lectores usan `resolve()`/`resolve_text()`. Sin TTL en FS (limpieza GC
 fuera de alcance). Volumen `artifacts-data` montado en `/app/data/artifacts`.
 
-### Inference-worker: AdaptiveSemaphore (diferido a benchmarks W6)
+### Inference-worker: AdaptiveSemaphore (integrado tras `INFERENCE_ADAPTIVE_ENABLED`)
 
 `cmd/inference-worker/adaptive_semaphore.py` (AIMD congestion control, thread-safe,
-con tests unitarios) es DEAD CODE: NO está conectado al worker. El worker es pika
-`BlockingConnection` single-threaded — un semáforo sin concurrencia quedaría clavado
-en `min_concurrency=1` y solo aportaría overhead. Concurrencia efectiva hoy: réplicas
-(`INFERENCE_WORKER_REPLICAS`, default 4) × `INFERENCE_BATCH_SIZE` (multiplexa chunks
-por llamada LLM). NO conectar el semáforo al flujo actual; la integración correcta
-(ThreadPoolExecutor solo para las llamadas LLM + acks vía `add_callback_threadsafe` +
-prefetch dinámico) se hace junto con los benchmarks de la Fase 2 (W6), donde hay GPU
-para medir antes/después. Plan de diseño: `docs/plan-adaptive-flow-control.md`.
+con 17 tests unitarios) YA está integrado en `cmd/inference-worker/inference_worker.py`,
+pero detrás del flag `INFERENCE_ADAPTIVE_ENABLED` (default `false`): con `false` el
+comportamiento es idéntico al anterior. Con `true` se activa:
+- `_call_llm()` (helper que sustituye el `requests.post` en `extract_inferences` y en
+  `extract_inferences_batch`) adquiere un token del semáforo antes de la llamada LLM y lo
+  libera con `latency_ms`/`tokens_per_sec`/`is_error` al terminar (decide con tokens/s,
+  ver Fase 5.2 del plan). Si `acquire` falla (cooldown/saturación), devuelve resultado
+  vacío (degradación silenciosa).
+- Prefetch dinámico: `ADAPTIVE_MAX_CONCURRENCY + BATCH_SIZE` (batch) o
+  `ADAPTIVE_MAX_CONCURRENCY` (sin batch), salvo `PREFETCH_COUNT` explícito.
+- Métricas Prometheus nuevas: `inference_worker_cwnd`, `inference_worker_in_flight`,
+  `inference_worker_llm_avg_latency_ms`, `inference_worker_cooldown`,
+  `inference_worker_llm_requests_total`, `inference_worker_llm_timeouts_total`
+  (exportadas en `cleanup()` vía `_export_adaptive_metrics()`).
+- Graceful shutdown en `cleanup()`: espera `in_flight == 0` (timeout `LLM_TIMEOUT+30`).
+
+El worker sigue siendo pika `BlockingConnection` single-threaded: el semáforo gatea la
+llamada LLM pero NO hay `ThreadPoolExecutor` tocando pika. El `ThreadPoolExecutor`
+(reservado como `self._executor`, sin uso) y el rediseño completo del loop pika (acks vía
+`add_callback_threadsafe`) quedan para los benchmarks de la Fase 2 (W6), cuando haya GPU +
+modelos (bge-m3, deberta, gliner) + vLLM + infra arriba, para medir antes/después. Ver
+`docs/plan-adaptive-flow-control.md`.
 
 ---
 

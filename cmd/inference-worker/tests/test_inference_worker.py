@@ -61,7 +61,7 @@ class TestInferenceWorker:
             }
             mock_get.return_value = mock_response
             
-            model_id, max_len = InferenceWorker._discover_model("http://localhost:8000")
+            model_id, max_len = InferenceWorker()._discover_model("http://localhost:8000")
             
             assert model_id == "qwen3.5-2b"
             assert max_len == 16384
@@ -75,7 +75,7 @@ class TestInferenceWorker:
         with patch("requests.get") as mock_get:
             mock_get.side_effect = requests.RequestException("Connection refused")
             
-            model_id, max_len = InferenceWorker._discover_model("http://localhost:8000")
+            model_id, max_len = InferenceWorker()._discover_model("http://localhost:8000")
             
             assert model_id is None
             assert max_len is None

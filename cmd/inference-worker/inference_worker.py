@@ -66,14 +66,19 @@ import time
 import re
 import hashlib
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Any, Optional
+
 import redis
 import pika
 import requests
-from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, "/app")
 from pkg.worker_common.base import BaseWorker
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
+
+# Note: adaptive_semaphore lives in the same directory as this worker.
+from adaptive_semaphore import AdaptiveSemaphore
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
@@ -94,13 +99,38 @@ LLM_TIMEOUT = int(os.getenv("INFERENCE_LLM_TIMEOUT", "60"))
 LLM_RETRIES = int(os.getenv("INFERENCE_LLM_RETRIES", "2"))
 LLM_RETRY_BACKOFF = float(os.getenv("INFERENCE_LLM_RETRY_BACKOFF", "2.0"))
 
+# Adaptive LLM concurrency (Fase 3). Behind INFERENCE_ADAPTIVE_ENABLED so the
+# current behavior is unchanged until GPU benchmarks are available.
+ADAPTIVE_ENABLED = os.getenv("INFERENCE_ADAPTIVE_ENABLED", "false").lower() == "true"
+ADAPTIVE_MAX_CONCURRENCY = int(os.getenv("INFERENCE_MAX_CONCURRENCY", "16"))
+ADAPTIVE_MIN_CONCURRENCY = int(os.getenv("INFERENCE_MIN_CONCURRENCY", "1"))
+ADAPTIVE_TARGET_TOKENS_PER_SEC = float(os.getenv("INFERENCE_TARGET_TOKENS_PER_SEC", "10.0"))
+ADAPTIVE_DECAY_FACTOR = int(os.getenv("INFERENCE_TIMEOUT_DECAY_FACTOR", "2"))
+ADAPTIVE_COOLDOWN_SECONDS = float(os.getenv("INFERENCE_COOLDOWN_SECONDS", "30"))
+ADAPTIVE_CONSECUTIVE_ERRORS = int(os.getenv("INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN", "5"))
+
+# Global shutdown flag. Set True by signal_handler/main. Defined here (not just
+# inside main) so _process_single's finally block can reference it even when
+# main() has not run yet (e.g. in unit tests).
+_stopping = False
+
+
+class _EmptyLlmResponse:
+    """
+    Minimal stand-in for a requests.Response used when the adaptive semaphore
+    cannot grant a token. Parses as an empty LLM result so callers degrade
+    gracefully to an empty inference list.
+    """
+
+    def json(self):
+        return {"choices": []}
+
 
 class InferenceWorker(BaseWorker):
     """
     RabbitMQ consumer that extracts micro-inferences from document chunks using an LLM.
 
-    This worker subscribes to the inferences queue and processes chunks from extraction.
-    For each chunk, it calls an external vLLM API to extract factual statements guided
+    This worker subscribes to the inferences queue and processes chunks from extraction.    For each chunk, it calls an external vLLM API to extract factual statements guided
     by detected entities.
 
     Lifecycle:
@@ -136,6 +166,46 @@ class InferenceWorker(BaseWorker):
         # Batch-specific metric
         from prometheus_client import Counter
         self.batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
+
+        # Adaptive concurrency control (Fase 3). Only wired when enabled; the
+        # consumer loop stays single-threaded on pika, so the semaphore gates
+        # the LLM calls themselves (which block for seconds). A full
+        # ThreadPoolExecutor integration requires re-designing the pika loop
+        # and is deferred to the GPU benchmarks.
+        self._adaptive = None
+        self._executor = None
+        if ADAPTIVE_ENABLED:
+            self._adaptive = AdaptiveSemaphore(
+                min_concurrency=ADAPTIVE_MIN_CONCURRENCY,
+                max_concurrency=ADAPTIVE_MAX_CONCURRENCY,
+                target_tokens_per_sec=ADAPTIVE_TARGET_TOKENS_PER_SEC,
+                decay_factor=ADAPTIVE_DECAY_FACTOR,
+                cooldown_seconds=ADAPTIVE_COOLDOWN_SECONDS,
+                consecutive_errors_for_cooldown=ADAPTIVE_CONSECUTIVE_ERRORS,
+            )
+            # Reserved for the full-concurrent design (W6). Not used yet to
+            # avoid re-designing the synchronous pika callback.
+            self._executor = ThreadPoolExecutor(
+                max_workers=ADAPTIVE_MAX_CONCURRENCY
+            )
+            from prometheus_client import Gauge
+            self._cwnd_gauge = Gauge("inference_worker_cwnd", "Current congestion window")
+            self._in_flight_gauge = Gauge("inference_worker_in_flight", "LLM calls currently in flight")
+            self._avg_latency_gauge = Gauge(
+                "inference_worker_llm_avg_latency_ms", "Average LLM latency (ms)"
+            )
+            self._cooldown_gauge = Gauge("inference_worker_cooldown", "1 if circuit breaker is active")
+            self._llm_requests_counter = Counter(
+                "inference_worker_llm_requests_total", "Total LLM requests"
+            )
+            self._llm_timeouts_counter = Counter(
+                "inference_worker_llm_timeouts_total", "Total LLM timeouts"
+            )
+            self.logger.info(
+                f"Adaptive LLM concurrency ENABLED: min={ADAPTIVE_MIN_CONCURRENCY}, "
+                f"max={ADAPTIVE_MAX_CONCURRENCY}, "
+                f"target_tokens/s={ADAPTIVE_TARGET_TOKENS_PER_SEC}"
+            )
 
         # Discover model at startup (one-time, cached)
         if LLM_URL:
@@ -307,6 +377,97 @@ class InferenceWorker(BaseWorker):
         except Exception as e:
             self.logger.warning(f"Cache write error: {e}")
 
+    def _call_llm(
+        self,
+        payload: Dict[str, Any],
+        timeout: float,
+        retries: int = LLM_RETRIES,
+        retry_backoff: float = LLM_RETRY_BACKOFF,
+    ) -> requests.Response:
+        """
+        Perform an LLM request to the vLLM /v1/chat/completions endpoint.
+
+        When ADAPTIVE_ENABLED, the request is gated by the AdaptiveSemaphore:
+        a token is acquired before the request and released afterwards, feeding
+        the latency/tokens-per-sec back into the congestion window so cwnd
+        grows/shrinks based on actual LLM throughput. On acquire failure (or
+        cooldown), returns an empty JSON response so callers degrade gracefully.
+
+        Args:
+            payload: The request body for /v1/chat/completions.
+            timeout: Per-request timeout in seconds.
+            retries: Number of attempts (including the first).
+            retry_backoff: Base backoff in seconds, doubled per attempt.
+
+        Returns:
+            requests.Response with .json() available. On adaptive acquire
+            failure, returns a response whose .json() yields {"choices": []}
+            so the caller treats it as a parse miss (empty inferences).
+
+        Raises:
+            requests.RequestException if the request ultimately fails.
+        """
+        acquired = False
+        t0 = time.monotonic()
+        is_error = False
+        try:
+            if self._adaptive is not None:
+                if not self._adaptive.acquire(timeout=timeout + 10):
+                    self.logger.warning(
+                        "Adaptive semaphore acquire timeout, returning empty"
+                    )
+                    return _EmptyLlmResponse()
+                acquired = True
+
+            response = None
+            last_error = None
+            for attempt in range(retries):
+                try:
+                    response = requests.post(
+                        f"{LLM_URL}/v1/chat/completions",
+                        json=payload,
+                        timeout=timeout,
+                    )
+                    response.raise_for_status()
+                    break
+                except (requests.Timeout, requests.ConnectionError) as e:
+                    last_error = e
+                    if attempt < retries - 1:
+                        wait = retry_backoff * (2 ** attempt)
+                        self.logger.warning(
+                            f"LLM call attempt {attempt + 1}/{retries} failed: {e}, "
+                            f"retrying in {wait:.1f}s"
+                        )
+                        time.sleep(wait)
+                    else:
+                        self.logger.error(
+                            f"LLM call failed after {retries} attempts: {e}"
+                        )
+                        raise
+            if response is None:
+                raise last_error
+            return response
+        except Exception:
+            is_error = True
+            raise
+        finally:
+            if acquired:
+                latency_ms = (time.monotonic() - t0) * 1000
+                tokens_per_sec = 0.0
+                if not is_error and response is not None:
+                    try:
+                        usage = response.json().get("usage", {})
+                        completion_tokens = int(usage.get("completion_tokens", 0))
+                        if latency_ms > 0 and completion_tokens > 0:
+                            tokens_per_sec = completion_tokens / (latency_ms / 1000.0)
+                    except Exception:
+                        tokens_per_sec = 0.0
+                self._adaptive.release(
+                    latency_ms=latency_ms,
+                    tokens_per_sec=tokens_per_sec,
+                    is_error=is_error,
+                )
+
     def extract_inferences(
         self,
         chunk_text: str,
@@ -460,33 +621,7 @@ Respond with ONLY the JSON array:"""
                 "chat_template_kwargs": {"enable_thinking": False},
             }
 
-            response = None
-            last_error = None
-            for attempt in range(LLM_RETRIES):
-                try:
-                    response = requests.post(
-                        f"{LLM_URL}/v1/chat/completions",
-                        json=payload,
-                        timeout=LLM_TIMEOUT,
-                    )
-                    response.raise_for_status()
-                    break
-                except (requests.Timeout, requests.ConnectionError) as e:
-                    last_error = e
-                    if attempt < LLM_RETRIES - 1:
-                        wait = LLM_RETRY_BACKOFF * (2 ** attempt)
-                        self.logger.warning(
-                            f"LLM call attempt {attempt + 1}/{LLM_RETRIES} failed: {e}, "
-                            f"retrying in {wait:.1f}s"
-                        )
-                        time.sleep(wait)
-                    else:
-                        self.logger.error(
-                            f"LLM call failed after {LLM_RETRIES} attempts: {e}"
-                        )
-                        raise
-            if response is None:
-                raise last_error
+            response = self._call_llm(payload, timeout=LLM_TIMEOUT)
 
             result = response.json()
             completion_text = (
@@ -652,33 +787,7 @@ Respond with ONLY the JSON array:"""
 
             batch_timeout = max(LLM_TIMEOUT, min(180, len(chunks_data) * LLM_TIMEOUT))
 
-            response = None
-            last_error = None
-            for attempt in range(LLM_RETRIES):
-                try:
-                    response = requests.post(
-                        f"{LLM_URL}/v1/chat/completions",
-                        json=payload,
-                        timeout=batch_timeout,
-                    )
-                    response.raise_for_status()
-                    break
-                except (requests.Timeout, requests.ConnectionError) as e:
-                    last_error = e
-                    if attempt < LLM_RETRIES - 1:
-                        wait = LLM_RETRY_BACKOFF * (2 ** attempt)
-                        self.logger.warning(
-                            f"Batch LLM attempt {attempt + 1}/{LLM_RETRIES} failed: {e}, "
-                            f"retrying in {wait:.1f}s"
-                        )
-                        time.sleep(wait)
-                    else:
-                        self.logger.error(
-                            f"Batch LLM failed after {LLM_RETRIES} attempts: {e}"
-                        )
-                        raise
-            if response is None:
-                raise last_error
+            response = self._call_llm(payload, timeout=batch_timeout)
 
             result = response.json()
             completion_text = (
@@ -1058,6 +1167,35 @@ Respond with ONLY the JSON array:"""
                     self.logger.error(f"Final batch flush failed: {e}")
                 self._batch_buffer.clear()
 
+        # Adaptive mode: wait for in-flight LLM calls to drain before exiting.
+        # Do not sys.exit here — tests mock it and it would break cleanup.
+        if self._adaptive is not None:
+            wait_timeout = LLM_TIMEOUT + 30
+            deadline = time.monotonic() + wait_timeout
+            while self._adaptive.in_flight > 0 and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if self._adaptive.in_flight > 0:
+                self.logger.warning(
+                    f"Force shutdown: {self._adaptive.in_flight} LLM calls still in-flight"
+                )
+            else:
+                self.logger.info("All in-flight LLM calls completed, shutting down")
+            self._export_adaptive_metrics()
+
+    def _export_adaptive_metrics(self) -> None:
+        """Publish adaptive concurrency metrics to Prometheus gauges/counters."""
+        if self._adaptive is None:
+            return
+        stats = self._adaptive.get_stats()
+        self._cwnd_gauge.set(stats["cwnd"])
+        self._in_flight_gauge.set(stats["in_flight"])
+        # The AdaptiveSemaphore uses tokens/s as its decision signal (Fase 5.2).
+        # Exposed on the avg-latency gauge, which the semaphore reports.
+        self._avg_latency_gauge.set(stats["avg_tokens_per_sec"])
+        self._cooldown_gauge.set(1 if stats["is_in_cooldown"] else 0)
+        self._llm_requests_counter.inc(stats["total_requests"])
+        self._llm_timeouts_counter.inc(stats["total_timeouts"])
+
     def _process_single(self, ch, method, properties, body):
         """
         Process an inference job from RabbitMQ inferences queue.
@@ -1338,7 +1476,13 @@ def main():
                 from pkg.worker_common.rabbitmq import declare_queue
                 declare_queue(channel, QUEUE_NAME)
 
-                if BATCH_ENABLED:
+                if ADAPTIVE_ENABLED:
+                    # Dynamic prefetch: always keep up to max concurrency (+
+                    # one batch buffer) ready so the AIMD window has work to
+                    # consume. Respects an explicit PREFETCH_COUNT override.
+                    adaptive_prefetch = ADAPTIVE_MAX_CONCURRENCY + (BATCH_SIZE if BATCH_ENABLED else 0)
+                    prefetch_count = int(os.getenv("PREFETCH_COUNT", str(adaptive_prefetch)))
+                elif BATCH_ENABLED:
                     prefetch_count = int(os.getenv("PREFETCH_COUNT", str(BATCH_SIZE * 2)))
                 else:
                     prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))

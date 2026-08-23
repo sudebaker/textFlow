@@ -354,6 +354,11 @@ class BaseWorker:
         """Get Redis client with automatic reconnection on failure."""
         return self._get_redis()
 
+    @redis_client.setter
+    def redis_client(self, client) -> None:
+        """Allow tests/DI to override the Redis client."""
+        self._redis_client = client
+
     def _get_redis(self) -> redis.Redis:
         """Return Redis client, reconnecting if the connection is lost."""
         if self._redis_client is None:
@@ -388,6 +393,11 @@ class BaseWorker:
         if self._event_bus is None:
             self._event_bus = EventBus(self.redis_client)
         return self._event_bus
+
+    @event_bus.setter
+    def event_bus(self, bus) -> None:
+        """Allow tests/DI to override the EventBus."""
+        self._event_bus = bus
 
     @property
     def resource_manager(self) -> ResourceManagerClient:

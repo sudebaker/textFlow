@@ -189,6 +189,14 @@ class InferenceWorker(BaseWorker):
         # and is deferred to the GPU benchmarks.
         self._adaptive = None
         self._executor = None
+        # Adaptive counters/gauges; None when the feature is disabled so
+        # _call_llm/_export_adaptive_metrics can check them unconditionally.
+        self._llm_requests_counter = None
+        self._llm_timeouts_counter = None
+        self._cwnd_gauge = None
+        self._in_flight_gauge = None
+        self._avg_latency_gauge = None
+        self._cooldown_gauge = None
         if ADAPTIVE_ENABLED:
             self._adaptive = AdaptiveSemaphore(
                 min_concurrency=ADAPTIVE_MIN_CONCURRENCY,
@@ -440,6 +448,7 @@ class InferenceWorker(BaseWorker):
         acquired = False
         t0 = time.monotonic()
         is_error = False
+        response = None
         try:
             if self._adaptive is not None:
                 if not self._adaptive.acquire(timeout=timeout + 10):
@@ -491,6 +500,12 @@ class InferenceWorker(BaseWorker):
                     tokens_per_sec=tokens_per_sec,
                     is_error=is_error,
                 )
+                if self._llm_requests_counter is not None:
+                    self._llm_requests_counter.inc()
+                    if is_error:
+                        self._llm_timeouts_counter.inc()
+                # Live congestion-window metrics (not just at shutdown).
+                self._export_adaptive_metrics()
 
     def _tokens_per_sec_from(
         self, response: Optional[requests.Response], latency_ms: float, is_error: bool
@@ -1424,8 +1439,13 @@ Respond with ONLY the JSON array:"""
             self._export_adaptive_metrics()
 
     def _export_adaptive_metrics(self) -> None:
-        """Publish adaptive concurrency metrics to Prometheus gauges/counters."""
-        if self._adaptive is None:
+        """Publish adaptive concurrency gauges (called after each LLM call).
+
+        Only gauges are set here. The requests/timeouts counters are
+        incremented in _call_llm per event, so deriving them from the
+        semaphore's cumulative stats here would double-count.
+        """
+        if self._adaptive is None or self._cwnd_gauge is None:
             return
         stats = self._adaptive.get_stats()
         self._cwnd_gauge.set(stats["cwnd"])
@@ -1434,8 +1454,6 @@ Respond with ONLY the JSON array:"""
         # Exposed on the avg-latency gauge, which the semaphore reports.
         self._avg_latency_gauge.set(stats["avg_tokens_per_sec"])
         self._cooldown_gauge.set(1 if stats["is_in_cooldown"] else 0)
-        self._llm_requests_counter.inc(stats["total_requests"])
-        self._llm_timeouts_counter.inc(stats["total_timeouts"])
 
     def _process_single(self, ch, method, properties, body):
         """

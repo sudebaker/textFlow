@@ -1,5 +1,6 @@
 """Tests for fast/deep document metadata extraction."""
 
+import asyncio
 import hashlib
 import json
 import os
@@ -25,7 +26,12 @@ for _mod in (
 ):
     sys.modules.setdefault(_mod, MagicMock())
 
-from worker import extract_metadata_deep, extract_metadata_fast  # noqa: E402
+from worker import (  # noqa: E402
+    EXIFTOOL_TIMEOUT,
+    extract_document_metadata,
+    extract_metadata_deep,
+    extract_metadata_fast,
+)
 
 EXPECTED_KEYS = {
     "filename",
@@ -138,3 +144,50 @@ class TestExtractMetadataDeep:
 
         assert md["author"] is None
         assert md["page_count"] is None
+
+
+class TestExtractDocumentMetadata:
+    """extract_document_metadata runs fast+deep for EVERY job (no feature gate)."""
+
+    def test_deep_enrichment_runs_without_any_feature(self, tmp_path):
+        """Deep enrichment is unconditional: no 'metadata_deep' feature needed."""
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"data")
+
+        exif_json = json.dumps(
+            [{"Author": "Alice", "Title": "T", "PageCount": "3"}]
+        )
+        with patch("worker.subprocess.run") as m_run:
+            m_run.return_value = MagicMock(returncode=0, stdout=exif_json)
+            md = asyncio.run(extract_document_metadata(str(f), "doc.pdf"))
+
+        assert md["author"] == "Alice"
+        assert md["title"] == "T"
+        assert md["page_count"] == 3
+        # Fast fields are also present.
+        assert md["filename"] == "doc.pdf"
+        assert md["mime_type"] is None or isinstance(md["mime_type"], str)
+
+    def test_exiftool_failure_still_returns_fast_metadata(self, tmp_path):
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"data")
+
+        with patch("worker.subprocess.run", side_effect=Exception("boom")):
+            md = asyncio.run(extract_document_metadata(str(f), "doc.pdf"))
+
+        assert md["filename"] == "doc.pdf"
+        assert md["file_size_bytes"] == 4
+        assert md["author"] is None
+
+    def test_subprocess_uses_configured_timeout(self, tmp_path):
+        """subprocess.run receives EXIFTOOL_TIMEOUT (default 10s), not 30s."""
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"data")
+
+        with patch("worker.subprocess.run") as m_run:
+            m_run.return_value = MagicMock(returncode=0, stdout="[]")
+            asyncio.run(extract_document_metadata(str(f), "doc.pdf"))
+
+        _, kwargs = m_run.call_args
+        assert kwargs["timeout"] == EXIFTOOL_TIMEOUT
+        assert EXIFTOOL_TIMEOUT == 10

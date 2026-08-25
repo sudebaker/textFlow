@@ -1456,6 +1456,10 @@ def main():
 
     worker = InferenceWorker()
 
+    # BaseWorker.run() normally starts these; this worker uses its own pika
+    # loop, so the metrics/health servers must be started explicitly.
+    worker.start_servers()
+
     if BATCH_ENABLED:
         worker.logger.info(
             f"Batch mode ENABLED: batch_size={BATCH_SIZE}, "

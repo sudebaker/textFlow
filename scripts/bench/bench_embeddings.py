@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Embeddings throughput benchmark (spec 2.1).
 
-Sweeps EMBEDDINGS_BATCH_SIZE over [32, 64, 96, 128] against the real
+Sweeps batch sizes over [32, 64, 96, 128] against the real
 EmbeddingService used by the embeddings-worker, reporting chunks/s,
 tokens/s and latency percentiles per batch size.
+
+Note: the production knob is EMBEDDING_BATCH_SIZE_GPU (singular), not
+EMBEDDINGS_BATCH_SIZE (dead config).
 
 Intended to run INSIDE the embeddings-worker container:
 
@@ -23,8 +26,8 @@ import statistics
 import sys
 import time
 
-WORKER_DIR = "/app/cmd/embeddings-worker"
-sys.path.insert(0, WORKER_DIR)
+WORKER_ROOT = os.getenv("EMBEDDINGS_WORKER_ROOT", "/app")
+sys.path.insert(0, WORKER_ROOT)
 
 BATCH_SIZES = [32, 64, 96, 128]
 

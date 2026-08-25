@@ -1,0 +1,29 @@
+[
+  {
+    "batch_size": 16,
+    "slices": 18,
+    "elapsed_s": 37.59,
+    "chunks_per_s": 7.7,
+    "entities_found": 2853,
+    "slice_latency_p50_s": 2.135,
+    "slice_latency_p95_s": 2.398
+  },
+  {
+    "batch_size": 32,
+    "slices": 9,
+    "elapsed_s": 39.7,
+    "chunks_per_s": 7.3,
+    "entities_found": 2853,
+    "slice_latency_p50_s": 4.494,
+    "slice_latency_p95_s": 4.7
+  },
+  {
+    "batch_size": 64,
+    "slices": 5,
+    "elapsed_s": 38.81,
+    "chunks_per_s": 7.4,
+    "entities_found": 2853,
+    "slice_latency_p50_s": 8.39,
+    "slice_latency_p95_s": 8.603
+  }
+]

@@ -59,7 +59,6 @@ func validateWebhookURL(webhookURL string) error {
 var validFeatures = map[string]bool{
 	"inferences":           true,
 	"inference_embeddings": true,
-	"metadata_deep":        true,
 }
 
 // validateFeatureList validates and normalizes a list of feature names.

@@ -41,7 +41,7 @@ for doc in "${DOCS[@]}"; do
     continue
   fi
   echo "--- ${name}"
-  resp=$(curl -s -m 120 -X POST "${API_URL}/v1/documents/process" \
+  resp=$(curl -s -m 120 -X POST "${API_URL}/v1/documents/upload" \
     -F "file=@${doc}")
   job_id=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('job_id',''))" 2>/dev/null || true)
   if [ -z "$job_id" ]; then

@@ -157,18 +157,23 @@ class _FakeConnection:
 
 
 import json as _json  # noqa: E402  (module-level alias for test bodies)
+from unittest.mock import MagicMock as _MM  # noqa: E402
 
 
 class _FakeChannel:
     def __init__(self):
         self.acks = []
         self.nacks = []
+        self.stops = []
 
     def basic_ack(self, delivery_tag):
         self.acks.append(delivery_tag)
 
     def basic_nack(self, delivery_tag, requeue):
         self.nacks.append((delivery_tag, requeue))
+
+    def stop_consuming(self):
+        self.stops.append(1)
 
 
 def _run_scheduled(conn):
@@ -288,6 +293,90 @@ class TestAdaptiveConcurrencyLoop:
         # Dispatch incremented once; task completion decremented once.
         assert w._tasks_in_flight == 0
         assert len(w._connection.scheduled) == 1
+
+    def test_process_rejects_dispatch_when_stopping(self):
+        w = _adaptive_worker()
+        body = _json.dumps(
+            {"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}
+        ).encode()
+        submitted = []
+        # Shutdown-reject acks directly on the pika thread (safe).
+        ch = _FakeChannel()
+
+        with patch("worker.ADAPTIVE_ENABLED", True):
+            with patch("worker._stopping", True):
+                with patch.object(
+                    w._executor, "submit", side_effect=lambda *a: submitted.append(a)
+                ):
+                    w.process(
+                        ch,
+                        type("M", (), {"delivery_tag": 4})(),
+                        None,
+                        body,
+                    )
+
+        assert submitted == []
+        assert ch.nacks == [(4, True)]
+
+    def test_last_completed_task_stops_consumer_when_drained_and_stopping(self):
+        w = _adaptive_worker()
+        body = _json.dumps({"job_id": "j"}).encode()  # invalid short path
+
+        # Simulate one in-flight task so the finally-block decrement reaches 0.
+        with w._tasks_lock:
+            w._tasks_in_flight = 1
+
+        with patch("worker._stopping", True):
+            w._adaptive_task(body, 8)
+
+        # nack (invalid) + consumer-stop callback on shutdown.
+        assert len(w._connection.scheduled) == 2
+        _run_scheduled(w._connection)
+        assert w._channel.nacks == [(8, False)]
+        assert w._channel.stops == [1]
+
+    def test_schedule_drops_on_closed_epoch(self):
+        w = _adaptive_worker()
+
+        closed = _FakeConnection()
+        closed.is_open = False
+        w._schedule_on_pika(closed, w._channel, lambda: None)
+        assert closed.scheduled == []
+
+        w._schedule_on_pika(None, w._channel, lambda: None)
+        assert len(closed.scheduled) == 0
+
+        w._schedule_on_pika(w._connection, w._channel, lambda: None)
+        assert len(w._connection.scheduled) == 1
+
+    def test_duplicate_delivery_is_idempotent(self):
+        w = _adaptive_worker()
+        body = _json.dumps(
+            {"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}
+        ).encode()
+
+        # First delivery stores; second delivery (redelivery) is a no-op.
+        redis = _MM()
+        redis.set.side_effect = [True, False]  # nx wins once, then loses
+        redis.decr.return_value = 1  # not the last chunk: no assembly path
+        w.redis_client = redis
+
+        with patch.object(w, "_observe_queue_time"):
+            with patch.object(
+                w,
+                "extract_inferences",
+                return_value=[{"text": "f", "confidence": 0.9, "entity_refs": []}],
+            ):
+                w._adaptive_task(body, 1)
+                w._adaptive_task(body, 2)
+
+        # Only the first delivery wrote/decremented.
+        assert redis.rpush.call_count == 1
+        assert redis.decr.call_count == 1
+
+        _run_scheduled(w._connection)
+        assert w._channel.acks == [1, 2]
+        assert w._channel.nacks == []
 
     def test_cleanup_drains_executor_tasks(self):
         w = _adaptive_worker()

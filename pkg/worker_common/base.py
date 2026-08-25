@@ -428,12 +428,8 @@ class BaseWorker:
                 f"Published to queue {queue}: {message.get('job_id', 'unknown')}"
             )
 
-    def run(self) -> None:
-        """Main worker loop - connect to RabbitMQ and process messages."""
-        self.logger.info(f"Starting {self.worker_name}")
-        self.logger.info(f"Queue: {self.queue_name}")
-
-        # Start metrics server in background thread
+    def start_servers(self) -> None:
+        """Start metrics + health HTTP servers in background threads."""
         import threading
 
         metrics_thread = threading.Thread(
@@ -461,6 +457,13 @@ class BaseWorker:
         )
         health_thread.start()
         self.logger.info(f"Health server started on port {health_port}")
+
+    def run(self) -> None:
+        """Main worker loop - connect to RabbitMQ and process messages."""
+        self.logger.info(f"Starting {self.worker_name}")
+        self.logger.info(f"Queue: {self.queue_name}")
+
+        self.start_servers()
 
         # Main processing loop
         while not self._shutdown_requested:

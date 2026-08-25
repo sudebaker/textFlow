@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create non-root user matching orchestrator UID/GID (100/101) for shared volume access
 RUN addgroup --gid 101 appgroup && \
     adduser --disabled-password --gecos "" --uid 100 --ingroup appgroup appuser && \
+    mkdir -p /app/data/artifacts && \
     chown -R appuser:appgroup /app
 
 COPY pkg/ ./pkg/

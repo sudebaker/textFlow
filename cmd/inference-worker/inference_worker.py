@@ -1465,57 +1465,67 @@ def main():
         worker.logger.info(f"Batch mode DISABLED, cache={'ON' if CACHE_ENABLED else 'OFF'}")
 
     while not _stopping:
+        connection = None
         try:
-            with parse_rabbitmq_url(worker.rabbitmq_url) as (connection, channel):
-                if BATCH_ENABLED:
-                    with worker._batch_lock:
-                        worker._batch_buffer.clear()
+            params = parse_rabbitmq_url(worker.rabbitmq_url)
+            connection = pika.BlockingConnection(params)
+            channel = connection.channel()
 
-                worker.logger.info(f"Consuming from queue: {QUEUE_NAME}")
+            if BATCH_ENABLED:
+                with worker._batch_lock:
+                    worker._batch_buffer.clear()
 
-                from pkg.worker_common.rabbitmq import declare_queue
-                declare_queue(channel, QUEUE_NAME)
+            worker.logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
-                if ADAPTIVE_ENABLED:
-                    # Dynamic prefetch: always keep up to max concurrency (+
-                    # one batch buffer) ready so the AIMD window has work to
-                    # consume. Respects an explicit PREFETCH_COUNT override.
-                    adaptive_prefetch = ADAPTIVE_MAX_CONCURRENCY + (BATCH_SIZE if BATCH_ENABLED else 0)
-                    prefetch_count = int(os.getenv("PREFETCH_COUNT", str(adaptive_prefetch)))
-                elif BATCH_ENABLED:
-                    prefetch_count = int(os.getenv("PREFETCH_COUNT", str(BATCH_SIZE * 2)))
-                else:
-                    prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
-                channel.basic_qos(prefetch_count=prefetch_count)
+            from pkg.worker_common.rabbitmq import declare_queue
+            declare_queue(channel, QUEUE_NAME)
 
-                if BATCH_ENABLED:
-                    def _schedule_flush():
-                        if _stopping:
-                            return
+            if ADAPTIVE_ENABLED:
+                # Dynamic prefetch: always keep up to max concurrency (+
+                # one batch buffer) ready so the AIMD window has work to
+                # consume. Respects an explicit PREFETCH_COUNT override.
+                adaptive_prefetch = ADAPTIVE_MAX_CONCURRENCY + (BATCH_SIZE if BATCH_ENABLED else 0)
+                prefetch_count = int(os.getenv("PREFETCH_COUNT", str(adaptive_prefetch)))
+            elif BATCH_ENABLED:
+                prefetch_count = int(os.getenv("PREFETCH_COUNT", str(BATCH_SIZE * 2)))
+            else:
+                prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
+            channel.basic_qos(prefetch_count=prefetch_count)
+
+            if BATCH_ENABLED:
+                def _schedule_flush():
+                    if _stopping:
+                        return
+                    try:
+                        worker.flush_batch_buffer()
+                    except Exception as e:
+                        worker.logger.error(f"Error in flush callback: {e}")
+                    if not _stopping:
                         try:
-                            worker.flush_batch_buffer()
-                        except Exception as e:
-                            worker.logger.error(f"Error in flush callback: {e}")
-                        if not _stopping:
-                            try:
-                                connection.call_later(
-                                    BATCH_TIMEOUT_MS / 1000.0, _schedule_flush
-                                )
-                            except Exception:
-                                pass
+                            connection.call_later(
+                                BATCH_TIMEOUT_MS / 1000.0, _schedule_flush
+                            )
+                        except Exception:
+                            pass
 
-                    connection.call_later(BATCH_TIMEOUT_MS / 1000.0, _schedule_flush)
+                connection.call_later(BATCH_TIMEOUT_MS / 1000.0, _schedule_flush)
 
-                channel.basic_consume(
-                    queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False
-                )
+            channel.basic_consume(
+                queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False
+            )
 
-                channel.start_consuming()
+            channel.start_consuming()
 
         except Exception as e:
             worker.logger.error(f"RabbitMQ connection error: {e}")
             if not _stopping:
                 time.sleep(5)
+        finally:
+            if connection is not None and connection.is_open:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
     worker.logger.info("Inference worker shutdown complete")
 

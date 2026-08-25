@@ -48,7 +48,7 @@ COPY cmd/embeddings-worker/embeddings_worker.py .
 COPY cmd/embeddings-worker/app ./app
 
 # Create models directory
-RUN mkdir -p /models && chown -R app:app /app /models
+RUN mkdir -p /models /app/data/artifacts && chown -R app:app /app /models
 
 # Switch to app user
 USER app

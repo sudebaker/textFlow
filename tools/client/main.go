@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"strconv"
 	"math"
 	"mime/multipart"
 	"net/http"
@@ -532,33 +534,60 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/process", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to API: %w", err)
+
+	// Backpressure: retry 429/503 with Retry-After (or exponential backoff).
+	const maxRetries = 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", apiURL+"/v1/documents/process", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to connect to API: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			retryAfter := resp.Header.Get("Retry-After")
+			wait := time.Duration(1<<uint(attempt)) * time.Second
+			if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
+				wait = time.Duration(secs) * time.Second
+			}
+			log.Printf("Server busy (HTTP %d): %s — retrying in %v (%d/%d)",
+				resp.StatusCode, strings.TrimSpace(string(body)), wait, attempt+1, maxRetries)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusAccepted {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var result CreateJobResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return "", fmt.Errorf("failed to parse response: %w", err)
+		}
+		resp.Body.Close()
+
+		fmt.Printf("Job created: %s\n", result.JobID)
+
+		return result.JobID, nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result CreateJobResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	fmt.Printf("Job created: %s\n", result.JobID)
-
-	return result.JobID, nil
+	return "", fmt.Errorf("max retries exceeded after %d attempts (server busy)", maxRetries)
 }
 
 func encodeFile(filePath string) (string, string, error) {

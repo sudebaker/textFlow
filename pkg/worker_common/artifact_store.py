@@ -49,6 +49,9 @@ class FSStore(ArtifactStore):
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
+            # mkstemp creates 0600 files; artifacts must be readable by
+            # downstream workers that may run under a different UID.
+            os.chmod(tmp, 0o644)
             os.replace(tmp, path)
         return f"{ARTIFACT_REF_PREFIX}{digest}"
 

@@ -26,8 +26,8 @@ DOCS_DEFAULT=(
   "corpus/D.24.pdf"
   "corpus/Documento_42_R.pdf"
   "corpus/03_OP_ALESTE.pdf"
-  "corpus/San-Jose.pdf"
-  "corpus/Cabo-de-Gata.pdf"
+  "corpus/Sentencia-fiscal-general.pdf"
+  "corpus/AASD_servodrivemanual.pdf"
 )
 DOCS=(${DOCS:-${DOCS_DEFAULT[@]}})
 
@@ -77,6 +77,11 @@ print(json.dumps({'doc': sys.argv[2], 'job_id': sys.argv[3], 'chunks': chunks}))
 " "$chunks_json" "$name" "$job_id")")
   echo "    ok: $(echo "$chunks_json" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))') chunks"
 done
+
+if [ "${#RESULTS[@]}" -eq 0 ]; then
+  echo "ERROR: ningún documento se procesó correctamente" >&2
+  exit 1
+fi
 
 python3 -c "
 import json,sys

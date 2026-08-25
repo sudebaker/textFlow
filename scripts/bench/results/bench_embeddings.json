@@ -1,0 +1,38 @@
+[
+  {
+    "batch_size": 32,
+    "batches": 9,
+    "elapsed_s": 2.18,
+    "chunks_per_s": 132.1,
+    "tokens_per_s": 42551.8,
+    "batch_latency_p50_s": 0.231,
+    "batch_latency_p95_s": 0.255
+  },
+  {
+    "batch_size": 64,
+    "batches": 5,
+    "elapsed_s": 2.17,
+    "chunks_per_s": 133.0,
+    "tokens_per_s": 42825.8,
+    "batch_latency_p50_s": 0.462,
+    "batch_latency_p95_s": 0.462
+  },
+  {
+    "batch_size": 96,
+    "batches": 3,
+    "elapsed_s": 2.53,
+    "chunks_per_s": 113.8,
+    "tokens_per_s": 36644.3,
+    "batch_latency_p50_s": 0.898,
+    "batch_latency_p95_s": 0.898
+  },
+  {
+    "batch_size": 128,
+    "batches": 3,
+    "elapsed_s": 2.16,
+    "chunks_per_s": 133.2,
+    "tokens_per_s": 42893.9,
+    "batch_latency_p50_s": 0.91,
+    "batch_latency_p95_s": 0.91
+  }
+]

@@ -317,7 +317,7 @@ class EntitiesWorker(BaseWorker):
                 self.jobs_total.labels(status="no_chunks").inc()
                 return {"status": "no_chunks"}
 
-        GLINER_BATCH_SIZE = int(os.getenv("GLINER_BATCH_SIZE", "32"))
+        GLINER_BATCH_SIZE = int(os.getenv("GLINER_BATCH_SIZE", "16"))
         batch_chunks = []
         large_chunks = []
 

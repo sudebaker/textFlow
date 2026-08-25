@@ -34,7 +34,7 @@ from app.services.embeddings import EmbeddingService
 QUEUE_NAME = os.getenv("QUEUE_NAME", "embeddings")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
-EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "32"))
+EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "64"))
 EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
 
 _device_env = os.getenv("EMBEDDINGS_DEVICE", "").strip()

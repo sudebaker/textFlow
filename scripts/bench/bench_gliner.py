@@ -78,8 +78,8 @@ def main() -> None:
         slices = [texts[i : i + bs] for i in range(0, len(texts), bs)]
         # Warmup on the first slice (CUDA kernels + tokenizer).
         if slices:
-            model.predict_entities(
-                slices[0], ENTITY_TYPES, threshold=args.threshold
+            model.batch_predict_entities(
+                slices[0], ENTITY_TYPES, flat_ner=True, threshold=args.threshold
             )
 
         latencies = []
@@ -87,8 +87,8 @@ def main() -> None:
         t0 = time.perf_counter()
         for sl in slices:
             s0 = time.perf_counter()
-            preds = model.predict_entities(
-                sl, ENTITY_TYPES, threshold=args.threshold
+            preds = model.batch_predict_entities(
+                sl, ENTITY_TYPES, flat_ner=True, threshold=args.threshold
             )
             latencies.append(time.perf_counter() - s0)
             total_entities += sum(len(p) for p in preds)

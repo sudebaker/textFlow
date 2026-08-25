@@ -930,6 +930,12 @@ Respond with ONLY the JSON array:"""
         is processed individually.
         """
         if ADAPTIVE_ENABLED:
+            if _stopping:
+                # Shutting down: don't start new work; let the broker
+                # redeliver this chunk after restart.
+                self.jobs_total.labels(status="shutdown_rejected").inc()
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                return
             self._dispatch_adaptive(body, method.delivery_tag)
             return
 
@@ -993,38 +999,81 @@ Respond with ONLY the JSON array:"""
             self._tasks_in_flight += 1
         self._executor.submit(self._adaptive_task, body, delivery_tag)
 
-    def _schedule_on_pika(self, callback) -> None:
-        """Run a pika operation on the consumer thread (thread-safe)."""
-        conn = self._connection
-        if conn is not None and conn.is_open:
-            try:
-                conn.add_callback_threadsafe(callback)
-            except Exception as e:
-                self.logger.warning(f"add_callback_threadsafe failed: {e}")
+    def _schedule_on_pika(self, conn, ch, callback) -> None:
+        """Run a pika operation on the consumer thread (thread-safe).
+
+        ``conn``/``ch`` must be the pair captured when the work was created,
+        NOT the current worker refs: if the consumer reconnected meanwhile,
+        scheduling on the new connection with a stale channel would tear the
+        fresh epoch down. When the captured epoch is closed the broker has
+        already requeued its unacked messages, so dropping is correct.
+        """
+        if conn is None or not conn.is_open or ch is None:
+            self.logger.warning(
+                "callback dropped: connection epoch closed (broker will redeliver)"
+            )
+            return
+        try:
+            conn.add_callback_threadsafe(callback)
+        except Exception as e:
+            self.logger.warning(f"add_callback_threadsafe failed: {e}")
+
+    def _persist_chunk_result_once(
+        self, job_id, chunk_id, chunk_result: Dict[str, Any]
+    ) -> tuple:
+        """Persist a chunk result exactly once across redeliveries.
+
+        Returns ``(stored: bool, remaining: Optional[int])``. ``remaining`` is
+        None when the chunk was already persisted on a previous delivery
+        (redelivery after a dropped ack must not double-rpush/double-decr).
+        """
+        dedup_key = f"orchestrator:job:{job_id}:inferences:chunk_done:{chunk_id}"
+        added = self.redis_client.set(dedup_key, "1", nx=True, ex=RAW_TTL_SECONDS)
+        if not added:
+            return (False, None)
+
+        inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
+        self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
+        self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
+
+        remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
+        remaining = self.redis_client.decr(remaining_key)
+        return (True, remaining)
+
+    def _request_consumer_stop(self, conn, ch) -> None:
+        """Ask the pika thread to stop consuming (last task on shutdown)."""
+        self._schedule_on_pika(
+            conn, ch, lambda: ch.stop_consuming() if ch is not None else None
+        )
 
     def _adaptive_task(self, body: bytes, delivery_tag: int) -> None:
         """
         Process one chunk outside the pika thread.
 
         The channel is NEVER touched here directly: ack/nack are scheduled
-        onto the consumer thread via add_callback_threadsafe. The AdaptiveSemaphore
-        inside _call_llm gates LLM concurrency (cwnd), so up to
-        ADAPTIVE_MAX_CONCURRENCY tasks may be waiting/running at once.
+        onto the consumer thread via add_callback_threadsafe, always against
+        the connection/channel pair captured at task start (epoch binding) so
+        a reconnect cannot route a stale-channel op onto a fresh connection.
+        The AdaptiveSemaphore inside _call_llm gates LLM concurrency (cwnd),
+        so up to ADAPTIVE_MAX_CONCURRENCY tasks may be running at once.
         """
+        conn = self._connection
         ch = self._channel
 
         def ack():
             if ch is not None:
                 self._schedule_on_pika(
-                    lambda: ch.basic_ack(delivery_tag=delivery_tag)
+                    conn, ch, lambda: ch.basic_ack(delivery_tag=delivery_tag)
                 )
 
         def nack(requeue: bool):
             if ch is not None:
                 self._schedule_on_pika(
+                    conn,
+                    ch,
                     lambda: ch.basic_nack(
                         delivery_tag=delivery_tag, requeue=requeue
-                    )
+                    ),
                 )
 
         try:
@@ -1064,15 +1113,19 @@ Respond with ONLY the JSON array:"""
                 source_type=source_type,
             )
 
-            inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
-            self.redis_client.rpush(
-                inferences_raw_key,
-                json.dumps({"chunk_id": chunk_id, "inferences": inferences}),
+            chunk_result = {"chunk_id": chunk_id, "inferences": inferences}
+            stored, remaining = self._persist_chunk_result_once(
+                job_id, chunk_id, chunk_result
             )
-            self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
-
-            remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
-            remaining = self.redis_client.decr(remaining_key)
+            if not stored:
+                # Already processed on a previous delivery (dropped ack
+                # triggered redelivery). Do not double-write/decrement.
+                self.logger.info(
+                    f"Duplicate delivery ignored job={job_id} chunk={chunk_id}"
+                )
+                self.jobs_total.labels(status="chunk_processed").inc()
+                ack()
+                return
 
             if remaining <= 0:
                 self._assemble_final_results(job_id)
@@ -1098,6 +1151,9 @@ Respond with ONLY the JSON array:"""
         finally:
             with self._tasks_lock:
                 self._tasks_in_flight -= 1
+                drained = self._tasks_in_flight == 0
+            if drained and _stopping:
+                self._request_consumer_stop(conn, ch)
 
     def flush_batch_buffer(self):
         """Flush any pending messages in the batch buffer. Called by pika call_later callback."""
@@ -1129,12 +1185,15 @@ Respond with ONLY the JSON array:"""
             "inferences": [],
         }
 
-        inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
-        self.redis_client.rpush(inferences_raw_key, json.dumps(chunk_result))
-        self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
-
-        remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
-        remaining = self.redis_client.decr(remaining_key)
+        stored, remaining = self._persist_chunk_result_once(
+            job_id, chunk_id, chunk_result
+        )
+        if not stored:
+            self.logger.info(
+                f"Duplicate empty result ignored job={job_id} chunk={chunk_id}"
+            )
+            self.jobs_total.labels(status="chunk_processed").inc()
+            return
 
         self.logger.info(
             f"Inference skipped for job: {job_id}, chunk: {chunk_id}, remaining: {remaining}"
@@ -1671,6 +1730,25 @@ def main():
                 prefetch_count = int(os.getenv("PREFETCH_COUNT", "3"))
             channel.basic_qos(prefetch_count=prefetch_count)
 
+            if ADAPTIVE_ENABLED:
+                # Idle shutdown watchdog: with the executor draining work
+                # asynchronously, an idle worker never reaches start_consuming
+                # return on its own; poll so SIGTERM can stop it even when
+                # there are no tasks to trigger the drained-stop.
+                def _shutdown_watchdog():
+                    if _stopping:
+                        try:
+                            channel.stop_consuming()
+                        except Exception:
+                            pass
+                        return
+                    try:
+                        connection.call_later(1.0, _shutdown_watchdog)
+                    except Exception:
+                        pass
+
+                connection.call_later(1.0, _shutdown_watchdog)
+
             if BATCH_ENABLED:
                 def _schedule_flush():
                     if _stopping:
@@ -1708,6 +1786,10 @@ def main():
                     connection.close()
                 except Exception:
                     pass
+
+    # Flush the batch buffer and drain in-flight adaptive work exactly once.
+    # (BaseWorker's own signal handler is not installed by this main().)
+    worker.cleanup()
 
     worker.logger.info("Inference worker shutdown complete")
 

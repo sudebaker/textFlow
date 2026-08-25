@@ -198,11 +198,20 @@ class InferenceWorker(BaseWorker):
                 cooldown_seconds=ADAPTIVE_COOLDOWN_SECONDS,
                 consecutive_errors_for_cooldown=ADAPTIVE_CONSECUTIVE_ERRORS,
             )
-            # Reserved for the full-concurrent design (W6). Not used yet to
-            # avoid re-designing the synchronous pika callback.
+            # Full-concurrent design (W6): the executor runs per-chunk
+            # processing tasks; pika's thread only schedules and acks via
+            # connection.add_callback_threadsafe.
             self._executor = ThreadPoolExecutor(
                 max_workers=ADAPTIVE_MAX_CONCURRENCY
             )
+            # Live pika objects, set by main() on each (re)connect. Worker
+            # threads must never touch them directly — only through
+            # add_callback_threadsafe callbacks.
+            self._connection = None
+            self._channel = None
+            # Tasks submitted to the executor and not finished yet.
+            self._tasks_lock = threading.Lock()
+            self._tasks_in_flight = 0
             from prometheus_client import Gauge
             self._cwnd_gauge = Gauge("inference_worker_cwnd", "Current congestion window")
             self._in_flight_gauge = Gauge("inference_worker_in_flight", "LLM calls currently in flight")
@@ -910,10 +919,20 @@ Respond with ONLY the JSON array:"""
         """
         Process an inference job from RabbitMQ inferences queue.
 
-        When batch processing is enabled, messages are accumulated in a buffer
-        and processed together when the buffer is full or a timeout expires.
-        When batch processing is disabled, each message is processed individually.
+        Adaptive mode (INFERENCE_ADAPTIVE_ENABLED): dispatch each message to
+        the ThreadPoolExecutor and return immediately so pika keeps consuming;
+        acks/nacks are scheduled back onto the pika thread via
+        connection.add_callback_threadsafe.
+
+        Legacy modes: when batch processing is enabled, messages are
+        accumulated in a buffer and processed together when the buffer is full
+        or a timeout expires. When batch processing is disabled, each message
+        is processed individually.
         """
+        if ADAPTIVE_ENABLED:
+            self._dispatch_adaptive(body, method.delivery_tag)
+            return
+
         if not BATCH_ENABLED:
             self._process_single(ch, method, properties, body)
             return
@@ -968,6 +987,118 @@ Respond with ONLY the JSON array:"""
             self.logger.error(f"Error in batch accumulation: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
+    def _dispatch_adaptive(self, body: bytes, delivery_tag: int) -> None:
+        """Submit a per-chunk processing task to the executor."""
+        with self._tasks_lock:
+            self._tasks_in_flight += 1
+        self._executor.submit(self._adaptive_task, body, delivery_tag)
+
+    def _schedule_on_pika(self, callback) -> None:
+        """Run a pika operation on the consumer thread (thread-safe)."""
+        conn = self._connection
+        if conn is not None and conn.is_open:
+            try:
+                conn.add_callback_threadsafe(callback)
+            except Exception as e:
+                self.logger.warning(f"add_callback_threadsafe failed: {e}")
+
+    def _adaptive_task(self, body: bytes, delivery_tag: int) -> None:
+        """
+        Process one chunk outside the pika thread.
+
+        The channel is NEVER touched here directly: ack/nack are scheduled
+        onto the consumer thread via add_callback_threadsafe. The AdaptiveSemaphore
+        inside _call_llm gates LLM concurrency (cwnd), so up to
+        ADAPTIVE_MAX_CONCURRENCY tasks may be waiting/running at once.
+        """
+        ch = self._channel
+
+        def ack():
+            if ch is not None:
+                self._schedule_on_pika(
+                    lambda: ch.basic_ack(delivery_tag=delivery_tag)
+                )
+
+        def nack(requeue: bool):
+            if ch is not None:
+                self._schedule_on_pika(
+                    lambda: ch.basic_nack(
+                        delivery_tag=delivery_tag, requeue=requeue
+                    )
+                )
+
+        try:
+            message = json.loads(body)
+            self._observe_queue_time(message)
+
+            job_id = message.get("job_id")
+            chunk_id = message.get("chunk_id")
+            total_chunks = message.get("total_chunks", 1)
+            chunk_text = message.get("chunk_text", "")
+            entities = message.get("entities", [])
+            source_type = message.get("source_type", "generico")
+
+            required_fields = ["job_id", "chunk_id", "chunk_text", "total_chunks"]
+            missing = [f for f in required_fields if f not in message]
+            if missing or not chunk_text:
+                status = "invalid_message" if missing else "no_text"
+                self.logger.error(f"{status} (adaptive): {missing or job_id}")
+                self.jobs_total.labels(status=status).inc()
+                nack(requeue=False)
+                return
+
+            word_count = len(chunk_text.split())
+            if word_count > MAX_CHUNK_WORDS:
+                self.logger.warning(
+                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
+                    f"job={job_id}, chunk={chunk_id}"
+                )
+                self.jobs_total.labels(status="chunk_too_large").inc()
+                self._store_empty_result_data(job_id, chunk_id, total_chunks)
+                ack()
+                return
+
+            inferences = self.extract_inferences(
+                chunk_text=chunk_text,
+                entities=entities,
+                source_type=source_type,
+            )
+
+            inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
+            self.redis_client.rpush(
+                inferences_raw_key,
+                json.dumps({"chunk_id": chunk_id, "inferences": inferences}),
+            )
+            self.redis_client.expire(inferences_raw_key, RAW_TTL_SECONDS)
+
+            remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
+            remaining = self.redis_client.decr(remaining_key)
+
+            if remaining <= 0:
+                self._assemble_final_results(job_id)
+                self.jobs_total.labels(status="success").inc()
+            else:
+                self.event_bus.publish_job_inference_chunk_progress(
+                    job_id,
+                    chunks_done=total_chunks - remaining,
+                    chunks_total=total_chunks,
+                )
+                self.jobs_total.labels(status="chunk_processed").inc()
+
+            self.logger.info(
+                f"Inference completed (adaptive) job={job_id} chunk={chunk_id} "
+                f"inferences={len(inferences)} remaining={remaining}"
+            )
+            ack()
+
+        except Exception as e:
+            self.logger.error(f"Adaptive task failed: {e}")
+            self.jobs_total.labels(status="error").inc()
+            nack(requeue=True)
+        finally:
+            with self._tasks_lock:
+                self._tasks_in_flight -= 1
+
     def flush_batch_buffer(self):
         """Flush any pending messages in the batch buffer. Called by pika call_later callback."""
         with self._batch_lock:
@@ -991,12 +1122,8 @@ Respond with ONLY the JSON array:"""
                     except Exception as nack_error:
                         self.logger.warning(f"Failed to NACK message: {nack_error}")
 
-    def _store_empty_result(self, ch, method, message):
-        """Store empty inference result and ACK the message. Used for skipped/oversized chunks."""
-        job_id = message.get("job_id")
-        chunk_id = message.get("chunk_id")
-        total_chunks = message.get("total_chunks", 1)
-
+    def _store_empty_result_data(self, job_id, chunk_id, total_chunks) -> None:
+        """Persist an empty result for a skipped/oversized chunk (no ack)."""
         chunk_result = {
             "chunk_id": chunk_id,
             "inferences": [],
@@ -1022,6 +1149,14 @@ Respond with ONLY the JSON array:"""
                 job_id, chunks_done=chunks_done, chunks_total=total_chunks
             )
             self.jobs_total.labels(status="chunk_processed").inc()
+
+    def _store_empty_result(self, ch, method, message):
+        """Store empty inference result and ACK the message. Used for skipped/oversized chunks."""
+        job_id = message.get("job_id")
+        chunk_id = message.get("chunk_id")
+        total_chunks = message.get("total_chunks", 1)
+
+        self._store_empty_result_data(job_id, chunk_id, total_chunks)
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -1197,19 +1332,25 @@ Respond with ONLY the JSON array:"""
                     self.logger.error(f"Final batch flush failed: {e}")
                 self._batch_buffer.clear()
 
-        # Adaptive mode: wait for in-flight LLM calls to drain before exiting.
-        # Do not sys.exit here — tests mock it and it would break cleanup.
+        # Adaptive mode: wait for in-flight executor tasks (each drains its
+        # own LLM call) before exiting. Do not sys.exit here — tests mock it.
         if self._adaptive is not None:
             wait_timeout = LLM_TIMEOUT + 30
             deadline = time.monotonic() + wait_timeout
-            while self._adaptive.in_flight > 0 and time.monotonic() < deadline:
+            while self._tasks_in_flight > 0 and time.monotonic() < deadline:
                 time.sleep(0.1)
-            if self._adaptive.in_flight > 0:
+            if self._tasks_in_flight > 0:
+                self.logger.warning(
+                    f"Force shutdown: {self._tasks_in_flight} tasks still in-flight"
+                )
+            elif self._adaptive.in_flight > 0:
                 self.logger.warning(
                     f"Force shutdown: {self._adaptive.in_flight} LLM calls still in-flight"
                 )
             else:
-                self.logger.info("All in-flight LLM calls completed, shutting down")
+                self.logger.info(
+                    "All in-flight LLM calls completed, shutting down"
+                )
             self._export_adaptive_metrics()
 
     def _export_adaptive_metrics(self) -> None:
@@ -1505,6 +1646,10 @@ def main():
             params = parse_rabbitmq_url(worker.rabbitmq_url)
             connection = pika.BlockingConnection(params)
             channel = connection.channel()
+            # Live refs for the adaptive executor threads. They only use them
+            # via connection.add_callback_threadsafe, never directly.
+            worker._connection = connection
+            worker._channel = channel
 
             if BATCH_ENABLED:
                 with worker._batch_lock:
@@ -1516,10 +1661,9 @@ def main():
             declare_queue(channel, QUEUE_NAME)
 
             if ADAPTIVE_ENABLED:
-                # Dynamic prefetch: always keep up to max concurrency (+
-                # one batch buffer) ready so the AIMD window has work to
-                # consume. Respects an explicit PREFETCH_COUNT override.
-                adaptive_prefetch = ADAPTIVE_MAX_CONCURRENCY + (BATCH_SIZE if BATCH_ENABLED else 0)
+                # One chunk per task; keep the window plus headroom queued so
+                # tasks never starve. Respects an explicit PREFETCH_COUNT.
+                adaptive_prefetch = ADAPTIVE_MAX_CONCURRENCY + BATCH_SIZE
                 prefetch_count = int(os.getenv("PREFETCH_COUNT", str(adaptive_prefetch)))
             elif BATCH_ENABLED:
                 prefetch_count = int(os.getenv("PREFETCH_COUNT", str(BATCH_SIZE * 2)))
@@ -1556,6 +1700,9 @@ def main():
             if not _stopping:
                 time.sleep(5)
         finally:
+            # Drop refs so executor threads stop scheduling new pika calls.
+            worker._channel = None
+            worker._connection = None
             if connection is not None and connection.is_open:
                 try:
                     connection.close()

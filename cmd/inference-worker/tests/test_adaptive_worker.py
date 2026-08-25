@@ -141,3 +141,169 @@ class TestGracefulShutdown:
         assert worker._adaptive is None
         assert worker._executor is None
         worker.cleanup()
+
+
+class _FakeConnection:
+    """Records callbacks scheduled onto the pika thread."""
+
+    import json as _json_mod  # noqa: avoid top-level shadowing
+
+    def __init__(self):
+        self.is_open = True
+        self.scheduled = []
+
+    def add_callback_threadsafe(self, cb):
+        self.scheduled.append(cb)
+
+
+import json as _json  # noqa: E402  (module-level alias for test bodies)
+
+
+class _FakeChannel:
+    def __init__(self):
+        self.acks = []
+        self.nacks = []
+
+    def basic_ack(self, delivery_tag):
+        self.acks.append(delivery_tag)
+
+    def basic_nack(self, delivery_tag, requeue):
+        self.nacks.append((delivery_tag, requeue))
+
+
+def _run_scheduled(conn):
+    """Execute scheduled callbacks like the pika thread would."""
+    pending, conn.scheduled = conn.scheduled[:], []
+    for cb in pending:
+        try:
+            cb()
+        except Exception as e:
+            print(f"CB EXCEPTION: {type(e).__name__}: {e}")
+            raise
+
+
+def _adaptive_worker():
+    import json as _json
+
+    with patch("worker.ADAPTIVE_ENABLED", True):
+        with patch("redis.from_url"):
+            w = InferenceWorker()
+    w.llm_model_id = "test-model"
+    w.llm_max_model_len = 4096
+    w._connection = _FakeConnection()
+    w._channel = _FakeChannel()
+    return w
+
+
+class TestAdaptiveConcurrencyLoop:
+    """Full-concurrent design: executor tasks + threadsafe acks."""
+
+    def test_process_dispatches_to_executor_without_touching_channel(self):
+        w = _adaptive_worker()
+        body = _json.dumps(
+            {
+                "job_id": "j1",
+                "chunk_id": 0,
+                "chunk_text": "hello",
+                "total_chunks": 1,
+            }
+        ).encode()
+
+        submitted = []
+        with patch("worker.ADAPTIVE_ENABLED", True):
+            with patch.object(
+                w._executor, "submit", side_effect=lambda fn, *a: submitted.append((fn, a))
+            ):
+                w.process(
+                    object(),  # legacy ch must NOT be touched in adaptive mode
+                    type("M", (), {"delivery_tag": 7})(),
+                    None,
+                    body,
+                )
+
+        assert len(submitted) == 1
+
+    def test_adaptive_task_success_acks_via_threadsafe(self):
+        w = _adaptive_worker()
+        body = _json.dumps(
+            {
+                "job_id": "j1",
+                "chunk_id": 0,
+                "chunk_text": "hello world",
+                "total_chunks": 2,
+                "queued_at": int(__import__("time").time() * 1000),
+            }
+        ).encode()
+
+        # Not the last chunk: decr returns a positive remaining count.
+        from unittest.mock import MagicMock as _MM
+        redis = _MM()
+        redis.decr.return_value = 1
+        w.redis_client = redis
+
+        with patch.object(w, "_observe_queue_time"):
+            with patch.object(
+                w,
+                "extract_inferences",
+                return_value=[{"text": "f", "confidence": 0.9, "entity_refs": []}],
+            ):
+                w._adaptive_task(body, 7)
+
+        _run_scheduled(w._connection)
+        assert w._channel.acks == [7]
+
+    def test_adaptive_task_invalid_message_nacks_no_requeue(self):
+        w = _adaptive_worker()
+        body = _json.dumps({"job_id": "j1"}).encode()  # missing fields
+
+        w._adaptive_task(body, 9)
+        _run_scheduled(w._connection)
+
+        assert w._channel.nacks == [(9, False)]
+        assert w._channel.acks == []
+
+    def test_adaptive_task_error_nacks_with_requeue(self):
+        w = _adaptive_worker()
+        body = _json.dumps(
+            {"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}
+        ).encode()
+
+        with patch.object(w, "_observe_queue_time"):
+            with patch.object(
+                w, "extract_inferences", side_effect=RuntimeError("boom")
+            ):
+                w._adaptive_task(body, 5)
+
+        _run_scheduled(w._connection)
+        assert w._channel.nacks == [(5, True)]
+
+    def test_dispatch_accounts_in_flight(self):
+        w = _adaptive_worker()
+        # Invalid body: real task takes the short nack path (no Redis/LLM).
+        body = _json.dumps({"job_id": "j"}).encode()
+
+        w._dispatch_adaptive(body, 3)
+        w._executor.shutdown(wait=True)
+
+        # Dispatch incremented once; task completion decremented once.
+        assert w._tasks_in_flight == 0
+        assert len(w._connection.scheduled) == 1
+
+    def test_cleanup_drains_executor_tasks(self):
+        w = _adaptive_worker()
+        w._tasks_lock.acquire()
+        w._tasks_in_flight = 2
+        w._tasks_lock.release()
+
+        import threading as _t
+
+        def drain():
+            w._tasks_lock.acquire()
+            w._tasks_in_flight = 0
+            w._tasks_lock.release()
+
+        timer = _t.Timer(0.3, drain)
+        timer.start()
+        w.cleanup()  # must return once drained, without hanging
+        timer.join()
+        assert w._tasks_in_flight == 0

@@ -1778,6 +1778,15 @@ def main():
             if not _stopping:
                 time.sleep(5)
         finally:
+            # Flush buffered batch messages while the channel is still live.
+            # cleanup() also flushes, but it runs after the connection close
+            # below; acking on a dead channel would corrupt assembly.
+            if BATCH_ENABLED:
+                try:
+                    worker.flush_batch_buffer()
+                except Exception as e:
+                    worker.logger.error(f"Final batch flush failed: {e}")
+
             # Drop refs so executor threads stop scheduling new pika calls.
             worker._channel = None
             worker._connection = None

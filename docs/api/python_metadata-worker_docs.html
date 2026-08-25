@@ -165,7 +165,19 @@ Environment variables:
             
                 <div class="method">
                     <h4>_extract_metadata</h4>
-                    <p>No documentation</p>
+                    <p>Extract lightweight, deterministic metadata from extracted text.
+
+Sample-insensitive fields, computed on the FULL text (deterministic
+and cheap): text_length, word_count, line_count, char_count,
+content_hash, has_urls, has_emails, has_numbers and
+avg_sentence_length. The content hash is document identity and the
+boolean flags are single linear scans, so sampling them would lose
+correctness for no measurable gain.
+
+Sample-based field, computed on ``text[:TEXT_ANALYSIS_SAMPLE_CHARS]``:
+``language``. The word-list heuristic is only statistically
+meaningful and a prefix sample avoids paying a full-text ``lower()``
+copy over huge documents.</p>
                 </div>
             
                 <div class="method">

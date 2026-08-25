@@ -278,16 +278,15 @@ Example:
         </div>
         
         <div class="function">
-            <h3>extract_pdf_metadata</h3>
-            <p>Extract document-level metadata using exiftool.
+            <h3>extract_metadata_fast</h3>
+            <p>Extract cheap, deterministic document-level metadata.
 
-Parses EXIF and XMP metadata from PDF, DOCX, images, and other document
-types using the exiftool binary. Gracefully handles missing exiftool or
-corrupted files by returning partially filled metadata.
-
-Falls back to filesystem attributes (size, MIME type) if metadata extraction
-fails. All fields are populated with None/empty values on extraction failure
-rather than raising exceptions, ensuring downstream processing can continue.
+Computes file size, SHA-256 hash, and MIME type (libmagic). Deep EXIF/XMP
+fields (author, title, page_count, etc.) are initialized to None/empty and
+filled by :func:`extract_metadata_deep`, which runs for every job. All
+fields are populated with None/empty values
+on failure rather than raising exceptions, ensuring downstream processing
+can continue.
 
 Args:
     file_path: Absolute path to document file on disk.
@@ -311,11 +310,32 @@ Returns:
         exif_data (dict): Full EXIF tag dictionary (excluding system tags).
 
 Raises:
-    No exceptions raised. All failures result in None/empty values in metadata.
+    No exceptions raised. All failures result in None/empty values in metadata.</p>
+        </div>
+        
+        <div class="function">
+            <h3>extract_metadata_deep</h3>
+            <p>Enrich metadata with exiftool EXIF/XMP extraction.
+
+Parses EXIF and XMP metadata from PDF, DOCX, images, and other document
+types using the exiftool binary. Runs for every job after
+:func:`extract_metadata_fast`; callers offload it to a thread because the
+subprocess is synchronous. Gracefully handles missing exiftool or
+corrupted files by returning metadata partially filled.
+
+Args:
+    file_path: Absolute path to document file on disk.
+    metadata: Metadata dict from :func:`extract_metadata_fast` to enrich
+        in place. Returns a new dict or the same dict mutated.
+
+Returns:
+    The enriched metadata dictionary with deep fields populated where
+    exiftool could extract them.
 
 Note:
-    exiftool is called with a 30-second timeout to avoid hanging on large
-    or corrupt files. Requires exiftool binary at EXIFTOOL_PATH.</p>
+    exiftool is called with a bounded timeout (EXIFTOOL_TIMEOUT, default
+    10s) so corrupt/pathological files cannot stall a worker slot.
+    Requires exiftool binary at EXIFTOOL_PATH.</p>
         </div>
         
         <div class="function">
@@ -390,6 +410,14 @@ Note:
     - 90-100: Very Easy (5th grade)
     - 60-70: Standard (8th-9th grade)
     - 0-30: Difficult (college level)
+
+    Costly statistical features (language detection, readability) run only
+    on ``text[:TEXT_ANALYSIS_SAMPLE_CHARS]`` — a prefix sample is
+    representative enough and avoids paying their cost over huge documents.
+    The boolean regex flags (has_urls/has_emails/has_numbers) and the
+    deterministic counts (char_count/word_count/line_count) stay on the
+    FULL text: they are single linear scans and full-document correctness
+    matters for downstream feature filtering.
 
     Failures in language detection or readability calculation do not raise
     exceptions; fields are left as 'unknown' or omitted.

@@ -180,11 +180,23 @@ Key Features:
         
         <h2>Classes</h2>
         <div class="class-section">
+            <h3 class="class-name">_EmptyLlmResponse</h3>
+            <p class="docstring">Minimal stand-in for a requests.Response used when the adaptive semaphore
+cannot grant a token. Parses as an empty LLM result so callers degrade
+gracefully to an empty inference list.</p>
+            <div class="methods">
+                <div class="method">
+                    <h4>json</h4>
+                    <p>No documentation</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="class-section">
             <h3 class="class-name">InferenceWorker</h3>
             <p class="docstring">RabbitMQ consumer that extracts micro-inferences from document chunks using an LLM.
 
-This worker subscribes to the inferences queue and processes chunks from extraction.
-For each chunk, it calls an external vLLM API to extract factual statements guided
+This worker subscribes to the inferences queue and processes chunks from extraction.    For each chunk, it calls an external vLLM API to extract factual statements guided
 by detected entities.
 
 Lifecycle:
@@ -292,6 +304,31 @@ Error Handling:
                 <div class="method">
                     <h4>_set_cached</h4>
                     <p>Store inferences in Redis cache with TTL.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_call_llm</h4>
+                    <p>Perform an LLM request to the vLLM /v1/chat/completions endpoint.
+
+When ADAPTIVE_ENABLED, the request is gated by the AdaptiveSemaphore:
+a token is acquired before the request and released afterwards, feeding
+the latency/tokens-per-sec back into the congestion window so cwnd
+grows/shrinks based on actual LLM throughput. On acquire failure (or
+cooldown), returns an empty JSON response so callers degrade gracefully.
+
+Args:
+    payload: The request body for /v1/chat/completions.
+    timeout: Per-request timeout in seconds.
+    retries: Number of attempts (including the first).
+    retry_backoff: Base backoff in seconds, doubled per attempt.
+
+Returns:
+    requests.Response with .json() available. On adaptive acquire
+    failure, returns a response whose .json() yields {"choices": []}
+    so the caller treats it as a parse miss (empty inferences).
+
+Raises:
+    requests.RequestException if the request ultimately fails.</p>
                 </div>
             
                 <div class="method">
@@ -437,6 +474,11 @@ For each chunk in the batch:
                 <div class="method">
                     <h4>cleanup</h4>
                     <p>Flush pending batch and join timer thread on shutdown.</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_export_adaptive_metrics</h4>
+                    <p>Publish adaptive concurrency metrics to Prometheus gauges/counters.</p>
                 </div>
             
                 <div class="method">

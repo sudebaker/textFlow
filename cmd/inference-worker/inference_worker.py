@@ -167,6 +167,21 @@ class InferenceWorker(BaseWorker):
         from prometheus_client import Counter
         self.batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
 
+        # Queue wait time (spec 1.1): messages carry queued_at (unix ms)
+        from prometheus_client import Histogram
+        self.queue_time = Histogram(
+            "inference_worker_queue_time_seconds",
+            "Time messages spend waiting in the queue before consumption",
+            buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0, 60.0],
+        )
+
+        # LLM throughput (spec 1.3), from usage.completion_tokens / latency.
+        from prometheus_client import Gauge as _Gauge
+        self.llm_tokens_per_sec = _Gauge(
+            "inference_worker_llm_tokens_per_sec",
+            "LLM completion tokens per second (last call)",
+        )
+
         # Adaptive concurrency control (Fase 3). Only wired when enabled; the
         # consumer loop stays single-threaded on pika, so the semaphore gates
         # the LLM calls themselves (which block for seconds). A full
@@ -377,6 +392,12 @@ class InferenceWorker(BaseWorker):
         except Exception as e:
             self.logger.warning(f"Cache write error: {e}")
 
+    def _observe_queue_time(self, message: Dict[str, Any]) -> None:
+        """Record queue wait from the message's queued_at stamp (unix ms)."""
+        queued_at = message.get("queued_at")
+        if isinstance(queued_at, (int, float)) and queued_at > 0:
+            self.queue_time.observe(max(0.0, time.time() - queued_at / 1000.0))
+
     def _call_llm(
         self,
         payload: Dict[str, Any],
@@ -451,22 +472,30 @@ class InferenceWorker(BaseWorker):
             is_error = True
             raise
         finally:
+            latency_ms = (time.monotonic() - t0) * 1000
+            tokens_per_sec = self._tokens_per_sec_from(response, latency_ms, is_error)
+            # Spec 1.3: expose LLM throughput even without the semaphore.
+            self.llm_tokens_per_sec.set(tokens_per_sec)
             if acquired:
-                latency_ms = (time.monotonic() - t0) * 1000
-                tokens_per_sec = 0.0
-                if not is_error and response is not None:
-                    try:
-                        usage = response.json().get("usage", {})
-                        completion_tokens = int(usage.get("completion_tokens", 0))
-                        if latency_ms > 0 and completion_tokens > 0:
-                            tokens_per_sec = completion_tokens / (latency_ms / 1000.0)
-                    except Exception:
-                        tokens_per_sec = 0.0
                 self._adaptive.release(
                     latency_ms=latency_ms,
                     tokens_per_sec=tokens_per_sec,
                     is_error=is_error,
                 )
+
+    def _tokens_per_sec_from(
+        self, response: Optional[requests.Response], latency_ms: float, is_error: bool
+    ) -> float:
+        if is_error or response is None or latency_ms <= 0:
+            return 0.0
+        try:
+            usage = response.json().get("usage", {})
+            completion_tokens = int(usage.get("completion_tokens", 0))
+            if completion_tokens > 0:
+                return completion_tokens / (latency_ms / 1000.0)
+        except Exception:
+            pass
+        return 0.0
 
     def extract_inferences(
         self,
@@ -892,6 +921,7 @@ Respond with ONLY the JSON array:"""
         # Batch mode: accumulate message in buffer
         try:
             message = json.loads(body)
+            self._observe_queue_time(message)
 
             required_fields = ["job_id", "chunk_id", "chunk_text", "total_chunks"]
             missing = [f for f in required_fields if f not in message]
@@ -1289,6 +1319,7 @@ Respond with ONLY the JSON array:"""
 
         try:
             message = json.loads(body)
+            self._observe_queue_time(message)
             job_id = message.get("job_id")
             chunk_id = message.get("chunk_id")
             chunk_text = message.get("chunk_text", "")

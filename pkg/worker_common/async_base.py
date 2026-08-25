@@ -29,6 +29,7 @@ import logging
 import os
 import signal
 import sys
+import time
 import threading
 from abc import abstractmethod
 from typing import Any, Dict, Optional
@@ -93,6 +94,11 @@ class BaseAsyncWorker:
         )
         self.gpu_available = Gauge(
             f"{metrics_prefix}_gpu_available", "GPU availability", ["device"]
+        )
+        self.queue_time = Histogram(
+            f"{metrics_prefix}_queue_time_seconds",
+            "Time messages spend waiting in the queue before consumption",
+            buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0, 60.0],
         )
 
     def _init_health_server(self) -> None:
@@ -240,6 +246,15 @@ class BaseAsyncWorker:
                         try:
                             body = json.loads(message.body.decode())
                             job_id = body.get("job_id")
+
+                            queued_at = body.get("queued_at")
+                            if isinstance(queued_at, (int, float)) and queued_at > 0:
+                                wait = max(
+                                    0.0,
+                                    time.time() - queued_at / 1000.0,
+                                )
+                                self.queue_time.observe(wait)
+
                             await self.process_message(body)
                             duration = asyncio.get_event_loop().time() - start_time
                             self.job_duration.observe(duration)

@@ -259,6 +259,11 @@ class BaseWorker:
         self.gpu_available = Gauge(
             f"{self.worker_name}_gpu_available", "GPU availability", ["device"]
         )
+        self.queue_time = Histogram(
+            f"{self.worker_name}_queue_time_seconds",
+            "Time messages spend waiting in the queue before consumption",
+            buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0, 60.0],
+        )
 
     def _setup_signal_handlers(self) -> None:
         """Setup handlers for graceful shutdown."""
@@ -561,6 +566,11 @@ class BaseWorker:
         try:
             message = json.loads(body)
             job_id = message.get("job_id") or message.get("id")
+
+            queued_at = message.get("queued_at")
+            if isinstance(queued_at, (int, float)) and queued_at > 0:
+                wait = max(0.0, time.time() - queued_at / 1000.0)
+                self.queue_time.observe(wait)
 
             # Call subclass method for actual processing
             result = self.process_message(message)

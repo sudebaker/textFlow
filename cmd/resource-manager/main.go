@@ -54,6 +54,11 @@ func main() {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	pollCtx, pollCancel := context.WithCancel(context.Background())
+	defer pollCancel()
+	startGPUPoller(pollCtx, 15*time.Second)
+
 	<-quit
 
 	logger.Info().Msg("Shutting down server...")
@@ -113,7 +118,7 @@ func detectGPU() bool {
 }
 
 func checkNvidiaSMI() bool {
-	return false
+	return nvidiaSMIAvailable()
 }
 
 func checkCUDA() bool {

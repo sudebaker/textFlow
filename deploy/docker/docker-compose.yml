@@ -146,6 +146,11 @@ services:
         limits:
           cpus: '0.5'
           memory: 128M
+        reservations:
+          devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu, utility]
   extraction-worker:
     build:
       context: ../../
@@ -239,14 +244,16 @@ services:
         reservations:
           cpus: '1'
           memory: 1G
+          devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
   entities-worker:
     build:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: textflow-entities-worker
     volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
-      \ set it}:/models"
     - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
       \ set it}:/models"
     - artifacts-data:/app/data/artifacts
@@ -301,6 +308,10 @@ services:
         reservations:
           cpus: '0.5'
           memory: 2G
+          devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
   inference-worker:
     build:
       context: ../../

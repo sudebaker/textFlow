@@ -3,3 +3,6 @@ redis>=5.0.0
 requests>=2.31.0
 prometheus-client>=0.19.0
 python-dotenv>=1.0.0
+# pkg/worker_common/base.py serves the metrics/health endpoint with FastAPI+uvicorn
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0

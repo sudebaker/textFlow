@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create non-root user
 RUN adduser --disabled-password --gecos "" app && \
+    mkdir -p /app/data/artifacts && \
     chown -R app:app /app
 
 COPY pkg/ ./pkg/

@@ -55,7 +55,8 @@ COPY cmd/entities-worker/entrypoint.sh /entrypoint.sh
 COPY cmd/entities-worker/app ./app
 
 # Fix permissions
-RUN chown -R app:app /models /app /home/app && chmod +x /entrypoint.sh
+RUN mkdir -p /app/data/artifacts && \
+    chown -R app:app /models /app /home/app && chmod +x /entrypoint.sh
 
 # Switch to app user
 USER app

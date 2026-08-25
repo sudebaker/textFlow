@@ -75,6 +75,11 @@ services:
     - UPLOAD_PATH=/app/data/uploads
     - RESULTS_PATH=/app/data/results
     - EXTRACT_QUEUE=extract_text
+    # Admission control (docs/plan-adaptive-flow-control.md Fase 1)
+    - INGESTION_RATE_LIMIT=${INGESTION_RATE_LIMIT:-10}
+    - INGESTION_RATE_BURST=${INGESTION_RATE_BURST:-20}
+    - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-30}
+    - QUEUE_DEPTH_REJECT_THRESHOLD=${QUEUE_DEPTH_REJECT_THRESHOLD:-500}
     - EMBEDDINGS_QUEUE=embeddings
     - ENTITIES_QUEUE=entities
     - METADATA_QUEUE=metadata
@@ -301,7 +306,9 @@ services:
       context: ../../
       dockerfile: cmd/inference-worker/Dockerfile
     extra_hosts:
-    - "mac-mini:host-gateway"
+    # Standard Docker alias so containers can reach services on the HOST
+    # (e.g. a local Ollama at LLM_URL=http://host.docker.internal:11434).
+    - "host.docker.internal:host-gateway"
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672

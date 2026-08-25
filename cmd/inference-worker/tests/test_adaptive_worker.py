@@ -378,6 +378,42 @@ class TestAdaptiveConcurrencyLoop:
         assert w._channel.acks == [1, 2]
         assert w._channel.nacks == []
 
+    def test_cleanup_discards_batch_on_dead_channel(self):
+        """Batch buffer must NOT be processed when the channel is dead."""
+        w = _adaptive_worker()
+        w._connection = _FakeConnection()
+        w._connection.is_open = False  # dead channel
+        w._channel = None
+        item = {
+            "ch": w._channel,
+            "method": type("M", (), {"delivery_tag": 1})(),
+            "body": b"{}",
+            "message": {"job_id": "j"},
+        }
+        with w._batch_lock:
+            w._batch_buffer.append(item)
+        with patch.object(w, "_process_batch", side_effect=AssertionError("must not process on dead channel")) as m:
+            w.cleanup()
+            m.assert_not_called()
+        assert w._batch_buffer == []
+
+    def test_cleanup_flushes_batch_on_live_channel(self):
+        """Batch buffer IS processed when the channel is still open."""
+        w = _adaptive_worker()
+        w._connection = _FakeConnection()  # is_open True
+        item = {
+            "ch": _FakeChannel(),
+            "method": type("M", (), {"delivery_tag": 1})(),
+            "body": b"{}",
+            "message": {"job_id": "j"},
+        }
+        with w._batch_lock:
+            w._batch_buffer.append(item)
+        with patch.object(w, "_process_batch") as m:
+            w.cleanup()
+            m.assert_called_once()
+        assert w._batch_buffer == []
+
     def test_cleanup_drains_executor_tasks(self):
         w = _adaptive_worker()
         w._tasks_lock.acquire()

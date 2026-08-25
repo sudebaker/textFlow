@@ -1385,10 +1385,21 @@ Respond with ONLY the JSON array:"""
         self._shutdown_requested = True
         with self._batch_lock:
             if self._batch_buffer:
-                try:
-                    self._process_batch(self._batch_buffer[:])
-                except Exception as e:
-                    self.logger.error(f"Final batch flush failed: {e}")
+                if self._connection is not None and self._connection.is_open:
+                    # Live channel (clean shutdown): the finally-block usually
+                    # drained it; this is a safety net.
+                    try:
+                        self._process_batch(self._batch_buffer[:])
+                    except Exception as e:
+                        self.logger.error(f"Final batch flush failed: {e}")
+                else:
+                    # Dead channel (connection error at shutdown): do NOT
+                    # process here. Clearing without acking lets the broker
+                    # redeliver and process each message exactly once.
+                    self.logger.warning(
+                        f"Discarding {len(self._batch_buffer)} buffered batch "
+                        "messages on dead channel (will be redelivered)"
+                    )
                 self._batch_buffer.clear()
 
         # Adaptive mode: wait for in-flight executor tasks (each drains its
@@ -1752,6 +1763,13 @@ def main():
             if BATCH_ENABLED:
                 def _schedule_flush():
                     if _stopping:
+                        # Graceful shutdown: leave start_consuming() with a
+                        # LIVE channel so the finally-block can flush the
+                        # buffer and ack on it.
+                        try:
+                            channel.stop_consuming()
+                        except Exception:
+                            pass
                         return
                     try:
                         worker.flush_batch_buffer()
@@ -1778,10 +1796,13 @@ def main():
             if not _stopping:
                 time.sleep(5)
         finally:
-            # Flush buffered batch messages while the channel is still live.
-            # cleanup() also flushes, but it runs after the connection close
-            # below; acking on a dead channel would corrupt assembly.
-            if BATCH_ENABLED:
+            # Flush buffered batch messages ONLY on a clean exit (channel
+            # live): a graceful shutdown leaves start_consuming via the
+            # timer's stop_consuming, so acks here succeed. On a connection
+            # error the channel is dead — do NOT process the buffer here;
+            # the next connect clears it and the broker redelivers the
+            # unacked messages, which are then processed exactly once.
+            if BATCH_ENABLED and connection is not None and connection.is_open:
                 try:
                     worker.flush_batch_buffer()
                 except Exception as e:

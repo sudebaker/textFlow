@@ -336,7 +336,7 @@ services:
       - CMD
       - python
       - -c
-      - import urllib.request; urllib.request.urlopen('http://localhost:8006/health',
+      - import urllib.request; urllib.request.urlopen('http://localhost:9006/health',
         timeout=5)
       interval: 30s
       timeout: 10s

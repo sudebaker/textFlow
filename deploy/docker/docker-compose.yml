@@ -1,4 +1,21 @@
 version: '3.8'
+
+# NVIDIA GPU passthrough for workers. The nvidia-container-toolkit on this host
+# maps nvidia-uvm to the wrong char-device major (511 = nvswitch) so --gpus/CDI
+# fails with "CUDA unknown error" (kernel expects major 510). Bypass the toolkit
+# entirely: bind-mount the host device nodes (which carry the correct major) and
+# the driver libraries from /usr/lib.
+# NOTE: the driver-library volumes MUST be listed inside each service's own
+# `volumes:` list — a YAML merge key (`<<`) is shadowed when the service already
+# defines `volumes:`, which silently drops libcuda.so.1.
+x-gpu-devices: &gpu-devices
+  devices:
+  - /dev/nvidia0:/dev/nvidia0
+  - /dev/nvidiactl:/dev/nvidiactl
+  - /dev/nvidia-modeset:/dev/nvidia-modeset
+  - /dev/nvidia-uvm:/dev/nvidia-uvm
+  - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+
 services:
   rabbitmq:
     image: rabbitmq:3.13-management
@@ -123,6 +140,19 @@ services:
       context: ../../
       dockerfile: cmd/resource-manager/Dockerfile
     container_name: textflow-resource-manager
+    <<: *gpu-devices
+    ports:
+    - 9090:9090
+    volumes:
+    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
+    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
+    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
+    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
+    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
+    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=9090
@@ -147,10 +177,8 @@ services:
           cpus: '0.5'
           memory: 128M
         reservations:
-          devices:
-          - driver: nvidia
-            count: 1
-            capabilities: [gpu, utility]
+          cpus: '0.25'
+          memory: 64M
   extraction-worker:
     build:
       context: ../../
@@ -202,10 +230,19 @@ services:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: textflow-embeddings-worker
+    <<: *gpu-devices
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
       \ set it}:/models"
     - artifacts-data:/app/data/artifacts
+    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
+    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
+    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
+    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
+    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
+    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -244,19 +281,24 @@ services:
         reservations:
           cpus: '1'
           memory: 1G
-          devices:
-          - driver: nvidia
-            count: 1
-            capabilities: [gpu]
   entities-worker:
     build:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: textflow-entities-worker
+    <<: *gpu-devices
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
       \ set it}:/models"
     - artifacts-data:/app/data/artifacts
+    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
+    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
+    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
+    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
+    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
+    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -308,10 +350,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 2G
-          devices:
-          - driver: nvidia
-            count: 1
-            capabilities: [gpu]
   inference-worker:
     build:
       context: ../../

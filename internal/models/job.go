@@ -164,6 +164,10 @@ type JobMessage struct {
 	Diarize         bool        `json:"diarize,omitempty"`
 	Features        []string    `json:"features,omitempty"`
 	PipelineVersion string      `json:"pipeline_version,omitempty"`
+	// QueuedAt is the unix-millisecond timestamp set right before the
+	// message is published to RabbitMQ. Consumers use it to report
+	// stage_queue_time_seconds (time spent waiting in the queue).
+	QueuedAt int64 `json:"queued_at,omitempty"`
 }
 
 // ContentType identifies the type of uploaded content.

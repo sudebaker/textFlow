@@ -246,6 +246,11 @@ func (b *RabbitMQBroker) PublishJobMessage(ctx context.Context, jobMsg *models.J
 		return fmt.Errorf("invalid job message: no document provided")
 	}
 
+	// Stamp queue entry time so consumers can report stage_queue_time.
+	if jobMsg.QueuedAt == 0 {
+		jobMsg.QueuedAt = time.Now().UnixMilli()
+	}
+
 	queue := b.config.ExtractQueue
 	return b.Publish(ctx, queue, jobMsg)
 }

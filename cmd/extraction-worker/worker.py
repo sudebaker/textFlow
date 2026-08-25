@@ -1080,6 +1080,9 @@ class ExtractionWorker:
                 job_message = {
                     "job_id": job_id,
                     "document_metadata": document_metadata,
+                    # Queue entry stamp so downstream consumers can report
+                    # stage_queue_time_seconds (spec 1.1).
+                    "queued_at": int(time.time() * 1000),
                     "pipeline_version": body.get("pipeline_version", "v1"),
                 }
 

@@ -88,6 +88,9 @@ METRICS_PORT = int(os.getenv("METRICS_PORT", "8004"))
 CHUNK_SIZE_TOKENS = int(os.getenv("CHUNK_SIZE_TOKENS", "512"))
 CHUNK_OVERLAP_TOKENS = int(os.getenv("CHUNK_OVERLAP_TOKENS", "50"))
 EXIFTOOL_PATH = os.getenv("EXIFTOOL_PATH", "/usr/bin/exiftool")
+# Anti-hang cap for the exiftool subprocess. Typical extraction is
+# milliseconds; this only bounds corrupt/pathological files.
+EXIFTOOL_TIMEOUT = int(os.getenv("EXIFTOOL_TIMEOUT", "10"))
 
 # Docling OCR settings — disable by default (text PDFs don't need OCR).
 # Set DOCLING_DO_OCR=true to re-enable; change DOCLING_OCR_ENGINE to easyocr
@@ -135,8 +138,8 @@ def extract_metadata_fast(file_path: str, filename: str) -> Dict[str, Any]:
 
     Computes file size, SHA-256 hash, and MIME type (libmagic). Deep EXIF/XMP
     fields (author, title, page_count, etc.) are initialized to None/empty and
-    filled by :func:`extract_metadata_deep` only when the job requests the
-    ``metadata_deep`` feature. All fields are populated with None/empty values
+    filled by :func:`extract_metadata_deep`, which runs for every job. All
+    fields are populated with None/empty values
     on failure rather than raising exceptions, ensuring downstream processing
     can continue.
 
@@ -192,12 +195,12 @@ def extract_metadata_fast(file_path: str, filename: str) -> Dict[str, Any]:
 
 
 def extract_metadata_deep(file_path: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Enrich metadata with exiftool EXIF/XMP extraction (optional, expensive).
+    """Enrich metadata with exiftool EXIF/XMP extraction.
 
     Parses EXIF and XMP metadata from PDF, DOCX, images, and other document
-    types using the exiftool binary. Only invoked when the job requests the
-    ``metadata_deep`` feature; without it, deep fields stay None/empty from
-    :func:`extract_metadata_fast`. Gracefully handles missing exiftool or
+    types using the exiftool binary. Runs for every job after
+    :func:`extract_metadata_fast`; callers offload it to a thread because the
+    subprocess is synchronous. Gracefully handles missing exiftool or
     corrupted files by returning metadata partially filled.
 
     Args:
@@ -210,15 +213,16 @@ def extract_metadata_deep(file_path: str, metadata: Dict[str, Any]) -> Dict[str,
         exiftool could extract them.
 
     Note:
-        exiftool is called with a 30-second timeout to avoid hanging on large
-        or corrupt files. Requires exiftool binary at EXIFTOOL_PATH.
+        exiftool is called with a bounded timeout (EXIFTOOL_TIMEOUT, default
+        10s) so corrupt/pathological files cannot stall a worker slot.
+        Requires exiftool binary at EXIFTOOL_PATH.
     """
     try:
         result = subprocess.run(
             [EXIFTOOL_PATH, "-j", file_path],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=EXIFTOOL_TIMEOUT,
         )
         if result.returncode == 0:
             exif_data = json.loads(result.stdout)
@@ -253,6 +257,26 @@ def extract_metadata_deep(file_path: str, metadata: Dict[str, Any]) -> Dict[str,
         logger.warning(f"exiftool extraction failed: {e}")
 
     return metadata
+
+
+async def extract_document_metadata(
+    file_path: str, filename: str
+) -> Dict[str, Any]:
+    """Build full document metadata: fast fields + deep exiftool enrichment.
+
+    Runs for every job. The exiftool subprocess is synchronous, so the deep
+    pass is offloaded to a thread to keep the async event loop responsive.
+
+    Args:
+        file_path: Absolute path to document file on disk.
+        filename: Filename for metadata record (may differ from file_path basename).
+
+    Returns:
+        Metadata dict with fast fields (filename, size, sha256, mime_type)
+        plus deep EXIF/XMP fields (author, title, page_count, ...).
+    """
+    metadata = extract_metadata_fast(file_path, filename)
+    return await asyncio.to_thread(extract_metadata_deep, file_path, metadata)
 
 
 def chunk_text(
@@ -993,14 +1017,10 @@ class ExtractionWorker:
                         os.close(temp_fd)
 
                 features = body.get("features") or []
-                document_metadata = extract_metadata_fast(
+                document_metadata = await extract_document_metadata(
                     temp_file_path,
                     os.path.basename(body.get("document_path", "document.pdf")),
                 )
-                if "metadata_deep" in features:
-                    document_metadata = extract_metadata_deep(
-                        temp_file_path, document_metadata
-                    )
 
                 # Guard: fail if Docling returned empty text (likely file type mismatch)
                 if not text:

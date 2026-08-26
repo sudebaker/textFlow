@@ -104,7 +104,6 @@ LLM_RETRY_BACKOFF = float(os.getenv("INFERENCE_LLM_RETRY_BACKOFF", "2.0"))
 ADAPTIVE_ENABLED = os.getenv("INFERENCE_ADAPTIVE_ENABLED", "false").lower() == "true"
 ADAPTIVE_MAX_CONCURRENCY = int(os.getenv("INFERENCE_MAX_CONCURRENCY", "16"))
 ADAPTIVE_MIN_CONCURRENCY = int(os.getenv("INFERENCE_MIN_CONCURRENCY", "1"))
-ADAPTIVE_TARGET_TOKENS_PER_SEC = float(os.getenv("INFERENCE_TARGET_TOKENS_PER_SEC", "10.0"))
 ADAPTIVE_DECAY_FACTOR = int(os.getenv("INFERENCE_TIMEOUT_DECAY_FACTOR", "2"))
 ADAPTIVE_COOLDOWN_SECONDS = float(os.getenv("INFERENCE_COOLDOWN_SECONDS", "30"))
 ADAPTIVE_CONSECUTIVE_ERRORS = int(os.getenv("INFERENCE_CONSECUTIVE_ERRORS_FOR_COOLDOWN", "5"))
@@ -195,13 +194,11 @@ class InferenceWorker(BaseWorker):
         self._llm_timeouts_counter = None
         self._cwnd_gauge = None
         self._in_flight_gauge = None
-        self._avg_latency_gauge = None
         self._cooldown_gauge = None
         if ADAPTIVE_ENABLED:
             self._adaptive = AdaptiveSemaphore(
                 min_concurrency=ADAPTIVE_MIN_CONCURRENCY,
                 max_concurrency=ADAPTIVE_MAX_CONCURRENCY,
-                target_tokens_per_sec=ADAPTIVE_TARGET_TOKENS_PER_SEC,
                 decay_factor=ADAPTIVE_DECAY_FACTOR,
                 cooldown_seconds=ADAPTIVE_COOLDOWN_SECONDS,
                 consecutive_errors_for_cooldown=ADAPTIVE_CONSECUTIVE_ERRORS,
@@ -223,9 +220,6 @@ class InferenceWorker(BaseWorker):
             from prometheus_client import Gauge
             self._cwnd_gauge = Gauge("inference_worker_cwnd", "Current congestion window")
             self._in_flight_gauge = Gauge("inference_worker_in_flight", "LLM calls currently in flight")
-            self._avg_latency_gauge = Gauge(
-                "inference_worker_llm_avg_latency_ms", "Average LLM latency (ms)"
-            )
             self._cooldown_gauge = Gauge("inference_worker_cooldown", "1 if circuit breaker is active")
             self._llm_requests_counter = Counter(
                 "inference_worker_llm_requests_total", "Total LLM requests"
@@ -235,8 +229,7 @@ class InferenceWorker(BaseWorker):
             )
             self.logger.info(
                 f"Adaptive LLM concurrency ENABLED: min={ADAPTIVE_MIN_CONCURRENCY}, "
-                f"max={ADAPTIVE_MAX_CONCURRENCY}, "
-                f"target_tokens/s={ADAPTIVE_TARGET_TOKENS_PER_SEC}"
+                f"max={ADAPTIVE_MAX_CONCURRENCY}, binary AIMD (success/error)"
             )
 
         # Discover model at startup (one-time, cached)
@@ -495,11 +488,7 @@ class InferenceWorker(BaseWorker):
             # Spec 1.3: expose LLM throughput even without the semaphore.
             self.llm_tokens_per_sec.set(tokens_per_sec)
             if acquired:
-                self._adaptive.release(
-                    latency_ms=latency_ms,
-                    tokens_per_sec=tokens_per_sec,
-                    is_error=is_error,
-                )
+                self._adaptive.release(is_error=is_error)
                 if self._llm_requests_counter is not None:
                     self._llm_requests_counter.inc()
                     if is_error:
@@ -1450,9 +1439,6 @@ Respond with ONLY the JSON array:"""
         stats = self._adaptive.get_stats()
         self._cwnd_gauge.set(stats["cwnd"])
         self._in_flight_gauge.set(stats["in_flight"])
-        # The AdaptiveSemaphore uses tokens/s as its decision signal (Fase 5.2).
-        # Exposed on the avg-latency gauge, which the semaphore reports.
-        self._avg_latency_gauge.set(stats["avg_tokens_per_sec"])
         self._cooldown_gauge.set(1 if stats["is_in_cooldown"] else 0)
 
     def _process_single(self, ch, method, properties, body):

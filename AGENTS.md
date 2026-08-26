@@ -199,20 +199,23 @@ fuera de alcance). Volumen `artifacts-data` montado en `/app/data/artifacts`.
 ### Inference-worker: AdaptiveSemaphore (integrado tras `INFERENCE_ADAPTIVE_ENABLED`)
 
 `cmd/inference-worker/adaptive_semaphore.py` (AIMD congestion control, thread-safe,
-con 17 tests unitarios) YA está integrado en `cmd/inference-worker/inference_worker.py`,
+con tests unitarios) YA está integrado en `cmd/inference-worker/inference_worker.py`,
 pero detrás del flag `INFERENCE_ADAPTIVE_ENABLED` (default `false`): con `false` el
 comportamiento es idéntico al anterior. Con `true` se activa:
 - `_call_llm()` (helper que sustituye el `requests.post` en `extract_inferences` y en
   `extract_inferences_batch`) adquiere un token del semáforo antes de la llamada LLM y lo
-  libera con `latency_ms`/`tokens_per_sec`/`is_error` al terminar (decide con tokens/s,
-  ver Fase 5.2 del plan). Si `acquire` falla (cooldown/saturación), devuelve resultado
-  vacío (degradación silenciosa).
+  libera con `is_error` al terminar. La señal de congestión es **binaria** (TCP Reno):
+  éxito → cwnd +1 (ACK); error/timeout → cwnd // 2. `LLM_TIMEOUT` actúa como el RTO de
+  TCP. NO se mide tokens/s como señal de control (la API OpenAI mezcla prompt processing
+  + generation, haciendo la métrica ambigua y dependiente del backend). Si `acquire`
+  falla (cooldown/saturación), devuelve resultado vacío (degradación silenciosa).
 - Prefetch dinámico: `ADAPTIVE_MAX_CONCURRENCY + BATCH_SIZE` (batch) o
   `ADAPTIVE_MAX_CONCURRENCY` (sin batch), salvo `PREFETCH_COUNT` explícito.
-- Métricas Prometheus nuevas: `inference_worker_cwnd`, `inference_worker_in_flight`,
-  `inference_worker_llm_avg_latency_ms`, `inference_worker_cooldown`,
-  `inference_worker_llm_requests_total`, `inference_worker_llm_timeouts_total`
-  (exportadas en `cleanup()` vía `_export_adaptive_metrics()`).
+- Métricas Prometheus: `inference_worker_cwnd`, `inference_worker_in_flight`,
+  `inference_worker_cooldown`, `inference_worker_llm_requests_total`,
+  `inference_worker_llm_timeouts_total` (gauges en vivo por-llamada vía
+  `_export_adaptive_metrics()`), y `inference_worker_llm_tokens_per_sec` (solo
+  observabilidad — no es señal de control).
 - Graceful shutdown en `cleanup()`: espera `in_flight == 0` (timeout `LLM_TIMEOUT+30`).
 
 El worker sigue siendo pika `BlockingConnection` single-threaded: el semáforo gatea la

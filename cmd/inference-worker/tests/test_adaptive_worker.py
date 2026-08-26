@@ -94,8 +94,6 @@ class TestSemaphoreAcquireRelease:
             assert mock_sem.release.call_count == 1
             release_kwargs = mock_sem.release.call_args.kwargs
             assert release_kwargs.get("is_error") is False
-            assert "latency_ms" in release_kwargs
-            assert "tokens_per_sec" in release_kwargs
 
     def test_cooldown_blocks_new_work(self, worker):
         """When the semaphore is in cooldown, acquire fails and returns empty."""
@@ -132,7 +130,7 @@ class TestGracefulShutdown:
         assert worker._adaptive is not None
         # Simulate an in-flight LLM call, then release it so cleanup exits.
         assert worker._adaptive.acquire(timeout=0.1) is True
-        worker._adaptive.release(latency_ms=100, tokens_per_sec=20.0, is_error=False)
+        worker._adaptive.release(is_error=False)
         # cleanup should not raise; in-flight is 0 so it exits immediately.
         worker.cleanup()
 

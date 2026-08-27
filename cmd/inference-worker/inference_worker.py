@@ -1372,7 +1372,12 @@ Respond with ONLY the JSON array:"""
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "inferences", "completed"
             )
-            self.event_bus.publish_stage_event(job_id, "stage.completed", "inferences")
+            self.event_bus.publish_stage_event(
+                job_id,
+                "stage.completed",
+                "inferences",
+                metadata={"inferences_key": final_key, "count": len(assembled)},
+            )
 
             self.event_bus.publish_job_progress(job_id, 80, "inferences")
 

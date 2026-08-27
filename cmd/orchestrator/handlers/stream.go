@@ -117,6 +117,7 @@ func StreamJobHandler(c *gin.Context) {
 				"progress":  jobEvent.Progress,
 				"timestamp": jobEvent.Timestamp.Format(time.RFC3339),
 				"error":     jobEvent.Error,
+				"metadata":  jobEvent.Metadata,
 			})
 			if err != nil {
 				logging.Warn().Err(err).Msg("failed to marshal event")

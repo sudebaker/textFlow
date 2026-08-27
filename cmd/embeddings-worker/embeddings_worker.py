@@ -164,7 +164,12 @@ class EmbeddingsWorker(BaseWorker):
         self.redis_client.hset(
             f"orchestrator:job:{job_id}:steps", "embeddings", "completed"
         )
-        self.event_bus.publish_stage_event(job_id, "stage.completed", "embeddings")
+        self.event_bus.publish_stage_event(
+            job_id,
+            "stage.completed",
+            "embeddings",
+            metadata={"embeddings_ref": embeddings_ref},
+        )
 
         inference_progress = 33
         micro_inferences_key = f"orchestrator:job:{job_id}:micro_inferences"

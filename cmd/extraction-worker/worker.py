@@ -1056,7 +1056,12 @@ class ExtractionWorker:
                 self.redis_client.hset(
                     f"orchestrator:job:{job_id}:steps", "extraction", "completed"
                 )
-                self.event_bus.publish_stage_event(job_id, "stage.completed", "extraction")
+                self.event_bus.publish_stage_event(
+                    job_id,
+                    "stage.completed",
+                    "extraction",
+                    metadata={"text_ref": text_ref, "chunks_ref": chunks_ref},
+                )
 
                 # Classify document source
                 try:

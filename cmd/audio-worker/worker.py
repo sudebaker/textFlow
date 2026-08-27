@@ -87,7 +87,12 @@ class AudioWorker(BaseAsyncWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "audio", "completed"
             )
-            self.event_bus.publish_stage_event(job_id, "stage.completed", "audio")
+            self.event_bus.publish_stage_event(
+                job_id,
+                "stage.completed",
+                "audio",
+                metadata={"text_ref": text_ref, "chunks_ref": chunks_ref},
+            )
 
             job_message = {
                 "job_id": job_id,

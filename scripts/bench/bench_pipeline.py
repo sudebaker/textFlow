@@ -29,13 +29,13 @@ DEFAULT_DOCS = [
     os.getenv("BENCH_DOC1", "corpus/Documento_9_R.pdf"),
     os.getenv("BENCH_DOC2", "corpus/23F_9.pdf"),
     os.getenv("BENCH_DOC3", "corpus/Documento_58_R.pdf"),
-    os.getenv("BENCH_DOC4", "corpus/27122023_RES.pdf"),
+    os.getenv("BENCH_DOC4", "corpus/doc4.pdf"),
     os.getenv("BENCH_DOC5", "corpus/Documento_1_R.pdf"),
     os.getenv("BENCH_DOC6", "corpus/D.24.pdf"),
     os.getenv("BENCH_DOC7", "corpus/Documento_42_R.pdf"),
-    os.getenv("BENCH_DOC8", "corpus/03_OP_ALESTE.pdf"),
-    os.getenv("BENCH_DOC9", "corpus/Sentencia-fiscal-general.pdf"),
-    os.getenv("BENCH_DOC10", "corpus/AASD_servodrivemanual.pdf"),
+    os.getenv("BENCH_DOC8", "corpus/doc8.pdf"),
+    os.getenv("BENCH_DOC9", "corpus/doc9.pdf"),
+    os.getenv("BENCH_DOC10", "corpus/doc10.pdf"),
 ]
 
 

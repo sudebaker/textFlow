@@ -12,6 +12,20 @@
       "publish_queues": ["entities"]
     }
   },
+  "profiles": {
+    "fast": {
+      "steps": ["extraction", "metadata"],
+      "publish_queues": ["metadata"]
+    },
+    "balanced": {
+      "steps": ["extraction", "embeddings", "entities", "metadata"],
+      "publish_queues": ["embeddings", "entities", "metadata"]
+    },
+    "full": {
+      "steps": ["extraction", "embeddings", "entities", "metadata"],
+      "publish_queues": ["embeddings", "entities", "metadata"]
+    }
+  },
   "feature_extras": {
     "inferences": {
       "step": "inferences",

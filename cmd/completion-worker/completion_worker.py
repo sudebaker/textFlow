@@ -478,11 +478,14 @@ class CompletionWorker(BasePubSubWorker):
                 except Exception as e:
                     self.logger.warning(f"Failed to parse features: {e}")
 
+            profile = self.redis_client.get(f"orchestrator:job:{job_id}:profile") or "balanced"
+
             required_steps = self.pipeline.steps_for(
                 is_spreadsheet=is_spreadsheet,
                 is_audio=is_audio,
                 is_image=is_image,
                 features=features,
+                profile=profile,
             )
 
             self.logger.info(

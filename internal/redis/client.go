@@ -600,6 +600,36 @@ func (c *RedisClient) GetJobFeatures(ctx context.Context, jobID string) ([]strin
 	return features, nil
 }
 
+// SetJobProfile stores the processing profile (fast/balanced/full) for a job.
+// Redis key: {namespace}:job:{jobID}:profile
+// TTL: jobTTL (typically 24 hours), set on initial write.
+// Returns error if the Redis operation fails.
+func (c *RedisClient) SetJobProfile(ctx context.Context, jobID string, profile string) error {
+	key := c.key("job", jobID, "profile")
+	err := c.client.Set(ctx, key, profile, c.jobTTL).Err()
+	if err != nil {
+		return fmt.Errorf("failed to set job profile: %w", err)
+	}
+	return nil
+}
+
+// GetJobProfile retrieves the processing profile for a job.
+// Redis key: {namespace}:job:{jobID}:profile
+// Returns the profile string on success.
+// Returns empty string (not error) if no profile is stored (redis.Nil).
+// Returns error if the Redis operation fails.
+func (c *RedisClient) GetJobProfile(ctx context.Context, jobID string) (string, error) {
+	key := c.key("job", jobID, "profile")
+	profile, err := c.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get job profile: %w", err)
+	}
+	return profile, nil
+}
+
 // DeleteJob removes all Redis keys associated with a job, including:
 // - status, text, results, embeddings, entities, metadata, steps, error
 // - created/completed timestamps, features, LLM configuration
@@ -620,6 +650,7 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 		c.key("job", jobID, "meta"),
 		c.key("job", jobID, "error"),
 		c.key("job", jobID, "features"),
+		c.key("job", jobID, "profile"),
 		c.key("job", jobID, "llm_url"),
 		c.key("job", jobID, "source_classification"),
 		c.key("job", jobID, "micro_inferences"),

@@ -514,6 +514,14 @@ func createJobHandler(c *gin.Context) {
 		logger.Info().Msgf("Job %s: No features requested", jobID)
 	}
 
+	// Normalize and store the processing profile (fast/balanced/full)
+	profile := normalizeProfile(req.Profile)
+	if err := redis.SetJobProfile(ctx, jobID, profile); err != nil {
+		logger.Error().Err(err).Str("job_id", jobID).Str("profile", profile).Msg("Failed to store job profile")
+	} else {
+		logger.Info().Str("job_id", jobID).Str("profile", profile).Msg("Job profile stored")
+	}
+
 	// Store webhook config if provided
 	if req.WebhookURL != "" {
 		if err := redis.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret); err != nil {
@@ -539,6 +547,7 @@ func createJobHandler(c *gin.Context) {
 		DocumentURL:     req.DocumentURL,
 		Filename:        req.Filename,
 		Features:        req.Features,
+		Profile:         profile,
 		PipelineVersion: "v1",
 	}
 
@@ -1200,6 +1209,14 @@ func uploadHandler(c *gin.Context) {
 		}
 	}
 
+	// Normalize and store the processing profile (fast/balanced/full)
+	profile := normalizeProfile(c.PostForm("profile"))
+	if err := redis.SetJobProfile(ctx, jobID, profile); err != nil {
+		logger.Error().Err(err).Str("job_id", jobID).Str("profile", profile).Msg("Failed to store job profile")
+	} else {
+		logger.Info().Str("job_id", jobID).Str("profile", profile).Msg("Job profile stored from multipart")
+	}
+
 	jobMsg := models.JobMessage{
 		JobID:           jobID,
 		DocumentPath:    filePath,
@@ -1207,6 +1224,7 @@ func uploadHandler(c *gin.Context) {
 		MIMEType:        header.Header.Get("Content-Type"),
 		ContentType:     models.ContentTypeDocument,
 		Features:        validatedFeatures,
+		Profile:         profile,
 		PipelineVersion: "v1",
 	}
 
@@ -1414,6 +1432,22 @@ func downloadHandler(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=results_%s.json", jobID))
 	c.Header("Content-Type", "application/json")
 	c.JSON(http.StatusOK, results)
+}
+
+// normalizeProfile validates and normalizes a processing profile string.
+// Accepts fast|balanced|full (case-insensitive). Unknown or empty values
+// fall back to "balanced" (the default pipeline behavior).
+func normalizeProfile(profile string) string {
+	normalized := strings.ToLower(strings.TrimSpace(profile))
+	switch normalized {
+	case "fast", "balanced", "full":
+		return normalized
+	default:
+		if normalized != "" {
+			logger.Warn().Str("profile", profile).Msg("Invalid profile requested, defaulting to balanced (valid: fast, balanced, full)")
+		}
+		return "balanced"
+	}
 }
 
 // validateFeatures validates, deduplicates, and normalizes feature strings.

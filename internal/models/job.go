@@ -167,6 +167,7 @@ type JobMessage struct {
 	ContentType     ContentType `json:"content_type,omitempty"`
 	Diarize         bool        `json:"diarize,omitempty"`
 	Features        []string    `json:"features,omitempty"`
+	Profile         string      `json:"profile,omitempty"`
 	PipelineVersion string      `json:"pipeline_version,omitempty"`
 	StageVersion    string      `json:"stage_version,omitempty"`
 	ModelVersion    string      `json:"model_version,omitempty"`
@@ -223,6 +224,7 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
+	Profile        string   `json:"profile,omitempty"`   // fast|balanced|full
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }

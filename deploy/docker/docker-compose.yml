@@ -579,6 +579,7 @@ services:
     - MULTIMODAL_LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-120}
     - MULTIMODAL_LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
     - IMAGE_QUEUE=image
+    - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
     - METRICS_PORT=8006
     healthcheck:
       test:
@@ -682,6 +683,7 @@ services:
     - AUDIO_CHUNK_MAX_CHARS=${AUDIO_CHUNK_MAX_CHARS:-1500}
     - MAX_AUDIO_SIZE_MB=${MAX_AUDIO_SIZE_MB:-500}
     - METRICS_PORT=8005
+    - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
     healthcheck:
       test:
       - CMD

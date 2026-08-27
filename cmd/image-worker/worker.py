@@ -9,6 +9,7 @@ from pkg.image_client.client import MultimodalLLMClientPool
 from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.async_base import BaseAsyncWorker
 from pkg.worker_common.chunking import chunk_text
+from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
 
 QUEUE_NAME = os.getenv("IMAGE_QUEUE", "image")
@@ -24,6 +25,7 @@ class ImageWorker(BaseAsyncWorker):
             metrics_port=METRICS_PORT,
         )
         self.llm_pool = MultimodalLLMClientPool()
+        self.pipeline = PipelineDefinition.load()
 
     async def process_message(self, message: Dict[str, Any]) -> None:
         job_id = message.get("job_id")
@@ -87,9 +89,10 @@ class ImageWorker(BaseAsyncWorker):
             if features:
                 job_message["features"] = features
 
-            target_queues = ["embeddings", "entities", "metadata"]
-            if "inferences" in features:
-                target_queues.append("inferences")
+            profile = message.get("profile", "balanced")
+            target_queues = self.pipeline.queues_for(
+                is_spreadsheet=False, features=features, profile=profile
+            )
 
             job_message_json = json.dumps(job_message).encode()
             for queue_name in target_queues:

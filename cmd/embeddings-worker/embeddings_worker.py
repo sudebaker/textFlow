@@ -102,24 +102,25 @@ class EmbeddingsWorker(BaseWorker):
 
     def process_message(self, message: Dict) -> Any:
         job_id = message.get("job_id")
-        chunks = message.get("chunks", [])
+
+        # Chunks are always read from the artifact store (spec 3.4): workers no
+        # longer carry chunks inline in the RabbitMQ message. The message only
+        # carries the job_id and routing metadata.
+        chunks_json = resolve_text(
+            STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
+        )
+        if chunks_json:
+            chunks = json.loads(chunks_json)
+        else:
+            self.logger.warning(
+                f"No chunks found in Redis for job: {job_id}"
+            )
+            self.jobs_total.labels(status="no_chunks").inc()
+            return {"status": "no_chunks"}
 
         self.logger.info(
             f"Processing embeddings for job: {job_id} with {len(chunks)} chunks"
         )
-
-        if not chunks:
-            chunks_json = resolve_text(
-                STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
-            )
-            if chunks_json:
-                chunks = json.loads(chunks_json)
-            else:
-                self.logger.warning(
-                    f"No chunks found in message or Redis for job: {job_id}"
-                )
-                self.jobs_total.labels(status="no_chunks").inc()
-                return {"status": "no_chunks"}
 
         embeddings_dict = {}
         total_chunks = len(chunks)

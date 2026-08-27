@@ -44,6 +44,10 @@ const (
 	StatusCompleted JobStatus = "completed"
 	// StatusFailed indicates the job encountered an error during processing.
 	StatusFailed JobStatus = "failed"
+	// StatusCancelled indicates the job was cancelled by the user via
+	// POST /v1/documents/:id/cancel. Workers check this state and stop
+	// processing; the job is not finalized.
+	StatusCancelled JobStatus = "cancelled"
 )
 
 // SourceClassificationResult represents the output of document source classification.
@@ -164,6 +168,8 @@ type JobMessage struct {
 	Diarize         bool        `json:"diarize,omitempty"`
 	Features        []string    `json:"features,omitempty"`
 	PipelineVersion string      `json:"pipeline_version,omitempty"`
+	StageVersion    string      `json:"stage_version,omitempty"`
+	ModelVersion    string      `json:"model_version,omitempty"`
 	// QueuedAt is the unix-millisecond timestamp set right before the
 	// message is published to RabbitMQ. Consumers use it to report
 	// stage_queue_time_seconds (time spent waiting in the queue).

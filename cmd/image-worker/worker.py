@@ -32,6 +32,7 @@ class ImageWorker(BaseAsyncWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:status", "status", "analyzing_image"
             )
+            self.event_bus.publish_stage_event(job_id, "stage.started", "image")
 
             document_path = validate_upload_path(message["document_path"], UPLOAD_PATH)
             with open(document_path, "rb") as f:
@@ -69,6 +70,7 @@ class ImageWorker(BaseAsyncWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "image", "completed"
             )
+            self.event_bus.publish_stage_event(job_id, "stage.completed", "image")
 
             job_message = {
                 "job_id": job_id,

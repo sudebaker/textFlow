@@ -140,6 +140,23 @@ class BaseAsyncWorker:
         """Hook for subclasses to release resources before shutdown."""
         pass
 
+    def _is_cancelled(self, job_id: str) -> bool:
+        """Return True if the job has been cancelled via POST /v1/documents/:id/cancel.
+
+        Workers check this before processing so a cancelled job is not
+        executed. The status is read from Redis (orchestrator:job:{id}:status).
+        """
+        if not job_id:
+            return False
+        try:
+            status = self.redis_client.hget(
+                f"orchestrator:job:{job_id}:status", "status"
+            )
+            return status == "cancelled"
+        except Exception as e:
+            self.logger.warning(f"Failed to check cancellation for {job_id}: {e}")
+            return False
+
     @property
     def redis_client(self) -> redis.Redis:
         if self._redis_client is None:
@@ -254,6 +271,10 @@ class BaseAsyncWorker:
                                     time.time() - queued_at / 1000.0,
                                 )
                                 self.queue_time.observe(wait)
+
+                            if self._is_cancelled(job_id):
+                                self.logger.info(f"Job {job_id} cancelled, skipping processing")
+                                return
 
                             await self.process_message(body)
                             duration = asyncio.get_event_loop().time() - start_time

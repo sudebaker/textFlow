@@ -285,6 +285,25 @@ git rm --cached <ruta-del-binario>
 
 ---
 
+## Stack Multimodal (audio + imagen)
+
+Routing por extensión en el orchestrator (`cmd/orchestrator/main.go`): `.mp3/.wav/.m4a/.ogg` → `audio`, `.jpg/.jpeg/.png` → `image`. Los workers (`cmd/audio-worker/`, `cmd/image-worker/`) usan el patrón async `BaseAsyncWorker` y NO cargan modelos locales — son clientes HTTP de servicios externos.
+
+| Worker | Servicio externo | Endpoint |
+|--------|------------------|----------|
+| `audio-worker` | `whisper` (deploy/docker/whisper) | `POST /transcribe` (multipart `audio`+`language`) |
+| `image-worker` | `image-analyzer` (deploy/docker/image-analyzer) | `POST /analyze` (multipart `file`+`prompt`) |
+
+**image-analyzer** (micro-servicio propio, `deploy/docker/image-analyzer/app/main.py`): FastAPI que extrae SOLO el texto visible en la imagen (OCR vía LLM vision), NUNCA descripciones (`description: null`). Hace resize con Pillow (spec 5.1, `MAX_IMAGE_DIM`) y cachea el resultado por SHA256 en Redis (spec 5.3, clave `image:{hash}`, TTL `CACHE_TTL_SECONDS`). El LLM backend es **OpenAI-compatible** (`/v1/chat/completions`): Ollama en dev, vLLM en prod. Env: `LLM_BASE_URL`, `MULTIMODAL_LLM_MODEL` (default `gemma4:e4b`), `MAX_IMAGE_DIM`, `CACHE_TTL_SECONDS`. Requiere la red `docker_default` para alcanzar `host.docker.internal` (las redes `internal: true` no tienen salida al host).
+
+**whisper** (deploy/docker/whisper/app/main.py): FastAPI + faster-whisper, con `vad_filter=True` (spec 5.2, VAD integrado). Modelo montado desde `MODELS_PATH/whisper` (estructura HF cache). **La diarización NO está implementada** — el campo `diarize` se acepta pero se ignora; es feature futura (ver `docs/API.md` §4b).
+
+### Regla `image_replaces_extraction` (completion-worker)
+
+El completion-worker (`cmd/completion-worker/completion_worker.py`) y `PipelineDefinition.steps_for()` (`pkg/worker_common/pipeline_config.py`) reemplazan el step `extraction` por `image` o `audio` según el tipo de job (reglas `image_replaces_extraction` / `audio_replaces_extraction` en `configs/pipeline.json`). Si un job multimodal no finaliza (timeout), verifica que el step correcto (`image`/`audio`) esté completo.
+
+---
+
 ## RabbitMQ Queue Declaration (CRITICAL)
 
 Toda declaración de cola RabbitMQ debe incluir **exactamente los mismos argumentos** en Go y Python.

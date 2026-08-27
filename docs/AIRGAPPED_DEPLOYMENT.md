@@ -55,6 +55,17 @@ No internet connection is required on the target machine. All model weights, Doc
 - `curl` (used by `install.sh` health check)
 - SSH access from the build machine
 
+> **GPU passthrough note (this host):** the `nvidia-container-toolkit` on this
+> host maps `nvidia-uvm` to the wrong char-device major (`511` = nvswitch), so
+> `--gpus` / CDI fails with *"CUDA unknown error"* (the kernel expects major
+> `510`). The base `docker-compose.yml` bypasses the toolkit by **bind-mounting
+> the host device nodes** (`/dev/nvidia0`, `/dev/nvidiactl`, `/dev/nvidia-modeset`,
+> `/dev/nvidia-uvm`, `/dev/nvidia-uvm-tools`) plus the driver libs from `/usr/lib`
+> via the `x-gpu-devices` YAML anchor. The `docker-compose.gpu.yml` override
+> instead uses `runtime: nvidia` with `CUDA_VISIBLE_DEVICES=0` — use whichever
+> matches your host's toolkit state. See `deploy/docker/docker-compose.yml`
+> header comment for the full detail.
+
 ---
 
 ## Quick Start

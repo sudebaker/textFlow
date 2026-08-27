@@ -20,7 +20,7 @@ CONFIG = {
         }
     },
     "feature_extras": {"inferences": {"step": "inferences", "queue": "inferences"}},
-    "rules": {"audio_replaces_extraction": True},
+    "rules": {"audio_replaces_extraction": True, "image_replaces_extraction": True},
 }
 
 
@@ -61,6 +61,13 @@ def test_steps_for_audio_replaces_extraction():
     pd = PipelineDefinition(CONFIG)
     assert pd.steps_for(is_spreadsheet=False, is_audio=True, features=[]) == {
         "audio", "embeddings", "entities", "metadata",
+    }
+
+
+def test_steps_for_image_replaces_extraction():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=False, is_audio=False, is_image=True, features=[]) == {
+        "image", "embeddings", "entities", "metadata",
     }
 
 

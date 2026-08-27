@@ -126,10 +126,11 @@ class AudioWorker(BaseAsyncWorker):
             raise
 
 
-def main():
+def main() -> None:
+    """Main entry point. Runs the async worker until a termination signal."""
     worker = AudioWorker()
-    worker.run()
+    asyncio.run(worker.run())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

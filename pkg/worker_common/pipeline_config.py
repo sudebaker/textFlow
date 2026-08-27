@@ -64,16 +64,18 @@ class PipelineDefinition:
         return queues
 
     def steps_for(
-        self, *, is_spreadsheet: bool, is_audio: bool, features: List[str]
+        self, *, is_spreadsheet: bool, is_audio: bool, is_image: bool = False, features: List[str]
     ) -> Set[str]:
         """Required completion steps for completion-worker.
 
-        Applies the audio_replaces_extraction rule and feature extra steps.
+        Applies the audio_replaces_extraction / image_replaces_extraction
+        rules and feature extra steps.
 
         Args:
             is_spreadsheet: whether the document is a spreadsheet.
             is_audio: whether the job produced an 'audio' step.
-            features: requested features (e.g. ["inferences"]).
+            is_image: whether the job produced an 'image' step.
+            features: requested features (e.g. [\"inferences\"]).
 
         Returns:
             Set of step names that must be completed before finalization.
@@ -85,6 +87,9 @@ class PipelineDefinition:
         if is_audio and self.rules.get("audio_replaces_extraction", True):
             steps.discard("extraction")
             steps.add("audio")
+        if is_image and self.rules.get("image_replaces_extraction", True):
+            steps.discard("extraction")
+            steps.add("image")
         for feature in features:
             extra = self.feature_extras.get(feature)
             if extra and extra.get("step"):

@@ -253,6 +253,8 @@ services:
     - METRICS_PORT=8001
     - PREFETCH_COUNT=20
     - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
+    - EMBEDDING_BATCH_SIZE_GPU=${EMBEDDING_BATCH_SIZE_GPU:-32}
+    - EMBEDDING_BATCH_SIZE_CPU=${EMBEDDING_BATCH_SIZE_CPU:-2}
     depends_on:
       redis:
         condition: service_healthy
@@ -310,6 +312,7 @@ services:
     - PREFETCH_COUNT=10
     - GLINER_MODEL_PATH=/models/gliner-small-v2.1
     - GLINER_BACKBONE_PATH=/models/deberta-v3-small
+    - GLINER_BATCH_SIZE=${GLINER_BATCH_SIZE:-16}
     - GLINER_PERSON_THRESHOLD=0.30
     - GLINER_ORG_THRESHOLD=0.35
     - GLINER_LOC_THRESHOLD=0.35
@@ -570,7 +573,7 @@ services:
     environment:
     - RABBITMQ_URL=${RABBITMQ_URL}
     - REDIS_URL=${REDIS_URL}
-    - MULTIMODAL_LLM_URLS=${MULTIMODAL_LLM_URLS:-http://vllm-service:8000}
+    - MULTIMODAL_LLM_URLS=${MULTIMODAL_LLM_URLS:-http://image-analyzer:8080}
     - MULTIMODAL_LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-120}
     - MULTIMODAL_LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
     - IMAGE_QUEUE=image
@@ -589,6 +592,42 @@ services:
     depends_on:
     - rabbitmq
     - redis
+    - image-analyzer
+  image-analyzer:
+    build:
+      context: ./image-analyzer
+      dockerfile: Dockerfile
+    container_name: textflow-image-analyzer
+    networks:
+    - backend
+    - datastore
+    - docker_default
+    extra_hosts:
+    # Docker alias so the container can reach the LLM on the HOST
+    # (e.g. local Ollama at LLM_BASE_URL=http://host.docker.internal:11434).
+    - "host.docker.internal:host-gateway"
+    environment:
+    - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434}
+    - LLM_MODEL=${MULTIMODAL_LLM_MODEL:-gemma4:e4b}
+    - LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-180}
+    - LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
+    - MAX_IMAGE_DIM=${MAX_IMAGE_DIM:-1024}
+    - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-86400}
+    - REDIS_URL=${REDIS_URL}
+    - PORT=8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    depends_on:
+    - redis
   whisper:
     build:
       context: ./whisper
@@ -597,7 +636,7 @@ services:
     networks:
     - backend
     volumes:
-    - ../../models/whisper:/models:ro
+    - "${MODELS_PATH:?MODELS_PATH is not set}/whisper:/models:ro"
     environment:
     - DEVICE=${WHISPER_DEVICE:-cpu}
     - COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}

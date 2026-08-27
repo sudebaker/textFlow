@@ -301,3 +301,42 @@ Toda optimización de rendimiento debe acompañarse de benchmark antes/después.
 - `cmd/regex-entity-extractor/` — microservicio Go (no cola)
 - `cmd/metadata-worker/worker.py` — worker independiente (no dentro de extraction)
 - `cmd/orchestrator/main.go:686` — `deleteJobHandler` (sólo borra terminados, 409 en progreso)
+
+---
+
+## Estado de implementación (2026-08-27)
+
+### Completado
+
+| Punto | Estado | Commit |
+|-------|--------|--------|
+| **0.1** Dedup unificado (D1) | ✅ | sesión previa |
+| **2.3** Regex paralelo (D2) | ✅ | sesión previa |
+| **3.1** Artifact store FS (D3) | ✅ | sesión previa |
+| **4.1** PipelineDefinition declarativa (D4) | ✅ | sesión previa |
+| **1.1** queue_time | ✅ | sesión previa |
+| **3.2** Idempotencia por stage | ✅ | `42d907b` |
+| **3.3** Versionado stage/model | ✅ | `42d907b` |
+| **4.2** Stage interface | ✅ | `42d907b` |
+| **4.4** Cancelación real | ✅ | `42d907b` |
+| **4.5** Eventos stage-level | ✅ | `42d907b` |
+| **5.1/5.2/5.3** Multimodal | ✅ | `ce4cc2a` |
+| **4.8** SSE stage_completed | ✅ | `ded92a0` |
+| **4.7** Processing profiles | ✅ | `d7757d8` |
+| **3.7** Backpressure downstream | ✅ | `30996e5` |
+| **3.4** Refs vs inline chunks | ✅ | `74b3268` |
+| **1.2** Métricas GPU + Prometheus/Grafana | ✅ | `31cb00f` |
+| **1.4** Benchmark suite P50/P95 | ✅ | `4fe548a` |
+
+### Pendiente (diferido)
+
+| Punto | Estado | Motivo |
+|-------|--------|--------|
+| **1.3** TTFT/TPOT | ⏸️ Diferido | Requiere streaming o scrape de `/metrics` de vLLM. **Ollama (motor temporal) no expone TTFT/TPOT** ni su API de streaming es compatible. `tokens/sec` ya cubierto (`inference_worker_llm_tokens_per_sec`). Revisitar cuando vLLM sea el motor real. |
+| **4.6** GPU scheduler activo | ⏸️ Pendiente | Greenfield: convertir resource-manager en scheduler activo que asigne workers a GPUs por VRAM (API de leases + consumo en workers). Requiere GPU real estable. **Nota:** el toolkit NVIDIA de este host está roto (nvidia-uvm major 511 vs 510) — puede resolverse con un reinicio del host; verificar antes de implementar. |
+| **3.5** Optimizar dedup (bucket por prefijo) | ⏸️ Opcional | Mejora marginal; el spec dice "solo si perfilado muestra cuello de botella". |
+| **2.1/2.2** Benchmarks batch BGE-M3/GLiNER | ✅ Existen | `scripts/bench/bench_embeddings.py`, `bench_gliner.py` (ya presentes). |
+
+### Criterio de salida Fase 1 (dashboard Grafana)
+
+La infra Prometheus/Grafana está desplegada (`31cb00f`), pero **falta el dashboard JSON de Grafana** con P50/P95 de queue_time/processing_time/total_time por stage. Los datos están disponibles en Prometheus (`{worker}_queue_time_seconds`, `{worker}_job_duration_seconds`); falta el panel. Pendiente de crear.

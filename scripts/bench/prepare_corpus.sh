@@ -21,13 +21,13 @@ DOCS_DEFAULT=(
   "${BENCH_DOC1:-corpus/Documento_9_R.pdf}"
   "${BENCH_DOC2:-corpus/23F_9.pdf}"
   "${BENCH_DOC3:-corpus/Documento_58_R.pdf}"
-  "${BENCH_DOC4:-corpus/27122023_RES.pdf}"
+  "${BENCH_DOC4:-corpus/doc4.pdf}"
   "${BENCH_DOC5:-corpus/Documento_1_R.pdf}"
   "${BENCH_DOC6:-corpus/D.24.pdf}"
   "${BENCH_DOC7:-corpus/Documento_42_R.pdf}"
-  "${BENCH_DOC8:-corpus/03_OP_ALESTE.pdf}"
-  "${BENCH_DOC9:-corpus/Sentencia-fiscal-general.pdf}"
-  "${BENCH_DOC10:-corpus/AASD_servodrivemanual.pdf}"
+  "${BENCH_DOC8:-corpus/doc8.pdf}"
+  "${BENCH_DOC9:-corpus/doc9.pdf}"
+  "${BENCH_DOC10:-corpus/doc10.pdf}"
 )
 DOCS=(${DOCS:-${DOCS_DEFAULT[@]}})
 

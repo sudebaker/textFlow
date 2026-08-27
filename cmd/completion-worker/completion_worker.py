@@ -459,6 +459,8 @@ class CompletionWorker(BasePubSubWorker):
 
             # Check if it's an audio job (has audio step instead of extraction)
             is_audio = "audio" in completed_steps
+            # Check if it's an image job (has image step instead of extraction)
+            is_image = "image" in completed_steps
 
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
@@ -471,6 +473,7 @@ class CompletionWorker(BasePubSubWorker):
             required_steps = self.pipeline.steps_for(
                 is_spreadsheet=is_spreadsheet,
                 is_audio=is_audio,
+                is_image=is_image,
                 features=features,
             )
 

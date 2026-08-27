@@ -117,7 +117,8 @@ Key configuration variables:
 - `REDIS_URL`: Redis connection string (default: `redis://localhost:6379`)
 - `RABBITMQ_URL`: RabbitMQ AMQP URL (default: `amqp://localhost:5672/`)
 - `DOCLING_URL`: Docling service endpoint (default: `http://docling:5001`)
-- `LLM_URL`: vLLM endpoint (default: empty, inferences disabled)
+- `LLM_URL`: OpenAI-compatible LLM endpoint for inferences (default: empty, inferences disabled)
+- `INFERENCE_ADAPTIVE_ENABLED`: Enable adaptive LLM concurrency control (default: `false`)
 - `JOB_TIMEOUT`: Job processing timeout (default: `60m`)
 - `JOB_TTL`: Redis key expiration (default: `24h`)
 - `WEBHOOK_URL`: Optional client webhook for notifications
@@ -145,9 +146,25 @@ Used by: Pipeline (orchestration failures), workers (network hiccups).
 
 ### Graceful Degradation
 If optional services unavailable:
-- vLLM unavailable → Inferences skipped, job completes without inferences
+- vLLM/Ollama unavailable → Inferences skipped, job completes without inferences
 - Webhook URL not set → Notification optional, no error
 - Docling temporarily down → Retry with circuit breaker
+
+### Adaptive LLM Concurrency (inference-worker)
+The inference-worker ships an `AdaptiveSemaphore` (AIMD congestion control, gated behind `INFERENCE_ADAPTIVE_ENABLED`, default `false`). With it disabled, behavior is identical to the previous fixed-concurrency path. When enabled:
+
+- **Binary signal (TCP Reno):** each successful LLM call is an ACK that grows the window (`cwnd + 1`); each error/timeout halves it (`cwnd // 2`). `LLM_TIMEOUT` acts as the TCP RTO.
+- **Degradation:** if `acquire` fails (cooldown/saturation), the worker returns an empty result silently rather than blocking the pipeline.
+- **Prefetch:** `ADAPTIVE_MAX_CONCURRENCY + BATCH_SIZE` when batching, else `ADAPTIVE_MAX_CONCURRENCY` (unless `PREFETCH_COUNT` is set explicitly).
+- **Metrics:** `inference_worker_cwnd`, `inference_worker_in_flight`, `inference_worker_cooldown` (gauges), `inference_worker_llm_requests_total`, `inference_worker_llm_timeouts_total` (counters). `inference_worker_llm_tokens_per_sec` is observability-only — not a control signal.
+
+The worker stays pika `BlockingConnection` single-threaded; the semaphore gates the LLM call but no thread pool touches pika.
+
+### Client Backpressure (tools/client)
+
+`bin/client` honors admission-control responses:
+- On `429` / `503`, reads the `Retry-After` header and waits, falling back to exponential backoff (`1 << attempt` seconds) up to 5 retries.
+- Respects the request context so backoff cancels cleanly on timeout.
 
 ### Stuck Job Expiration
 Jobs that exceed `JOB_TIMEOUT` are forcefully expired:

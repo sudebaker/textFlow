@@ -31,7 +31,7 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 - `PORT` (default `8080`)
 - `GLINER_MODEL_PATH` ruta al modelo (default `/models/gliner_model`)
 - `GLINER_CONFIDENCE_THRESHOLD` (default `0.8`)
-- `GLINER_BATCH_SIZE` (default `32`)
+- `GLINER_BATCH_SIZE` (default `16`)
 - `GLINER_MAX_LENGTH` (default `512`)
 - `GLINER_USE_MOCK` usa el motor mock cuando vale `true`
 

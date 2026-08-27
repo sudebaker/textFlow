@@ -52,7 +52,7 @@ class Settings:
         self.threshold_date = self.app_settings.entity_threshold_date
         self.threshold_money = self.app_settings.entity_threshold_money
 
-        self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "32"))
+        self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "16"))
         self.max_length = int(os.getenv("GLINER_MAX_LENGTH", "512"))
         self.default_entity_types = self._parse_entity_types(
             os.getenv("GLINER_DEFAULT_ENTITY_TYPES",

@@ -95,8 +95,8 @@ Document ──▶ [Orchestrator] ───────▶ │  extract_text que
 - **Procesamiento multimodal:** Documentos (PDF, DOCX, PPTX), imágenes, audio, spreadsheets
 - **Embeddings:** 1024 dimensiones con BAAI/bge-m3
 - **Reconocimiento de entidades:** GLiNER (PERSON, ORGANIZATION, LOCATION, MONEY) + 20+ patterns regex (EMAIL, PHONE, IBAN, DNI, etc.)
-- **Transcripción de audio:** Whisper con speaker diarization opcional
-- **Análisis de imágenes:** LLM multimodal para descripción y extracción
+- **Transcripción de audio:** Whisper (con VAD; diarización por speaker pendiente de implementar)
+- **Análisis de imágenes:** LLM multimodal para extracción del texto visible
 - **API REST:** Upload, polling con SSE streaming, batch processing
 - **Webhook notifications:** Notificaciones al completar
 - **Air-gapped:** 100% offline tras descarga inicial de modelos

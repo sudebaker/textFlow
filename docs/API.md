@@ -135,7 +135,7 @@ curl -X POST http://localhost:8080/v1/documents/process \
 
 **Endpoint:** `POST /v1/documents/upload`
 
-**Description:** Upload a document, audio, image, or spreadsheet file directly as multipart form data. The orchestrator will process the file type automatically, extracting text and metadata, generating embeddings, identifying entities, and optionally running inferences or diarization.
+**Description:** Upload a document, audio, image, or spreadsheet file directly as multipart form data. The orchestrator will process the file type automatically, extracting text and metadata, generating embeddings, identifying entities, and optionally running inferences.
 
 **Supported File Types:**
 
@@ -144,7 +144,7 @@ curl -X POST http://localhost:8080/v1/documents/process \
 | **Documents** | `.pdf`, `.txt`, `.doc`, `.docx`, `.ppt`, `.pptx` | 10 MB | Text extraction via Docling |
 | **Spreadsheets** | `.xls`, `.xlsx`, `.csv`, `.json` | 5 MB | Flattened to text with max 2,000 rows |
 | **Images** | `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` | 10 MB | Analysis via Multimodal LLM |
-| **Audio** | `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` | 500 MB | Transcription via Whisper; supports diarization |
+| **Audio** | `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` | 500 MB | Transcription via Whisper (diarization not implemented) |
 
 **Request:**
 ```
@@ -178,7 +178,7 @@ https://example.com/webhook
    - `inference_embeddings` — Generate vector embeddings for inferences (requires `inferences`).
    - Rich EXIF/XMP document metadata (author, title, page count, etc. via exiftool) is extracted for every job by default, on top of the fast metadata (filename, size, hash, MIME type).
    - Max features per job and max characters per name are configurable (see **Data Constraints** section). Invalid features are silently ignored with a warning.
-- `diarize` (boolean, optional): **Audio files only.** When `true`, identifies speakers in audio transcription via Whisper's diarization. Default: `false`. Ignored for non-audio files.
+- `diarize` (boolean, optional): **Audio files only.** Accepted for API compatibility but **not implemented** — the whisper service ignores it. Speaker diarization is planned future work. Default: `false`. Ignored for non-audio files.
 - `notify_webhook` (string, optional): Webhook URL to notify when job completes. If not provided, uses `WEBHOOK_URL` from server config.
 
 **Constraints:**
@@ -186,7 +186,7 @@ https://example.com/webhook
 - **Spreadsheets:** Maximum 5MB (configurable via `MAX_SPREADSHEET_SIZE_MB`), max 2,000 rows (configurable via `MAX_SPREADSHEET_ROWS`)
 - **Images:** Maximum 10MB
 - **Audio:** Maximum 500MB (configurable via `MAX_AUDIO_SIZE_MB`)
-- **Rate Limiting:** 100 requests per second per IP; burst of 10 requests allowed.
+- **Rate Limiting:** `INGESTION_RATE_LIMIT` (default 10 req/s per IP) with burst `INGESTION_RATE_BURST` (default 20); also limits concurrent jobs (`MAX_CONCURRENT_JOBS`, default 30) and queue depth (`QUEUE_DEPTH_REJECT_THRESHOLD`, default 500). See **Rate Limits & Constraints** section.
 
 **Response (202 Accepted):**
 ```json
@@ -215,19 +215,17 @@ curl -X POST http://localhost:8080/v1/documents/upload \
   -F "notify_webhook=https://myapp.com/webhook"
 ```
 
-**Upload audio with diarization (speaker identification):**
+**Upload audio (standard transcription; diarize is not implemented):**
 ```bash
 curl -X POST http://localhost:8080/v1/documents/upload \
   -F "file=@meeting_recording.mp3" \
-  -F "diarize=true" \
   -F "notify_webhook=https://myapp.com/webhook"
 ```
 
-**Upload audio with both diarization and inferences:**
+**Upload audio with inferences (requires vLLM):**
 ```bash
 curl -X POST http://localhost:8080/v1/documents/upload \
   -F "file=@conference.wav" \
-  -F "diarize=true" \
   -F "features=inferences" \
   -F "notify_webhook=https://myapp.com/webhook"
 ```
@@ -330,8 +328,8 @@ All jobs follow the same pipeline stages regardless of file type (documents, aud
 | File Type | Pipeline Stages | Notes |
 |-----------|-----------------|-------|
 | **Documents** (PDF, DOCX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Docling extracts text, then standard NLP pipeline |
-| **Audio** (MP3, WAV, etc.) | extracting (transcription) → embedding → entities → [inferences] → metadata → completed | Whisper transcribes audio; optional diarization output. Diarization output is included in extracted text with speaker labels. |
-| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → entities → [inferences] → metadata → completed | Multimodal LLM analyzes image content, produces description. Description is processed through embedding/entity stages. |
+| **Audio** (MP3, WAV, etc.) | extracting (transcription) → embedding → entities → [inferences] → metadata → completed | Whisper transcribes audio (VAD applied). Diarization is NOT implemented (see §4b). |
+| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → entities → [inferences] → metadata → completed | Multimodal LLM extracts the TEXT visible in the image (via image-analyzer). No description is produced. Text is processed through embedding/entity stages. |
 | **Spreadsheets** (CSV, XLSX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Rows flattened into text blocks (max 2,000 rows), then standard pipeline |
 
 **Status Transitions:**
@@ -523,50 +521,24 @@ ia_text_invalid_features_total{reason="too_many"} 0
 
 ### 4b. Diarize Parameter
 
-**Overview:** The `diarize` parameter enables speaker identification in audio transcription. It is only used for audio files and is ignored for other file types.
+**Status: NOT IMPLEMENTED (planned future work).**
 
-**Supported File Types:**
-- `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac`
+**Overview:** The `diarize` parameter is accepted by the API for audio files, but speaker diarization is **not implemented** in the current pipeline. The `whisper` service (`deploy/docker/whisper/app/main.py`) ignores the `diarize` field, so enabling it has no effect on the transcript output.
 
-**When to Use:**
-- Transcribing meetings, interviews, podcasts, or conference calls
-- Identifying which speaker said what
-- Extracting per-speaker statistics
+**What actually happens today:**
+1. **Whisper Transcription:** Audio is transcribed to text via Whisper (faster-whisper), which includes VAD (voice activity detection) to skip silence segments.
+2. **No diarization:** No speaker labels are produced. The flag is accepted and forwarded to the worker, but silently dropped by the whisper service.
 
-**How It Works:**
-1. **Whisper Transcription:** Audio is transcribed to text via Whisper
-2. **Diarization:** Speaker identification is applied (marking speaker turns in transcript)
-3. **Output:** Transcript includes speaker labels like `[Speaker 1]`, `[Speaker 2]`, etc.
-4. **Downstream Processing:** Speaker-labeled text flows through embedding, entity extraction, and optional inference stages
+**Planned future implementation:**
+- Real speaker diarization (e.g. via `pyannote.audio`) was attempted previously and never worked reliably in this stack.
+- If implemented later, transcripts would include speaker labels (e.g. `[Speaker 1]`, `[Speaker 2]`) and flow through downstream stages.
+- This is a deliberate future backlog item; not a current feature.
 
-**Output Format:**
-When audio is uploaded with `diarize=true`, the extracted text in `/v1/documents/{job_id}/download` includes speaker labels:
-
-```json
-{
-  "text": "[Speaker 1]: Good morning, everyone. Let's start the quarterly review. [Speaker 2]: Sure. [Speaker 1]: Our revenue is up 15% compared to last quarter..."
-}
-```
-
-**Limitations:**
-- Diarization works best with 2–5 speakers
-- Background noise may affect speaker identification accuracy
-- Overlapping speech may not be handled perfectly
-
-**Example:**
-
-**Transcribe audio with speaker identification:**
+**Example (current behavior — diarize is accepted but has no effect):**
 ```bash
 curl -X POST http://localhost:8080/v1/documents/upload \
   -F "file=@meeting_recording.mp3" \
   -F "diarize=true"
-```
-
-**Transcribe audio without diarization (standard transcription):**
-```bash
-curl -X POST http://localhost:8080/v1/documents/upload \
-  -F "file=@meeting_recording.mp3" \
-  -F "diarize=false"
 ```
 
 ---
@@ -735,8 +707,8 @@ The orchestrator depends on external services for different processing stages. A
 | Service | Purpose | Input | Output | Notes |
 |---------|---------|-------|--------|-------|
 | **Docling** | Document extraction | PDF, DOCX, PPTX, images | Extracted text, chunks, markdown | HTTP service; handles Documents category |
-| **Whisper** (via inference-worker) | Audio transcription | MP3, WAV, M4A, OGG, FLAC | Transcript text, optionally with diarization | OpenAI Whisper; handles Audio category |
-| **Multimodal LLM** (via inference-worker) | Image analysis | JPG, PNG, WEBP, BMP | Image description/analysis text | E.g., LLaVA, Claude Vision, GPT-4V; handles Images category |
+| **Whisper** | Audio transcription | MP3, WAV, M4A, OGG, FLAC | Transcript text (VAD applied; diarization not implemented) | Runs as the `whisper` service in this repo; handles Audio category |
+| **image-analyzer** (Multimodal LLM) | Image text extraction | JPG, PNG, WEBP, BMP | Extracted text visible in the image (no description) | OpenAI-compatible vision LLM; runs as image-analyzer service; handles Images category |
 | **BAAI/bge-m3** | Text embedding generation | Text chunks | 384-dimensional vectors | Embedding model; runs in embeddings-worker; air-gapped compatible |
 | **GLiNER** | Named entity recognition | Text | Entity spans with labels and confidence | NER model; runs in entities-worker; air-gapped compatible; offline-critical |
 | **Regex Entity Extractor** | PII/Pattern extraction | Text | Regex-matched entities (EMAIL, PHONE, etc.) | HTTP service; runs in entities-worker; air-gapped compatible |
@@ -758,21 +730,23 @@ Output: {
 
 **2. Whisper (Audio Transcription)**
 ```
-Input:  Audio file (MP3, WAV, etc.), optional diarize: bool
+Input:  Audio file (MP3, WAV, etc.), optional language
 Output: {
-  "text": "Transcribed text, optionally with [Speaker 1]: labels",
+  "text": "Transcribed text",
   "language": "en",
-  "confidence": 0.95
+  "duration_seconds": 142.5,
+  "segments": [{"start": 0.0, "end": 4.6, "text": "..."}]
 }
 ```
 
-**3. Multimodal LLM (Image Analysis)**
+**3. image-analyzer (Image Text Extraction)**
 ```
-Input:  Image file (JPG, PNG, etc.) + system prompt
+Input:  Image file (JPG, PNG, etc.) + optional prompt
 Output: {
-  "description": "Natural language description of image",
-  "objects": ["list", "of", "detected", "objects"],
-  "text_in_image": "Any text visible in the image"
+  "extracted_text": "Text visible in the image (OCR via vision LLM)",
+  "language": "es",
+  "description": null,
+  "confidence": 1.0
 }
 ```
 
@@ -830,10 +804,15 @@ See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
 
 ## Rate Limits & Constraints
 
-**Request Rate Limits:**
-- **100 requests per second** per IP address (configurable)
-- **Burst allowance:** 10 requests (token bucket algorithm)
-- **Exceeding limit:** Returns `429 Too Many Requests` with `Retry-After` header
+**Admission Control** (enforced by the orchestrator on job ingestion; see `cmd/orchestrator/handlers/admission.go`):
+
+| Check | Default | On Limit |
+|-------|---------|----------|
+| **Rate limit** (token bucket per IP) | `INGESTION_RATE_LIMIT` = 10 req/s, burst `INGESTION_RATE_BURST` = 20 | `429 Too Many Requests` |
+| **Concurrent jobs** (active jobs in Redis) | `MAX_CONCURRENT_JOBS` = 30 | `503 Service Unavailable` |
+| **Queue depth** (pending messages in extract queue) | `QUEUE_DEPTH_REJECT_THRESHOLD` = 500 | `503 Service Unavailable` |
+
+`429` and `503` responses include a `Retry-After` header. The `bin/client` honors it with exponential backoff.
 
 **File Size Constraints:**
 
@@ -852,10 +831,23 @@ See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
 | Features per job | 10 features | `MAX_FEATURES_PER_JOB` |
 | Feature name length | 50 characters | `MAX_FEATURE_NAME_LENGTH` |
 | Job TTL (time to keep results) | 24 hours | `JOB_TTL` |
-| Job timeout | 5 minutes | `JOB_TIMEOUT` |
-| Concurrent jobs per orchestrator | Unlimited | System resources |
+| Job timeout | 60 minutes | `JOB_TIMEOUT` |
+| Concurrent jobs per orchestrator | 30 (default) | `MAX_CONCURRENT_JOBS` |
+
+**Batch Sizes (worker-level):**
+
+| Worker | Variable | Default | Notes |
+|--------|----------|---------|-------|
+| Embeddings (GPU) | `EMBEDDING_BATCH_SIZE_GPU` | 64 (code) / 32 (Dockerfile) | `EMBEDDINGS_BATCH_SIZE` is dead config — do not use |
+| Embeddings (CPU) | `EMBEDDING_BATCH_SIZE_CPU` | 2 | |
+| Entities (GLiNER) | `GLINER_BATCH_SIZE` | 16 | Default used by the batching loop in `entities_worker.py` |
 
 **Response Time Estimates** (rough, depends on file size and server load):
+- **Documents (10MB PDF):** 10–30 seconds
+- **Audio (1 hour):** 30–60 seconds (transcription time varies)
+- **Images (10MB):** 5–15 seconds
+- **Spreadsheets (500 rows):** 5–10 seconds
+- **With inferences:** Add 5–15 seconds
 - **Documents (10MB PDF):** 10–30 seconds
 - **Audio (1 hour):** 30–60 seconds (transcription time varies)
 - **Images (10MB):** 5–15 seconds

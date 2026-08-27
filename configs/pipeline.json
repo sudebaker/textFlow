@@ -19,6 +19,7 @@
     }
   },
   "rules": {
-    "audio_replaces_extraction": true
+    "audio_replaces_extraction": true,
+    "image_replaces_extraction": true
   }
 }

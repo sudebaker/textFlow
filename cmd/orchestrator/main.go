@@ -321,6 +321,7 @@ func setupRouter() *gin.Engine {
 		v1.GET("/documents/:id/inferences", handlers.InferencesHandler)
 		v1.GET("/documents/:id/download", downloadHandler)
 		v1.DELETE("/documents/:id", deleteJobHandler)
+		v1.POST("/documents/:id/cancel", cancelJobHandler)
 		v1.GET("/batches/:id/status", handlers.GetBatchStatusHandler)
 		v1.GET("/jobs/:id/stream", handlers.StreamJobHandler)
 	}
@@ -727,6 +728,58 @@ func deleteJobHandler(c *gin.Context) {
 	c.JSON(http.StatusConflict, models.ErrorResponse{
 		Error:  "job_in_progress",
 		Detail: "cannot delete job that is still processing",
+	})
+}
+
+// cancelJobHandler handles POST /v1/documents/{id}/cancel requests.
+// It marks a job as cancelled in Redis so workers stop processing it.
+// The job is not deleted; its status becomes "cancelled" and it is removed
+// from the active_jobs set. Workers check the status and abort.
+func cancelJobHandler(c *gin.Context) {
+	jobID := c.Param("id")
+
+	if !validateJobID(jobID) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_job_id",
+			Detail: "job ID format is invalid",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	status, err := redis.GetJobStatus(ctx, jobID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{
+			Error: "job_not_found",
+		})
+		return
+	}
+
+	// Terminal states cannot be cancelled.
+	if status == models.StatusCompleted || status == models.StatusFailed || status == models.StatusCancelled {
+		c.JSON(http.StatusConflict, models.ErrorResponse{
+			Error:  "job_not_cancellable",
+			Detail: "job is already in a terminal state",
+		})
+		return
+	}
+
+	if err := redis.SetJobStatus(ctx, jobID, models.StatusCancelled); err != nil {
+		logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to cancel job")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error:  "internal_error",
+			Detail: "failed to cancel job",
+		})
+		return
+	}
+
+	logger.Info().Str("job_id", jobID).Msg("Job cancelled")
+	c.JSON(http.StatusOK, gin.H{
+		"message": "job cancelled",
+		"job_id":  jobID,
+		"status":  models.StatusCancelled,
 	})
 }
 

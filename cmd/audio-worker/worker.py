@@ -35,6 +35,7 @@ class AudioWorker(BaseAsyncWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:status", "status", "transcribing"
             )
+            self.event_bus.publish_stage_event(job_id, "stage.started", "audio")
 
             document_path = message["document_path"]
             document_path = validate_upload_path(document_path, UPLOAD_PATH)
@@ -86,6 +87,7 @@ class AudioWorker(BaseAsyncWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "audio", "completed"
             )
+            self.event_bus.publish_stage_event(job_id, "stage.completed", "audio")
 
             job_message = {
                 "job_id": job_id,

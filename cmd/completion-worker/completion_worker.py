@@ -431,6 +431,14 @@ class CompletionWorker(BasePubSubWorker):
             Does not raise exceptions; errors are logged and processing continues.
         """
         try:
+            # Do not finalize a cancelled job.
+            job_status = self.redis_client.hget(
+                f"orchestrator:job:{job_id}:status", "status"
+            )
+            if job_status == "cancelled":
+                self.logger.info(f"Job {job_id} cancelled, skipping finalization")
+                return
+
             steps = self.redis_client.hgetall(f"orchestrator:job:{job_id}:steps")
 
             completed_steps = set()

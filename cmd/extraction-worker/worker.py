@@ -985,6 +985,7 @@ class ExtractionWorker:
                 logger.info(f"Processing text extraction for job: {job_id}")
 
                 self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "extracting")
+                self.event_bus.publish_stage_event(job_id, "stage.started", "extraction")
 
                 if body.get("document_path"):
                     result = await self.extract_text_from_file(
@@ -1055,6 +1056,7 @@ class ExtractionWorker:
                 self.redis_client.hset(
                     f"orchestrator:job:{job_id}:steps", "extraction", "completed"
                 )
+                self.event_bus.publish_stage_event(job_id, "stage.completed", "extraction")
 
                 # Classify document source
                 try:

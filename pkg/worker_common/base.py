@@ -573,6 +573,10 @@ class BaseWorker:
                 self.queue_time.observe(wait)
 
             # Call subclass method for actual processing
+            if self._is_cancelled(job_id):
+                self.logger.info(f"Job {job_id} cancelled, skipping processing")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
             result = self.process_message(message)
 
             # Update metrics
@@ -632,6 +636,23 @@ class BaseWorker:
             # Always check if shutdown was requested after processing each message.
             # This stops the consumer cleanly without interrupting ongoing work.
             self._on_message_processed()
+
+    def _is_cancelled(self, job_id: str) -> bool:
+        """Return True if the job has been cancelled via POST /v1/documents/:id/cancel.
+
+        Workers check this before processing so a cancelled job is not
+        executed. The status is read from Redis (orchestrator:job:{id}:status).
+        """
+        if not job_id:
+            return False
+        try:
+            status = self.redis_client.hget(
+                f"orchestrator:job:{job_id}:status", "status"
+            )
+            return status == "cancelled"
+        except Exception as e:
+            self.logger.warning(f"Failed to check cancellation for {job_id}: {e}")
+            return False
 
     def _handle_transient_error(
         self,

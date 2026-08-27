@@ -22,10 +22,11 @@ import (
 // where recomputing results is costly and staleness is acceptable within the
 // TTL window.
 type ContentCache struct {
-	client     *redis.Client
-	logger     zerolog.Logger
-	defaultTTL time.Duration
-	sf         singleflight.Group
+	client       *redis.Client
+	logger       zerolog.Logger
+	defaultTTL   time.Duration
+	stageVersion string
+	sf           singleflight.Group
 }
 
 // NewContentCache creates a new ContentCache with the given Redis client and default TTL.
@@ -38,9 +39,25 @@ type ContentCache struct {
 // The returned cache is ready to use immediately.
 func NewContentCache(client *redis.Client, defaultTTL time.Duration) *ContentCache {
 	return &ContentCache{
-		client:     client,
-		defaultTTL: defaultTTL,
+		client:       client,
+		defaultTTL:   defaultTTL,
+		stageVersion: "v1",
 	}
+}
+
+// SetStageVersion sets the explicit stage version used to namespace cache keys.
+// Keys are formatted as artifact:content:{stageVersion}:{hash}, so bumping the
+// version invalidates previously cached entries under the old namespace.
+func (c *ContentCache) SetStageVersion(v string) {
+	c.stageVersion = v
+}
+
+// keyPrefix returns the versioned namespace prefix for cache keys.
+func (c *ContentCache) keyPrefix() string {
+	if c.stageVersion == "" {
+		return "artifact:content:v1"
+	}
+	return fmt.Sprintf("artifact:content:%s", c.stageVersion)
 }
 
 // GetOrCompute implements a cache-aside (lazy-loading) pattern with singleflight
@@ -67,7 +84,7 @@ func NewContentCache(client *redis.Client, defaultTTL time.Duration) *ContentCac
 // Once the result is cached, subsequent calls retrieve it directly from Redis.
 func (c *ContentCache) GetOrCompute(ctx context.Context, key string, compute func() (interface{}, error)) (interface{}, error) {
 	hash := c.computeHash(key)
-	cacheKey := fmt.Sprintf("content:%s", hash)
+	cacheKey := fmt.Sprintf("%s:%s", c.keyPrefix(), hash)
 
 	cached, err := c.client.Get(ctx, cacheKey).Bytes()
 	if err == nil && len(cached) > 0 {
@@ -119,7 +136,7 @@ func (c *ContentCache) GetOrCompute(ctx context.Context, key string, compute fun
 //   - An error if a Redis operation fails; nil if key not found or unmarshal fails
 func (c *ContentCache) Get(ctx context.Context, key string) (interface{}, error) {
 	hash := c.computeHash(key)
-	cacheKey := fmt.Sprintf("content:%s", hash)
+	cacheKey := fmt.Sprintf("%s:%s", c.keyPrefix(), hash)
 
 	cached, err := c.client.Get(ctx, cacheKey).Bytes()
 	if err != nil {
@@ -152,7 +169,7 @@ func (c *ContentCache) Get(ctx context.Context, key string) (interface{}, error)
 //   - An error if JSON marshaling or the Redis Set operation fails; nil on success
 func (c *ContentCache) Set(ctx context.Context, key string, value interface{}) error {
 	hash := c.computeHash(key)
-	cacheKey := fmt.Sprintf("content:%s", hash)
+	cacheKey := fmt.Sprintf("%s:%s", c.keyPrefix(), hash)
 
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -176,7 +193,7 @@ func (c *ContentCache) Set(ctx context.Context, key string, value interface{}) e
 //   - An error if the Redis Del operation fails; nil on success or if key not found
 func (c *ContentCache) Invalidate(ctx context.Context, key string) error {
 	hash := c.computeHash(key)
-	cacheKey := fmt.Sprintf("content:%s", hash)
+	cacheKey := fmt.Sprintf("%s:%s", c.keyPrefix(), hash)
 
 	return c.client.Del(ctx, cacheKey).Err()
 }

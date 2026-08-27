@@ -151,7 +151,7 @@ func (c *RedisClient) SetJobStatus(ctx context.Context, jobID string, status mod
 	}
 
 	// Remove from active_jobs ZSET when job reaches a terminal state
-	if status == models.StatusCompleted || status == models.StatusFailed {
+	if status == models.StatusCompleted || status == models.StatusFailed || status == models.StatusCancelled {
 		activeKey := c.key(activeJobsSuffix)
 		if err := c.client.ZRem(ctx, activeKey, jobID).Err(); err != nil {
 			// Non-fatal; job will be cleaned up by TTL or next ExpireStuckJobs run

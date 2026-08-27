@@ -80,3 +80,20 @@ class EventBus:
             status="inferences",
             metadata={"chunks_done": chunks_done, "chunks_total": chunks_total},
         )
+
+    def publish_stage_event(
+        self,
+        job_id: str,
+        event_type: str,
+        stage: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Publish a stage-level event (spec 4.5).
+
+        event_type is one of: stage.queued, stage.started, stage.completed,
+        stage.failed. The stage name is carried in metadata["stage"].
+        """
+        merged = {"stage": stage}
+        if metadata:
+            merged.update(metadata)
+        self.publish_event(job_id, event_type, metadata=merged)

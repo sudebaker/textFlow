@@ -193,3 +193,32 @@ func (eb *EventBus) PublishJobFailed(ctx context.Context, jobID string, errMsg s
 func (eb *EventBus) PublishJobEvent(ctx context.Context, jobID string, event *JobEvent) error {
 	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
 }
+
+// PublishStageEvent broadcasts a stage-level event (spec 4.5) to both the
+// broadcast "job:events" channel and the job-specific "job:{jobID}:events"
+// channel. Stage events are stage.queued / stage.started / stage.completed /
+// stage.failed and carry the stage name in Metadata["stage"].
+//
+// Parameters:
+//   - jobID: The job identifier
+//   - eventType: One of EventStageQueued/Started/Completed/Failed
+//   - stage: The pipeline stage name (e.g. "extraction", "embeddings", "image")
+//   - metadata: Optional extra metadata merged into the event
+//
+// Returns an error if publishing fails.
+func (eb *EventBus) PublishStageEvent(ctx context.Context, jobID string, eventType EventType, stage string, metadata map[string]interface{}) error {
+	merged := map[string]interface{}{"stage": stage}
+	for k, v := range metadata {
+		merged[k] = v
+	}
+	event := &JobEvent{
+		EventType: eventType,
+		JobID:     jobID,
+		Timestamp: time.Now(),
+		Metadata:  merged,
+	}
+	if err := eb.Publish(ctx, "job:events", event); err != nil {
+		return err
+	}
+	return eb.Publish(ctx, fmt.Sprintf("job:%s:events", jobID), event)
+}

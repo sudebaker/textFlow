@@ -370,6 +370,24 @@ class TestInferenceWorker:
         key2 = worker._cache_key("hello world", "notariado")
         assert key1 != key2
 
+    def test_cache_key_uses_versioned_artifact_schema(self, worker):
+        """Cache key follows artifact:{stage}:{stage_version}:{input_hash} schema."""
+        key = worker._cache_key("hello world", "catastro")
+        assert key.startswith("artifact:inference:"), key
+        parts = key.split(":")
+        assert parts[0] == "artifact"
+        assert parts[1] == "inference"
+        # stage_version present and non-empty
+        assert len(parts) >= 4 and parts[2], key
+
+    def test_cache_key_changes_with_model(self, worker):
+        """Cache key changes when the LLM model changes."""
+        worker.llm_model_id = "model-a"
+        key1 = worker._cache_key("hello", "catastro")
+        worker.llm_model_id = "model-b"
+        key2 = worker._cache_key("hello", "catastro")
+        assert key1 != key2, "Cache key must change when model changes"
+
 
 class TestBatchProcessing:
     """Tests for batch inference processing."""

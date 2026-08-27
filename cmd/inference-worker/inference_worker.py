@@ -354,14 +354,19 @@ class InferenceWorker(BaseWorker):
         return None
 
     def _cache_key(self, chunk_text: str, source_type: str) -> str:
-        """Generate a deterministic cache key from chunk content, source type, model, and config."""
-        content = (
-            f"{chunk_text}:{source_type}:{self.llm_model_id or 'unknown'}:"
-            f"{MIN_CONFIDENCE_THRESHOLD}:"
-            f"{MAX_INFERENCES_SHORT}:{MAX_INFERENCES_MEDIUM}:{MAX_INFERENCES_LONG}"
+        """Generate a deterministic cache key from chunk content, source type, model, and config.
+
+        Key format follows the versioned artifact schema: artifact:{stage}:{stage_version}:{input_hash}.
+        The stage_version is a human-readable string capturing the model and inference config,
+        so bumping any of them naturally creates a new cache namespace. The input_hash is the
+        SHA-256 of the chunk text plus source type.
+        """
+        stage_version = (
+            f"{self.llm_model_id or 'unknown'}_{MIN_CONFIDENCE_THRESHOLD}_"
+            f"{MAX_INFERENCES_SHORT}_{MAX_INFERENCES_MEDIUM}_{MAX_INFERENCES_LONG}"
         )
-        text_hash = hashlib.sha256(content.encode()).hexdigest()
-        return f"inference:cache:{text_hash}"
+        input_hash = hashlib.sha256(f"{chunk_text}:{source_type}".encode()).hexdigest()
+        return f"artifact:inference:{stage_version}:{input_hash}"
 
     def _validate_cached_inferences(
         self, cached: List[Dict[str, Any]]
@@ -1367,6 +1372,7 @@ Respond with ONLY the JSON array:"""
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "inferences", "completed"
             )
+            self.event_bus.publish_stage_event(job_id, "stage.completed", "inferences")
 
             self.event_bus.publish_job_progress(job_id, 80, "inferences")
 

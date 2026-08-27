@@ -111,6 +111,12 @@ def worker_env(monkeypatch, tmp_path):
     mock_redis = MagicMock()
     mock_event_bus = MagicMock()
 
+    # Default: redis.get returns chunks JSON for the :chunks key (spec 3.4 —
+    # workers read chunks from the artifact store, not inline in the message).
+    mock_redis.get.return_value = json.dumps(
+        [{"chunk_id": "c0", "text": "hello world"}]
+    )
+
     with patch.object(BaseWorker, "redis_client", mock_redis), \
          patch.object(BaseWorker, "event_bus", mock_event_bus), \
          patch("pkg.worker_common.base.Counter"), \

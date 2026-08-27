@@ -20,6 +20,7 @@ class PipelineDefinition:
         self.version = data.get("version", "v1")
         self.default_pipeline = data["default_pipeline"]
         self.pipelines = data.get("pipelines", {})
+        self.profiles = data.get("profiles", {})
         self.feature_extras = data.get("feature_extras", {})
         self.rules = data.get("rules", {})
 
@@ -41,12 +42,16 @@ class PipelineDefinition:
         with open(config_path, "r", encoding="utf-8") as f:
             return cls(json.load(f))
 
-    def queues_for(self, *, is_spreadsheet: bool, features: List[str]) -> List[str]:
+    def queues_for(
+        self, *, is_spreadsheet: bool, features: List[str], profile: str = "balanced"
+    ) -> List[str]:
         """Routing queues for extraction-worker.
 
         Args:
             is_spreadsheet: whether the document is a spreadsheet (entities-only).
             features: requested features (e.g. ["inferences"]).
+            profile: processing profile (fast/balanced/full). Falls back to the
+                default pipeline when the profile is unknown or absent.
 
         Returns:
             Ordered list of target queues to publish the job to.
@@ -54,7 +59,7 @@ class PipelineDefinition:
         base = (
             self.pipelines["spreadsheet"]["publish_queues"]
             if is_spreadsheet
-            else self.default_pipeline["publish_queues"]
+            else self._profile_or_default(profile)["publish_queues"]
         )
         queues = list(base)
         for feature in features:
@@ -64,7 +69,13 @@ class PipelineDefinition:
         return queues
 
     def steps_for(
-        self, *, is_spreadsheet: bool, is_audio: bool, is_image: bool = False, features: List[str]
+        self,
+        *,
+        is_spreadsheet: bool,
+        is_audio: bool,
+        is_image: bool = False,
+        features: List[str],
+        profile: str = "balanced",
     ) -> Set[str]:
         """Required completion steps for completion-worker.
 
@@ -75,12 +86,14 @@ class PipelineDefinition:
             is_spreadsheet: whether the document is a spreadsheet.
             is_audio: whether the job produced an 'audio' step.
             is_image: whether the job produced an 'image' step.
-            features: requested features (e.g. [\"inferences\"]).
+            features: requested features (e.g. ["inferences"]).
+            profile: processing profile (fast/balanced/full). Falls back to the
+                default pipeline when the profile is unknown or absent.
 
         Returns:
             Set of step names that must be completed before finalization.
         """
-        base = list(self.default_pipeline["steps"])
+        base = list(self._profile_or_default(profile)["steps"])
         if is_spreadsheet:
             base = list(self.pipelines["spreadsheet"]["steps"])
         steps = set(base)
@@ -95,3 +108,11 @@ class PipelineDefinition:
             if extra and extra.get("step"):
                 steps.add(extra["step"])
         return steps
+
+    def _profile_or_default(self, profile: str) -> Dict:
+        """Resolve a processing profile, falling back to the default pipeline.
+
+        Returns the profile definition when present, otherwise the default
+        pipeline (backward compatibility for callers that do not pass a profile).
+        """
+        return self.profiles.get(profile, self.default_pipeline)

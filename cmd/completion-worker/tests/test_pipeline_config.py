@@ -21,6 +21,20 @@ CONFIG = {
     },
     "feature_extras": {"inferences": {"step": "inferences", "queue": "inferences"}},
     "rules": {"audio_replaces_extraction": True, "image_replaces_extraction": True},
+    "profiles": {
+        "fast": {
+            "steps": ["extraction", "metadata"],
+            "publish_queues": ["metadata"],
+        },
+        "balanced": {
+            "steps": ["extraction", "embeddings", "entities", "metadata"],
+            "publish_queues": ["embeddings", "entities", "metadata"],
+        },
+        "full": {
+            "steps": ["extraction", "embeddings", "entities", "metadata"],
+            "publish_queues": ["embeddings", "entities", "metadata"],
+        },
+    },
 }
 
 
@@ -85,4 +99,79 @@ def test_load_from_file(tmp_path):
     assert pd.version == "v1"
     assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=[]) == {
         "extraction", "embeddings", "entities", "metadata",
+    }
+
+
+def test_queues_for_fast_profile():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.queues_for(is_spreadsheet=False, features=[], profile="fast") == ["metadata"]
+
+
+def test_queues_for_balanced_profile():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.queues_for(is_spreadsheet=False, features=[], profile="balanced") == [
+        "embeddings", "entities", "metadata",
+    ]
+
+
+def test_queues_for_full_profile():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.queues_for(is_spreadsheet=False, features=[], profile="full") == [
+        "embeddings", "entities", "metadata",
+    ]
+
+
+def test_queues_for_unknown_profile_falls_back_to_default():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.queues_for(is_spreadsheet=False, features=[], profile="unknown") == [
+        "embeddings", "entities", "metadata",
+    ]
+
+
+def test_queues_for_fast_profile_with_inferences_feature():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.queues_for(is_spreadsheet=False, features=["inferences"], profile="fast") == [
+        "metadata", "inferences",
+    ]
+
+
+def test_steps_for_fast_profile():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=[], profile="fast") == {
+        "extraction", "metadata",
+    }
+
+
+def test_steps_for_balanced_profile():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=[], profile="balanced") == {
+        "extraction", "embeddings", "entities", "metadata",
+    }
+
+
+def test_steps_for_full_profile():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=[], profile="full") == {
+        "extraction", "embeddings", "entities", "metadata",
+    }
+
+
+def test_steps_for_unknown_profile_falls_back_to_default():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=[], profile="unknown") == {
+        "extraction", "embeddings", "entities", "metadata",
+    }
+
+
+def test_steps_for_fast_profile_with_inferences_feature():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=["inferences"], profile="fast") == {
+        "extraction", "metadata", "inferences",
+    }
+
+
+def test_steps_for_fast_profile_spreadsheet_uses_spreadsheet_pipeline():
+    pd = PipelineDefinition(CONFIG)
+    assert pd.steps_for(is_spreadsheet=True, is_audio=False, features=[], profile="fast") == {
+        "extraction", "entities",
     }

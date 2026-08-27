@@ -1091,6 +1091,7 @@ class ExtractionWorker:
                     # stage_queue_time_seconds (spec 1.1).
                     "queued_at": int(time.time() * 1000),
                     "pipeline_version": body.get("pipeline_version", "v1"),
+                    "profile": body.get("profile", "balanced"),
                 }
 
                 if body.get("entity_types"):
@@ -1109,7 +1110,9 @@ class ExtractionWorker:
 
                 # Route to appropriate queues from the declarative PipelineDefinition
                 target_queues = self.pipeline.queues_for(
-                    is_spreadsheet=is_spreadsheet, features=features
+                    is_spreadsheet=is_spreadsheet,
+                    features=features,
+                    profile=body.get("profile", "balanced"),
                 )
                 logger.info(
                     f"Detected {'spreadsheet' if is_spreadsheet else 'full'} pipeline, "

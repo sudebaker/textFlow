@@ -12,6 +12,7 @@ COPY pkg/image_client/ /app/pkg/image_client/
 COPY pkg/shared/ /app/pkg/shared/
 COPY pkg/events_python.py /app/pkg/events_python.py
 COPY pkg/logging_python.py /app/pkg/logging_python.py
+COPY configs/pipeline.json /app/configs/pipeline.json
 
 COPY cmd/image-worker/ /app/
 

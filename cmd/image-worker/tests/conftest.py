@@ -71,6 +71,10 @@ def worker_runtime(monkeypatch, tmp_path):
     """
     from pkg.worker_common.artifact_store import FSStore
 
+    # Point PipelineDefinition.load() at the repo's real pipeline config.
+    _pipeline_cfg = PROJECT_ROOT / "configs" / "pipeline.json"
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(_pipeline_cfg))
+
     sys.modules.pop("worker", None)
     import worker as image_worker
 

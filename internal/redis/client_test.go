@@ -375,6 +375,37 @@ func TestRedisClient_SetAndGetJobWebhook(t *testing.T) {
 	assert.Equal(t, "secret123", secret)
 }
 
+func TestRedisClient_SetAndGetJobProfile(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	ctx := context.Background()
+	jobID := "test-job-profile"
+
+	err := client.SetJobProfile(ctx, jobID, "fast")
+	require.NoError(t, err)
+
+	key := client.key("job", jobID, "profile")
+	exists := mr.Exists(key)
+	assert.True(t, exists, "Key should exist in Redis")
+
+	profile, err := client.GetJobProfile(ctx, jobID)
+	require.NoError(t, err)
+	assert.Equal(t, "fast", profile)
+}
+
+func TestRedisClient_GetJobProfile_NotFound(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	ctx := context.Background()
+	profile, err := client.GetJobProfile(ctx, "nonexistent-job")
+	require.NoError(t, err)
+	assert.Equal(t, "", profile)
+}
+
 func TestRedisClient_TTLSetFailure_PropagatesError(t *testing.T) {
 	methods := []struct {
 		name string

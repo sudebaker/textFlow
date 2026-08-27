@@ -12,6 +12,7 @@ COPY pkg/audio_client/ /app/pkg/audio_client/
 COPY pkg/shared/ /app/pkg/shared/
 COPY pkg/events_python.py /app/pkg/events_python.py
 COPY pkg/logging_python.py /app/pkg/logging_python.py
+COPY configs/pipeline.json /app/configs/pipeline.json
 
 COPY cmd/audio-worker/ /app/
 

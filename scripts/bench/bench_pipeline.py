@@ -26,16 +26,16 @@ PROM_URL = os.getenv("PROM_URL", "http://localhost:9091")
 TIMEOUT_S = int(os.getenv("TIMEOUT_S", "600"))
 
 DEFAULT_DOCS = [
-    "corpus/Documento_9_R.pdf",
-    "corpus/23F_9.pdf",
-    "corpus/Documento_58_R.pdf",
-    "corpus/27122023_RES.pdf",
-    "corpus/Documento_1_R.pdf",
-    "corpus/D.24.pdf",
-    "corpus/Documento_42_R.pdf",
-    "corpus/03_OP_ALESTE.pdf",
-    "corpus/Sentencia-fiscal-general.pdf",
-    "corpus/AASD_servodrivemanual.pdf",
+    os.getenv("BENCH_DOC1", "corpus/Documento_9_R.pdf"),
+    os.getenv("BENCH_DOC2", "corpus/23F_9.pdf"),
+    os.getenv("BENCH_DOC3", "corpus/Documento_58_R.pdf"),
+    os.getenv("BENCH_DOC4", "corpus/27122023_RES.pdf"),
+    os.getenv("BENCH_DOC5", "corpus/Documento_1_R.pdf"),
+    os.getenv("BENCH_DOC6", "corpus/D.24.pdf"),
+    os.getenv("BENCH_DOC7", "corpus/Documento_42_R.pdf"),
+    os.getenv("BENCH_DOC8", "corpus/03_OP_ALESTE.pdf"),
+    os.getenv("BENCH_DOC9", "corpus/Sentencia-fiscal-general.pdf"),
+    os.getenv("BENCH_DOC10", "corpus/AASD_servodrivemanual.pdf"),
 ]
 
 

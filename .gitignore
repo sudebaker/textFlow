@@ -58,3 +58,14 @@ cmd/orchestrator/orchestrator
 # Local agent/tooling state (never commit)
 .atl/
 .opencode/package-lock.json
+
+# Local agent tooling (never commit)
+.atl/
+**/.atl/
+
+# E2E test artifacts
+docling_extraction_result.json
+
+# Benchmark corpus (contains real documents; never commit)
+scripts/bench/corpus/
+scripts/bench/corpus_chunks.json

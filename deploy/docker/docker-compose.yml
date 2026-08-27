@@ -699,6 +699,66 @@ services:
     - rabbitmq
     - redis
     - whisper
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: textflow-prometheus
+    volumes:
+    - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    - prometheus-data:/prometheus
+    command:
+    - '--config.file=/etc/prometheus/prometheus.yml'
+    - '--storage.tsdb.path=/prometheus'
+    ports:
+    - 9091:9090
+    networks:
+    - frontend
+    - backend
+    - datastore
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --tries=1
+      - -O
+      - /dev/null
+      - http://localhost:9090/-/healthy
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: textflow-grafana
+    environment:
+    - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    - GF_AUTH_ANONYMOUS_ENABLED=true
+    ports:
+    - 3000:3000
+    volumes:
+    - grafana-data:/var/lib/grafana
+    networks:
+    - frontend
+    - backend
+    depends_on:
+    - prometheus
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --tries=1
+      - -O
+      - /dev/null
+      - http://localhost:3000/api/health
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
 networks:
   docker_default:
     external: true
@@ -724,4 +784,8 @@ volumes:
   results-data:
     driver: local
   artifacts-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
     driver: local

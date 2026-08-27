@@ -78,3 +78,57 @@ scrape_configs:
           service: 'redis'
           component: 'cache'
     scrape_interval: 15s
+
+  # Resource manager (GPU metrics, spec 1.2)
+  - job_name: 'resource-manager'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['resource-manager:9090']
+        labels:
+          service: 'resource-manager'
+          component: 'gpu'
+
+  # Extraction worker (Python)
+  - job_name: 'extraction-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['extraction-worker:8004']
+        labels:
+          service: 'extraction-worker'
+          component: 'worker'
+
+  # Image worker (Python)
+  - job_name: 'image-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['image-worker:8006']
+        labels:
+          service: 'image-worker'
+          component: 'worker'
+
+  # Audio worker (Python)
+  - job_name: 'audio-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['audio-worker:8005']
+        labels:
+          service: 'audio-worker'
+          component: 'worker'
+
+  # Inference worker (Python)
+  - job_name: 'inference-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['inference-worker:8006']
+        labels:
+          service: 'inference-worker'
+          component: 'worker'
+
+  # Completion worker (Python)
+  - job_name: 'completion-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['completion-worker:8005']
+        labels:
+          service: 'completion-worker'
+          component: 'worker'

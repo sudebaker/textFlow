@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 
+	"textflow/internal/broker"
 	"textflow/internal/config"
 )
 
@@ -24,21 +26,14 @@ type mockBroker struct {
 	err        error
 }
 
-func (m *mockBroker) GetQueueInfo(queue string) (*QueueInfo, error) {
+func (m *mockBroker) GetQueueInfo(queue string) (*broker.QueueInfo, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &QueueInfo{
+	return &broker.QueueInfo{
 		Name:     queue,
 		Messages: m.queueDepth,
 	}, nil
-}
-
-// QueueInfo is exported for testing.
-type QueueInfo struct {
-	Name      string `json:"name"`
-	Messages  int    `json:"messages"`
-	Consumers int    `json:"consumers"`
 }
 
 func TestAdmissionController_AcceptWhenHealthy(t *testing.T) {
@@ -172,5 +167,50 @@ func TestAdmissionController_RedisErrorFailsOpen(t *testing.T) {
 	}
 	if status != 200 {
 		t.Errorf("Expected status 200, got %d", status)
+	}
+}
+
+// mockBrokerByQueue returns a high depth only for a specific queue, so we can
+// test downstream backpressure independently of the extraction queue.
+type mockBrokerByQueue struct {
+	depths map[string]int
+}
+
+func (m *mockBrokerByQueue) GetQueueInfo(queue string) (*broker.QueueInfo, error) {
+	return &broker.QueueInfo{Name: queue, Messages: m.depths[queue]}, nil
+}
+
+func TestAdmissionController_RejectWhenDownstreamQueueSaturated(t *testing.T) {
+	cfg := &config.Config{
+		IngestionRateLimit:        10,
+		IngestionRateBurst:        20,
+		MaxConcurrentJobs:         30,
+		QueueDepthRejectThreshold: 500,
+		ExtractQueue:              "extract_text",
+		EmbeddingsQueue:           "embeddings",
+		EntitiesQueue:             "entities",
+		MetadataQueue:             "metadata",
+		InferencesQueue:           "inferences",
+	}
+
+	// Extraction queue is fine, but the embeddings queue is saturated.
+	broker := &mockBrokerByQueue{depths: map[string]int{
+		"extract_text": 10,
+		"embeddings":   600,
+		"entities":     5,
+		"metadata":     5,
+		"inferences":   5,
+	}}
+	ac := NewAdmissionController(cfg, &mockRedisClient{activeJobs: 5}, broker)
+
+	accepted, reason, status := ac.CanAcceptJob(context.Background())
+	if accepted {
+		t.Errorf("Expected job to be rejected when downstream queue saturated, got accepted")
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", status)
+	}
+	if reason == "" {
+		t.Errorf("Expected a reason mentioning the saturated queue, got empty")
 	}
 }

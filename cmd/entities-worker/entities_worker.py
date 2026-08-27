@@ -405,7 +405,12 @@ class EntitiesWorker(BaseWorker):
             ent["entity_id"] = entity_id(ent.get("label", ""), ent.get("text", ""))
         self.redis_client.set(entities_key, json.dumps(all_entities))
         self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "entities", "completed")
-        self.event_bus.publish_stage_event(job_id, "stage.completed", "entities")
+        self.event_bus.publish_stage_event(
+            job_id,
+            "stage.completed",
+            "entities",
+            metadata={"entities_key": entities_key, "count": len(all_entities)},
+        )
         self.event_bus.publish_job_progress(job_id, 66, "entities")
 
         try:

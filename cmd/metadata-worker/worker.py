@@ -83,7 +83,12 @@ class MetadataWorker(BaseWorker):
         self.redis_client.hset(
             f"orchestrator:job:{job_id}:steps", "metadata", "completed"
         )
-        self.event_bus.publish_stage_event(job_id, "stage.completed", "metadata")
+        self.event_bus.publish_stage_event(
+            job_id,
+            "stage.completed",
+            "metadata",
+            metadata={"metadata_key": metadata_key},
+        )
 
         self.event_bus.publish_job_progress(job_id, 100, "metadata")
 

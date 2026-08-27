@@ -70,7 +70,12 @@ class ImageWorker(BaseAsyncWorker):
             self.redis_client.hset(
                 f"orchestrator:job:{job_id}:steps", "image", "completed"
             )
-            self.event_bus.publish_stage_event(job_id, "stage.completed", "image")
+            self.event_bus.publish_stage_event(
+                job_id,
+                "stage.completed",
+                "image",
+                metadata={"text_ref": text_ref, "chunks_ref": chunks_ref},
+            )
 
             job_message = {
                 "job_id": job_id,

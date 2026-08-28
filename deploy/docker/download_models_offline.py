@@ -40,6 +40,12 @@ MODEL_REQUIRED_FILE_GROUPS = {
         ("spm.model", "tokenizer.json", "vocab.txt"),
         ("model.safetensors", "pytorch_model.bin"),
     ],
+    "Systran/faster-whisper-large-v2": [
+        ("config.json",),
+        ("model.bin", "model.safetensors"),
+        ("tokenizer.json", "vocabulary.txt", "vocab.json"),
+        ("preprocessor_config.json",),
+    ],
 }
 
 # Check dependencies
@@ -263,7 +269,8 @@ def download_docling_models(output_dir: Path) -> bool:
         output_dir.mkdir(exist_ok=True, parents=True)
 
         # Use docker create + docker cp to avoid permission issues with volume mounts
-        image = "quay.io/docling-project/docling-serve:latest"
+        # CUDA variant matches docker-compose.gpu.yml (cu128); CPU path uses artifact mount
+        image = os.getenv("DOCLING_IMAGE", "quay.io/docling-project/docling-serve:cu128-0.12.0")
 
         # Create a temporary container
         container_id = subprocess.check_output(
@@ -302,6 +309,40 @@ def download_docling_models(output_dir: Path) -> bool:
         return False
 
 
+def _write_models_manifest(models_dir: Path, successful: list, failed: list) -> None:
+    """Write models/MANIFEST.txt as the canonical inventory for packaging."""
+    import hashlib
+    import datetime as dt
+
+    manifest = models_dir / "MANIFEST.txt"
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    lines = [
+        "textFlow — Models Manifest",
+        f"Generated: {now}",
+        f"Source: deploy/docker/download_models_offline.py",
+        "",
+        f"Successful: {len(successful)}",
+    ]
+    for m in successful:
+        lines.append(f"  - {m}")
+    if failed:
+        lines.append(f"Failed: {len(failed)}")
+        for m in failed:
+            lines.append(f"  ! {m}")
+    lines.append("")
+    lines.append("Files:")
+    for f in sorted(models_dir.rglob("*")):
+        if f.is_file() and f.name != "MANIFEST.txt":
+            try:
+                h = hashlib.sha256(f.read_bytes()).hexdigest()[:12]
+            except Exception:
+                h = "unavailable"
+            rel = f.relative_to(models_dir)
+            lines.append(f"  {rel}  sha256:{h}")
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"📄 Manifest: {manifest} ({len(lines)} lines)")
+
+
 def main():
     """Main download process."""
 
@@ -321,6 +362,11 @@ def main():
             "repo_id": "BAAI/bge-m3",
             "type": "BGE-M3 (embeddings)",
             "critical": True,
+        },
+        {
+            "repo_id": "Systran/faster-whisper-large-v2",
+            "type": "Whisper large-v2 (audio)",
+            "critical": False,
         },
     ]
 
@@ -376,6 +422,9 @@ def main():
     print(f"   ✅ Successful: {len(successful)}/{total_targets}")
     for model_id in successful:
         print(f"      • {model_id}")
+
+    # Write models/MANIFEST.txt (source of truth for bundle packaging)
+    _write_models_manifest(MODELS_DIR, successful, failed)
 
     if failed:
         print(f"   ❌ Failed: {len(failed)}/{total_targets}")

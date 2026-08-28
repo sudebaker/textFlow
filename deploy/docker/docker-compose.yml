@@ -538,6 +538,8 @@ services:
     container_name: textflow-docling
     ports:
     - 8000:5001
+    volumes:
+    - ${MODELS_PATH:-../../models}/docling:/opt/app-root/src/.cache/docling/models:ro
     environment:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-cpu}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
@@ -740,6 +742,9 @@ services:
     - 3000:3000
     volumes:
     - grafana-data:/var/lib/grafana
+    - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
     - frontend
     - backend

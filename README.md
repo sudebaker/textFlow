@@ -362,6 +362,15 @@ ls -la models/gliner-small-v2.1/
 |---------|-------------|
 | `docs/API.md` | Referencia completa de la API REST |
 | `docs/AIRGAPPED_DEPLOYMENT.md` | Guía detallada de deployment offline |
+| `docs/MODELS.md` | Inventario canónico de modelos (fuente de verdad) |
+| `docs/GPU.md` | GPU, Docling CUDA, Whisper, benchmarks |
+| `docs/ARCHITECTURE.md` | Pipeline, artefactos, profiles, stages |
+| `docs/CONFIGURATION.md` | Referencia env + compose |
+| `docs/PERFORMANCE.md` | Cómo reproducir benchmarks |
+| `docs/TROUBLESHOOTING.md` | Docker/GPU/modelos/Docling/colas/LLM |
+| `docs/OPERATIONS.md` | Upgrades, rollback, GC, monitoreo |
+| `docs/SECURITY.md` | SSRF, webhooks, red interna, secrets |
+| `docs/COMPATIBILITY.md` | Matriz versiones / CUDA / driver |
 | `cmd/entities-worker/README.md` | Documentación del worker de entidades |
 | `AGENTS.md` | Convenciones de código y arquitectura |
 

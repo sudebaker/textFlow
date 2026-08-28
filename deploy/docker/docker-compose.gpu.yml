@@ -26,6 +26,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0
 
   docling:
+    image: quay.io/docling-project/docling-serve:cu128-0.12.0
     runtime: nvidia
     environment:
       - DOCLING_DEVICE=cuda

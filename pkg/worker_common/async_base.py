@@ -157,6 +157,13 @@ class BaseAsyncWorker:
             self.logger.warning(f"Failed to check cancellation for {job_id}: {e}")
             return False
 
+    def _raise_if_cancelled(self, job_id: str) -> None:
+        """Raise JobCancelledError if the job has been cancelled."""
+        if self._is_cancelled(job_id):
+            from pkg.shared.exceptions import JobCancelledError
+
+            raise JobCancelledError(f"Job {job_id} was cancelled")
+
     @property
     def redis_client(self) -> redis.Redis:
         if self._redis_client is None:
@@ -287,6 +294,15 @@ class BaseAsyncWorker:
                             self.logger.warning(f"Job {job_id} transient error: {e}")
                             raise
                         except Exception as e:
+                            try:
+                                from pkg.shared.exceptions import JobCancelledError
+
+                                if isinstance(e, JobCancelledError):
+                                    self.logger.info(f"Job {job_id} cancelled at safe point")
+                                    self.jobs_total.labels(status="cancelled").inc()
+                                    return
+                            except ImportError:
+                                pass
                             duration = asyncio.get_event_loop().time() - start_time
                             self.jobs_total.labels(status="error").inc()
                             self.logger.error(f"Job {job_id} failed permanently: {e}")

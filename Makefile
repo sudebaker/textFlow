@@ -188,7 +188,7 @@ infra-down: ## Stop infrastructure
 setup-models: ## Download ML models for air-gapped deployment (~2GB)
 	@echo -e "${YELLOW}Downloading ML models (one-time setup)...${NC}"
 	@echo "This may take several minutes depending on your internet connection."
-	cd deploy/docker && python download-models.py
+	cd deploy/docker && python download_models_offline.py
 	@echo -e "${GREEN}✅ Models ready for air-gapped deployment!${NC}"
 
 docker-build-models: ## Build images using local models (100% offline after setup)

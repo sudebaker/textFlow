@@ -133,7 +133,9 @@ def compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def extract_metadata_fast(file_path: str, filename: str) -> Dict[str, Any]:
+def extract_metadata_fast(
+    file_path: str, filename: str, *, precomputed_bytes: bytes | None = None
+) -> Dict[str, Any]:
     """Extract cheap, deterministic document-level metadata.
 
     Computes file size, SHA-256 hash, and MIME type (libmagic). Deep EXIF/XMP
@@ -146,6 +148,7 @@ def extract_metadata_fast(file_path: str, filename: str) -> Dict[str, Any]:
     Args:
         file_path: Absolute path to document file on disk.
         filename: Filename for metadata record (may differ from file_path basename).
+        precomputed_bytes: Optional bytes already in memory (avoids second read).
 
     Returns:
         Dictionary with extracted metadata:
@@ -184,7 +187,17 @@ def extract_metadata_fast(file_path: str, filename: str) -> Dict[str, Any]:
         "exif_data": {},
     }
 
-    if os.path.exists(file_path):
+    # T4.1: if caller already has bytes, compute sha256/mime from memory
+    # to avoid a second read of the same document.
+    if precomputed_bytes is not None:
+        metadata["file_size_bytes"] = len(precomputed_bytes)
+        metadata["sha256"] = compute_file_hash(precomputed_bytes)
+        magic_bytes = precomputed_bytes[:8192] if precomputed_bytes else b""
+        try:
+            metadata["mime_type"] = magic.from_buffer(magic_bytes, mime=True) if magic_bytes else None
+        except Exception:
+            metadata["mime_type"] = magic.from_file(file_path, mime=True) if os.path.exists(file_path) else None
+    elif os.path.exists(file_path):
         with open(file_path, "rb") as f:
             file_bytes = f.read()
             metadata["sha256"] = compute_file_hash(file_bytes)
@@ -260,7 +273,7 @@ def extract_metadata_deep(file_path: str, metadata: Dict[str, Any]) -> Dict[str,
 
 
 async def extract_document_metadata(
-    file_path: str, filename: str
+    file_path: str, filename: str, *, precomputed_bytes: bytes | None = None
 ) -> Dict[str, Any]:
     """Build full document metadata: fast fields + deep exiftool enrichment.
 
@@ -270,12 +283,13 @@ async def extract_document_metadata(
     Args:
         file_path: Absolute path to document file on disk.
         filename: Filename for metadata record (may differ from file_path basename).
+        precomputed_bytes: Optional bytes to compute hash/mime without re-reading.
 
     Returns:
         Metadata dict with fast fields (filename, size, sha256, mime_type)
         plus deep EXIF/XMP fields (author, title, page_count, ...).
     """
-    metadata = extract_metadata_fast(file_path, filename)
+    metadata = extract_metadata_fast(file_path, filename, precomputed_bytes=precomputed_bytes)
     return await asyncio.to_thread(extract_metadata_deep, file_path, metadata)
 
 
@@ -617,6 +631,20 @@ class ExtractionWorker:
         # this cached instance instead of re-parsing pipeline.json on every job.
         self.pipeline = PipelineDefinition.load()
 
+    def _is_cancelled(self, job_id: str) -> bool:
+        try:
+            status = self.redis_client.hget(f"orchestrator:job:{job_id}:status", "status")
+            return status == "cancelled"
+        except Exception as e:
+            logger.warning(f"Failed to check cancellation for {job_id}: {e}")
+            return False
+
+    def _raise_if_cancelled(self, job_id: str) -> None:
+        if self._is_cancelled(job_id):
+            from pkg.shared.exceptions import JobCancelledError
+
+            raise JobCancelledError(f"Job {job_id} was cancelled")
+
     def __del__(self):
         """Clean up temporary directory on worker deletion."""
         import shutil
@@ -891,7 +919,7 @@ class ExtractionWorker:
                 "extraction_method": "url",
             }
 
-            return {"text": text, "metadata": metadata}
+            return {"text": text, "metadata": metadata, "document_bytes": document_bytes}
 
         except Exception as e:
             import traceback
@@ -987,6 +1015,8 @@ class ExtractionWorker:
                 self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "extracting")
                 self.event_bus.publish_stage_event(job_id, "stage.started", "extraction")
 
+                # Track raw bytes for metadata (T4.1: avoid second read/decode)
+                document_bytes_for_meta: bytes | None = None
                 if body.get("document_path"):
                     result = await self.extract_text_from_file(
                         body["document_path"], os.path.basename(body["document_path"])
@@ -998,22 +1028,34 @@ class ExtractionWorker:
                         filename=body.get("filename", "document"),
                     )
                     text = result["text"]
+                    # T4.1: decode once, reuse for metadata temp file
+                    try:
+                        document_bytes_for_meta = base64.b64decode(body.get("document_base64", ""))
+                    except Exception:
+                        document_bytes_for_meta = None
                 elif body.get("document_url"):
                     result = await self.extract_text_from_url(body["document_url"])
                     text = result["text"]
+                    document_bytes_for_meta = result.get("document_bytes")
                 else:
                     raise ValueError("No document provided")
 
-                # For metadata extraction, use original file if available
+                # Cooperative cancellation: abort before metadata (expensive exiftool)
+                self._raise_if_cancelled(job_id)
+
+                # For metadata extraction, use original file if available;
+                # otherwise write the real document bytes to a temp file.
                 if body.get("document_path"):
                     temp_file_path = body["document_path"]
                 else:
-                    # Derive file extension from message filename or mime_type
                     filename = body.get("filename", "document")
                     file_ext = Path(filename).suffix or ".bin"
                     temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext)
                     try:
-                        os.write(temp_fd, base64.b64decode(body.get("document_base64", "")))
+                        if document_bytes_for_meta:
+                            os.write(temp_fd, document_bytes_for_meta)
+                        else:
+                            os.write(temp_fd, base64.b64decode(body.get("document_base64", "")))
                     finally:
                         os.close(temp_fd)
 
@@ -1021,6 +1063,7 @@ class ExtractionWorker:
                 document_metadata = await extract_document_metadata(
                     temp_file_path,
                     os.path.basename(body.get("document_path", "document.pdf")),
+                    precomputed_bytes=document_bytes_for_meta,
                 )
 
                 # Guard: fail if Docling returned empty text (likely file type mismatch)
@@ -1108,6 +1151,9 @@ class ExtractionWorker:
                     if path_lower.endswith((".csv", ".xls", ".xlsx")):
                         is_spreadsheet = True
 
+                # Cooperative cancellation before publishing downstream
+                self._raise_if_cancelled(job_id)
+
                 # Route to appropriate queues from the declarative PipelineDefinition
                 target_queues = self.pipeline.queues_for(
                     is_spreadsheet=is_spreadsheet,
@@ -1118,6 +1164,13 @@ class ExtractionWorker:
                     f"Detected {'spreadsheet' if is_spreadsheet else 'full'} pipeline, "
                     f"routing to queues: {target_queues}"
                 )
+
+                # stage.queued contract: emit per-stage before the RabbitMQ publish (best-effort)
+                for qs in target_queues:
+                    try:
+                        self.event_bus.publish_stage_event(job_id, "stage.queued", qs)
+                    except Exception:
+                        pass
 
                 job_message_json = json.dumps(job_message).encode()
                 for queue_name in target_queues:
@@ -1140,6 +1193,15 @@ class ExtractionWorker:
                 jobs_total.labels(status="success").inc()
 
             except Exception as e:
+                try:
+                    from pkg.shared.exceptions import JobCancelledError
+
+                    if isinstance(e, JobCancelledError):
+                        logger.info(f"Job {job_id} cancelled at safe point, aborting")
+                        jobs_total.labels(status="cancelled").inc()
+                        return
+                except ImportError:
+                    pass
                 logger.error(f"Error processing extraction: {e}")
                 if job_id:
                     self.redis_client.hset(

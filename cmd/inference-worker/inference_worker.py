@@ -1105,6 +1105,12 @@ Respond with ONLY the JSON array:"""
                 nack(requeue=False)
                 return
 
+            if self._is_cancelled(job_id):
+                self.logger.info(f"Job {job_id} cancelled, skipping inference")
+                nack(requeue=False)
+                self.jobs_total.labels(status="cancelled").inc()
+                return
+
             word_count = len(chunk_text.split())
             if word_count > MAX_CHUNK_WORDS:
                 self.logger.warning(
@@ -1338,8 +1344,74 @@ Respond with ONLY the JSON array:"""
         duration = time.time() - start_time
         self.job_duration.observe(duration)
 
+    def _do_assemble_locked(self, job_id: str) -> bool:
+        """Core assembly: lrange → validate → set final key. Caller holds the lock.
+
+        Returns True if assembly completed, False if deferred (incomplete).
+        """
+        inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
+        raw_results = self.redis_client.lrange(inferences_raw_key, 0, -1)
+
+        assembled = []
+        for raw_json in raw_results:
+            try:
+                chunk_data = json.loads(raw_json)
+                assembled.append(chunk_data)
+            except json.JSONDecodeError as e:
+                self.logger.warning(f"Failed to parse intermediate result: {e}")
+
+        assembled.sort(key=lambda x: x.get("chunk_id") or 0)
+
+        # Defensive validation: if expected total is known and assembled is short,
+        # defer — another worker still holds rpushes in flight (Fix 2).
+        try:
+            expected_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:inferences:total"
+            )
+            expected = int(expected_raw) if expected_raw is not None else 0
+        except Exception:
+            expected = 0
+
+        if expected and len(assembled) < expected:
+            self.logger.warning(
+                f"Assembly deferred for job {job_id}: "
+                f"{len(assembled)}/{expected} chunks in raw, releasing lock"
+            )
+            # Release lock so the last worker can retry assembly
+            self.redis_client.delete(
+                f"orchestrator:job:{job_id}:inferences:assembly_lock"
+            )
+            return False
+
+        final_key = f"orchestrator:job:{job_id}:micro_inferences"
+        self.redis_client.set(final_key, json.dumps(assembled))
+
+        remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
+        self.redis_client.delete(inferences_raw_key)
+        self.redis_client.delete(remaining_key)
+        self.redis_client.delete(f"orchestrator:job:{job_id}:inferences:total")
+
+        self.redis_client.hset(
+            f"orchestrator:job:{job_id}:steps", "inferences", "completed"
+        )
+        self.event_bus.publish_stage_event(
+            job_id,
+            "stage.completed",
+            "inferences",
+            metadata={"inferences_key": final_key, "count": len(assembled)},
+        )
+
+        self.event_bus.publish_job_progress(job_id, 80, "inferences")
+
+        self.logger.info(
+            f"Inferences finalized for job: {job_id}, "
+            f"total chunks: {len(assembled)}, "
+            f"total inferences: {sum(len(c['inferences']) for c in assembled)}"
+        )
+        return True
+
     def _assemble_final_results(self, job_id: str):
-        """Assemble final inference results when all chunks complete."""
+        """Assemble final inference results when all chunks complete (lock + delegate)."""
         assembly_lock_key = f"orchestrator:job:{job_id}:inferences:assembly_lock"
         acquired = self.redis_client.setnx(assembly_lock_key, "1")
         self.redis_client.expire(assembly_lock_key, 3600)
@@ -1349,44 +1421,7 @@ Respond with ONLY the JSON array:"""
             return
 
         try:
-            inferences_raw_key = f"orchestrator:job:{job_id}:micro_inferences_raw"
-            raw_results = self.redis_client.lrange(inferences_raw_key, 0, -1)
-
-            assembled = []
-            for raw_json in raw_results:
-                try:
-                    chunk_data = json.loads(raw_json)
-                    assembled.append(chunk_data)
-                except json.JSONDecodeError as e:
-                    self.logger.warning(f"Failed to parse intermediate result: {e}")
-
-            assembled.sort(key=lambda x: x.get("chunk_id") or 0)
-
-            final_key = f"orchestrator:job:{job_id}:micro_inferences"
-            self.redis_client.set(final_key, json.dumps(assembled))
-
-            remaining_key = f"orchestrator:job:{job_id}:inferences:remaining"
-            self.redis_client.delete(inferences_raw_key)
-            self.redis_client.delete(remaining_key)
-
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:steps", "inferences", "completed"
-            )
-            self.event_bus.publish_stage_event(
-                job_id,
-                "stage.completed",
-                "inferences",
-                metadata={"inferences_key": final_key, "count": len(assembled)},
-            )
-
-            self.event_bus.publish_job_progress(job_id, 80, "inferences")
-
-            self.logger.info(
-                f"Inferences finalized for job: {job_id}, "
-                f"total chunks: {len(assembled)}, "
-                f"total inferences: {sum(len(c['inferences']) for c in assembled)}"
-            )
-
+            self._do_assemble_locked(job_id)
         except Exception as e:
             self.logger.error(f"Error assembling final inferences: {e}")
             self.redis_client.hset(
@@ -1605,8 +1640,6 @@ Respond with ONLY the JSON array:"""
                     f"All inferences complete for job {job_id}, assembling results..."
                 )
 
-                # Assembly lock: prevents double-assembly on RabbitMQ message redelivery.
-                # SETNX is atomic — only the first caller acquires the lock.
                 assembly_lock_key = (
                     f"orchestrator:job:{job_id}:inferences:assembly_lock"
                 )
@@ -1622,49 +1655,14 @@ Respond with ONLY the JSON array:"""
                     return
 
                 try:
-                    # Get all intermediate results
-                    raw_results = self.redis_client.lrange(inferences_raw_key, 0, -1)
-
-                    # Parse and assemble
-                    assembled = []
-                    for raw_json in raw_results:
-                        try:
-                            chunk_data = json.loads(raw_json)
-                            assembled.append(chunk_data)
-                        except json.JSONDecodeError as e:
-                            self.logger.warning(f"Failed to parse intermediate result: {e}")
-                            continue
-
-                    # Sort by chunk_id for deterministic ordering
-                    assembled.sort(key=lambda x: x.get("chunk_id") or 0)
-
-                    # Store final result
-                    final_key = f"orchestrator:job:{job_id}:micro_inferences"
-                    self.redis_client.set(final_key, json.dumps(assembled))
-
-                    # Clean up intermediate keys
-                    self.redis_client.delete(inferences_raw_key)
-                    self.redis_client.delete(remaining_key)
-
-                    # Mark step as completed
-                    self.redis_client.hset(
-                        f"orchestrator:job:{job_id}:steps", "inferences", "completed"
-                    )
-
-                    # Publish progress
-                    self.event_bus.publish_job_progress(job_id, 80, "inferences")
-
-                    self.logger.info(
-                        f"Inferences finalized for job: {job_id}, "
-                        f"total chunks: {len(assembled)}, "
-                        f"total inferences: {sum(len(c['inferences']) for c in assembled)}"
-                    )
-
-                    self.jobs_total.labels(status="success").inc()
-
+                    completed = self._do_assemble_locked(job_id)
+                    if completed:
+                        self.jobs_total.labels(status="success").inc()
+                    else:
+                        # Deferred — lock was released for the next worker
+                        self.jobs_total.labels(status="assembly_deferred").inc()
                 except Exception as e:
                     self.logger.error(f"Error assembling final inferences: {e}")
-                    # Mark as failed
                     self.redis_client.hset(
                         f"orchestrator:job:{job_id}:steps", "inferences", "failed"
                     )

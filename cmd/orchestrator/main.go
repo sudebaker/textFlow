@@ -551,6 +551,9 @@ func createJobHandler(c *gin.Context) {
 		PipelineVersion: "v1",
 	}
 
+	// stage.queued contract (spec 4.5): best-effort, before RabbitMQ publish
+	_ = eventBus.PublishStageEvent(ctx, jobID, events.EventStageQueued, "extraction", nil)
+
 	if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
 		logger.Error().Msgf("Failed to publish job message: %v", err)
 

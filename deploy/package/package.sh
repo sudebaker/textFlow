@@ -36,9 +36,13 @@ INSTALL_SRC="deploy/package/install.sh"
 # Project name = "docker" (compose files live in deploy/docker/)
 BUILT_IMAGES=()
 
-# External / pulled images
+# External / pulled images — derived from $COMPOSE_BASE when possible; kept here
+# as fallback so `make package` never silently bundles a wrong tag. The preflight
+# step "Derive EXTERNAL_IMAGES from compose" (below) overwrites this list when
+# jq + compose are available. Never edit just this list without checking
+# deploy/docker/docker-compose.yml (rabbitmq, redis, docling-serve tags).
 EXTERNAL_IMAGES=(
-  "rabbitmq:3.12-management"
+  "rabbitmq:3.13-management"
   "redis:7-alpine"
   "quay.io/docling-project/docling-serve:latest"
 )
@@ -114,6 +118,21 @@ mapfile -t BUILT_IMAGES < <(
 [[ ${#BUILT_IMAGES[@]} -gt 0 ]] || die "No buildable services found in $COMPOSE_BASE — check compose file"
 log "  Found ${#BUILT_IMAGES[@]} built image(s): ${BUILT_IMAGES[*]}"
 
+# Derive EXTERNAL_IMAGES from compose `image:` entries that are NOT built
+# (single source of truth — prevents rabbitmq:3.12 vs 3.13 drift).
+if command -v jq > /dev/null 2>&1 && [[ -n "$_compose_json" ]]; then
+  mapfile -t _derived_external < <(
+    jq -r '.services | to_entries[]
+           | select(.value.build == null and .value.image != null)
+           | .value.image' <<< "$_compose_json" \
+    | grep -v '^docker-'
+  )
+  if [[ ${#_derived_external[@]} -gt 0 ]]; then
+    EXTERNAL_IMAGES=("${_derived_external[@]}")
+    log "  Derived external image(s) from compose: ${EXTERNAL_IMAGES[*]}"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Step 1: Clean and recreate dist/
 # ---------------------------------------------------------------------------
@@ -181,8 +200,14 @@ fi
 # ---------------------------------------------------------------------------
 # Step 6: Copy install.sh
 # ---------------------------------------------------------------------------
-# Always bundle lib.sh (install.sh sources it)
+# Always bundle lib.sh (install.sh/verify scripts source it)
 cp "deploy/package/lib.sh" "$DIST_DIR/lib.sh"
+for vf in verify-bundle.sh verify-installation.sh; do
+  if [[ -f "deploy/package/$vf" ]]; then
+    cp "deploy/package/$vf" "$DIST_DIR/$vf"
+    chmod +x "$DIST_DIR/$vf"
+  fi
+done
 
 if [[ -f "$INSTALL_SRC" ]]; then
   cp "$INSTALL_SRC" "$DIST_DIR/install.sh"

@@ -127,16 +127,18 @@ async def analyze(
 
     mime_type = file.content_type or "application/octet-stream"
     digest = _sha256(data)
+    text_prompt = prompt or DEFAULT_PROMPT
 
-    # spec 5.3: cache by SHA256
-    cache_key = f"image:{digest}"
+    # spec 5.3: cache key includes image + effective prompt + model + preprocessing
+    # so two prompts on the same image never collide (P1 bug fix).
+    cache_material = f"{digest}:{text_prompt}:{LLM_MODEL}:{MAX_IMAGE_DIM}".encode()
+    cache_key = f"image:{_sha256(cache_material)}"
     cached = _redis.get(cache_key)
     if cached:
-        logger.info("Cache hit for %s", digest)
+        logger.info("Cache hit for %s (prompt-aware)", digest)
         return json.loads(cached)
 
     processed = _resize_image(data)
-    text_prompt = prompt or DEFAULT_PROMPT
     extracted = _call_llm(processed, mime_type, prompt=text_prompt)
 
     result = {

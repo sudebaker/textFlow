@@ -605,6 +605,17 @@ class BaseWorker:
             self._handle_transient_error(job_id, ch, method, properties, e, body)
 
         except Exception as e:
+            # JobCancelled is not a failure: ack without marking failed or dead-lettering
+            try:
+                from pkg.shared.exceptions import JobCancelledError
+
+                if isinstance(e, JobCancelledError):
+                    self.logger.info(f"Job {job_id} cancelled, aborting at safe point")
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    self.jobs_total.labels(status="cancelled").inc()
+                    return
+            except ImportError:
+                pass
             # Permanent error — dead-letter the job
             duration = time.time() - start_time
             self.jobs_total.labels(status="error").inc()
@@ -653,6 +664,13 @@ class BaseWorker:
         except Exception as e:
             self.logger.warning(f"Failed to check cancellation for {job_id}: {e}")
             return False
+
+    def _raise_if_cancelled(self, job_id: str) -> None:
+        """Raise JobCancelledError if the job has been cancelled."""
+        if self._is_cancelled(job_id):
+            from pkg.shared.exceptions import JobCancelledError
+
+            raise JobCancelledError(f"Job {job_id} was cancelled")
 
     def _handle_transient_error(
         self,

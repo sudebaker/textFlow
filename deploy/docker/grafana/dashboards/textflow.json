@@ -1,0 +1,202 @@
+{
+  "uid": "textflow-overview",
+  "title": "textFlow — Pipeline overview",
+  "tags": ["textflow"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "label": "Datasource"
+      },
+      {
+        "name": "worker",
+        "type": "query",
+        "datasource": { "uid": "$DS_PROMETHEUS" },
+        "query": { "qry": "label_values(job)", "refId": "A" },
+        "definition": "label_values(job)",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": false,
+        "hide": 0,
+        "label": "Worker (job)"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "textFlow",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "## textFlow — P50/P95, queue time, throughput, errors\nPer-worker/stage. Source: `pkg/metrics/metrics.go` (ia_text_*) + Python base (`*_job_duration_seconds`, `*_queue_time_seconds`). Requires `deploy/prometheus/prometheus.yml` scrapes. Filter by `$worker` and time range."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Queue time — P50",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 2 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate({__name__=~\"(.*queue_time_seconds|ia_text_queue_time_seconds)_bucket\"}[5m])))",
+          "legendFormat": "P50"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 3,
+      "title": "Queue time — P95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 2 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=~\"(.*queue_time_seconds|ia_text_queue_time_seconds)_bucket\"}[5m])))",
+          "legendFormat": "P95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 4,
+      "title": "Job duration — P50",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate({__name__=~\"(.*job_duration_seconds|ia_text_job_duration_seconds)_bucket\"}[5m])))",
+          "legendFormat": "P50"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 5,
+      "title": "Job duration — P95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=~\"(.*job_duration_seconds|ia_text_job_duration_seconds)_bucket\"}[5m])))",
+          "legendFormat": "P95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 6,
+      "title": "Stage duration — P50 / P95 (Go: ia_text_job_step_duration_seconds)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, step) (rate(ia_text_job_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "P50 {{step}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, step) (rate(ia_text_job_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "P95 {{step}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7,
+      "title": "Throughput — jobs/s",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "sum by (job) (rate(ia_text_jobs_total[5m])) + sum by (job) (rate({__name__=~\"(.*_jobs_total|extraction_worker_jobs_total)\"}[5m]))",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 8,
+      "title": "Errors — rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "sum(rate(ia_text_jobs_total{status=~\"failed|error\"}[5m])) + sum(rate({__name__=~\".*_jobs_total\"}[5m])) - sum(rate({__name__=~\".*_jobs_total\"}[5m]) * 0)",
+          "legendFormat": "errors/s (Go+workers)"
+        },
+        {
+          "expr": "sum(rate(ia_text_redis_errors_total[5m]))",
+          "legendFormat": "redis errors/s"
+        },
+        {
+          "expr": "sum(rate(ia_text_rabbitmq_errors_total[5m]))",
+          "legendFormat": "rabbitmq errors/s"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 9,
+      "title": "Jobs — completed vs failed (counter)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "sum(increase(ia_text_jobs_total{status=\"completed\"}[5m]))",
+          "legendFormat": "completed (Go)"
+        },
+        {
+          "expr": "sum(increase(ia_text_jobs_total{status=\"failed\"}[5m]))",
+          "legendFormat": "failed (Go)"
+        },
+        {
+          "expr": "sum by (status) (increase({__name__=~\".*_jobs_total\"}[5m]))",
+          "legendFormat": "workers {{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 10,
+      "title": "Queue depth",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "uid": "$DS_PROMETHEUS" },
+      "targets": [
+        {
+          "expr": "ia_text_queue_depth",
+          "legendFormat": "{{queue}} depth"
+        },
+        {
+          "expr": "ia_text_queue_consumer_lag",
+          "legendFormat": "{{queue}} lag"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    }
+  ]
+}

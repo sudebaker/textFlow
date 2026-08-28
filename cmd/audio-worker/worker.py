@@ -50,6 +50,8 @@ class AudioWorker(BaseAsyncWorker):
                     f"Audio file size {size_mb:.1f}MB exceeds limit of {MAX_AUDIO_SIZE_MB}MB"
                 )
 
+            self._raise_if_cancelled(job_id)
+
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -107,10 +109,16 @@ class AudioWorker(BaseAsyncWorker):
                 job_message["features"] = features
 
             profile = message.get("profile", "balanced")
+            self._raise_if_cancelled(job_id)
             target_queues = self.pipeline.queues_for(
                 is_spreadsheet=False, features=features, profile=profile
             )
 
+            for qs in target_queues:
+                try:
+                    self.event_bus.publish_stage_event(job_id, "stage.queued", qs)
+                except Exception:
+                    pass
             job_message_json = json.dumps(job_message).encode()
             for queue_name in target_queues:
                 await self._channel.default_exchange.publish(

@@ -316,6 +316,7 @@ class EntitiesWorker(BaseWorker):
             return {"status": "no_chunks"}
 
         self.logger.info(f"Processing entities for job: {job_id} with {len(chunks)} chunks")
+        self._raise_if_cancelled(job_id)
 
         GLINER_BATCH_SIZE = int(os.getenv("GLINER_BATCH_SIZE", "16"))
         batch_chunks = []
@@ -413,6 +414,9 @@ class EntitiesWorker(BaseWorker):
         )
         self.event_bus.publish_job_progress(job_id, 66, "entities")
 
+        # Check cancellation before publishing downstream inference jobs
+        self._raise_if_cancelled(job_id)
+
         try:
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             inferences_enabled = False
@@ -439,6 +443,22 @@ class EntitiesWorker(BaseWorker):
                         except Exception:
                             pass
 
+                    # Fix race: set counters BEFORE publishing so consumers never DECR
+                    # a non-existent key (which Redis creates as -1).
+                    total = len(valid_chunks)
+                    pipe = self.redis_client.pipeline()
+                    pipe.setex(
+                        f"orchestrator:job:{job_id}:inferences:remaining",
+                        86400,
+                        total,
+                    )
+                    pipe.setex(
+                        f"orchestrator:job:{job_id}:inferences:total",
+                        86400,
+                        total,
+                    )
+                    pipe.execute()
+
                     for chunk in valid_chunks:
                         chunk_id = chunk.get("chunk_id")
                         chunk_text = chunk.get("text", "")
@@ -449,15 +469,9 @@ class EntitiesWorker(BaseWorker):
                             "chunk_text": chunk_text,
                             "entities": chunk_entities,
                             "source_type": source_type,
-                            "total_chunks": len(valid_chunks),
+                            "total_chunks": total,
                         }
                         self._publish_to_queue(INFERENCES_QUEUE, inference_msg)
-
-                    self.redis_client.setex(
-                        f"orchestrator:job:{job_id}:inferences:remaining",
-                        86400,
-                        len(valid_chunks),
-                    )
         except Exception as e:
             self.logger.error(f"Failed to trigger inferences: {e}", exc_info=True)
 

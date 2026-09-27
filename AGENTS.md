@@ -193,8 +193,11 @@ hash sharding en `pkg/worker_common/artifact_store.py` (`FSStore`, path
 `:text`, `:chunks`, `:embeddings`, `:inference_embeddings`, `:results`. En Redis
 quedan solo refs `sha256:<hex>` + control/locks + `:micro_inferences_raw`.
 Compat: un valor que NO empieza con `sha256:` se interpreta como payload legacy
-(raw) — lectores usan `resolve()`/`resolve_text()`. Sin TTL en FS (limpieza GC
-fuera de alcance). Volumen `artifacts-data` montado en `/app/data/artifacts`.
+(raw) — lectores usan `resolve()`/`resolve_text()`. Sin TTL en FS: limpieza vía GC
+de reachability `pkg/worker_common/artifact_gc.py` (`python -m
+pkg.worker_common.artifact_gc --dry-run --min-age 24h`, métrica
+`artifact_gc_bytes_reclaimed`; ver OPERATIONS.md). Volumen `artifacts-data`
+montado en `/app/data/artifacts`.
 
 ### Inference-worker: AdaptiveSemaphore (integrado tras `INFERENCE_ADAPTIVE_ENABLED`)
 

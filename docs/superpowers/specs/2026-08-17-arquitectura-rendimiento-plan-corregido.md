@@ -304,7 +304,7 @@ Toda optimización de rendimiento debe acompañarse de benchmark antes/después.
 
 ---
 
-## Estado de implementación (2026-08-27)
+## Estado de implementación (2026-08-27 · actualizado 2026-09-27)
 
 ### Completado
 
@@ -327,6 +327,9 @@ Toda optimización de rendimiento debe acompañarse de benchmark antes/después.
 | **3.4** Refs vs inline chunks | ✅ | `74b3268` |
 | **1.2** Métricas GPU + Prometheus/Grafana | ✅ | `31cb00f` |
 | **1.4** Benchmark suite P50/P95 | ✅ | `4fe548a` |
+| **F1** Dashboard Grafana (criterio de salida Fase 1) | ✅ | `f92f70f` |
+| **T2.2** Artifact GC FS (reachability, min-age 24h) | ✅ | `f92f70f` |
+| **P0-P2** Readiness (races remaining/total, image-analyzer cache key, cancelación extendida, docs operativas) | ✅ | `f92f70f` |
 
 ### Pendiente (diferido)
 
@@ -337,6 +340,6 @@ Toda optimización de rendimiento debe acompañarse de benchmark antes/después.
 | **3.5** Optimizar dedup (bucket por prefijo) | ⏸️ Opcional | Mejora marginal; el spec dice "solo si perfilado muestra cuello de botella". |
 | **2.1/2.2** Benchmarks batch BGE-M3/GLiNER | ✅ Existen | `scripts/bench/bench_embeddings.py`, `bench_gliner.py` (ya presentes). |
 
-### Criterio de salida Fase 1 (dashboard Grafana)
+### Criterio de salida Fase 1 (dashboard Grafana) — ✅ CERRADO
 
-La infra Prometheus/Grafana está desplegada (`31cb00f`), pero **falta el dashboard JSON de Grafana** con P50/P95 de queue_time/processing_time/total_time por stage. Los datos están disponibles en Prometheus (`{worker}_queue_time_seconds`, `{worker}_job_duration_seconds`); falta el panel. Pendiente de crear.
+Cerrado en `f92f70f` (2026-08-28): dashboard `deploy/docker/grafana/dashboards/textflow.json` con provisioning en `deploy/docker/grafana/provisioning/` — P50/P95 de queue time, throughput, errores y depth por stage. La infra Prometheus/Grafana estaba desplegada desde `31cb00f`; los datos provienen de `{worker}_queue_time_seconds` y `{worker}_job_duration_seconds`.

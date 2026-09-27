@@ -318,19 +318,31 @@ Si modificas `internal/broker/rabbitmq.go:declareQueue()`, debes actualizar **to
 | Archivo | Función |
 |---------|---------|
 | `internal/broker/rabbitmq.go` | `declareQueue()` — Go orchestrator |
-| `pkg/worker_common/base.py` | `BaseWorker.run()` — embeddings, entities, metadata |
-| `pkg/worker_common/async_base.py` | `BaseAsyncWorker.connect_rabbitmq()` — extraction, audio, image |
-| `pkg/worker_common/rabbitmq.py` | `declare_queue()` — inference-worker, utilities |
-| `pkg/worker_common/rabbitmq_async.py` | `declare_queue_async()` — extraction-worker |
+| `pkg/worker_common/queue_args.py` | `build_queue_arguments()` — helper compartido: TODO site Python construye su tabla aquí (fuente única de verdad, junto con `DLX_EXCHANGE`) |
+| `pkg/worker_common/base.py` | `BaseWorker.run()` — embeddings, entities, metadata (usa `build_queue_arguments`) |
+| `pkg/worker_common/async_base.py` | `BaseAsyncWorker.connect_rabbitmq()` — extraction, audio, image (usa `build_queue_arguments`) |
+| `pkg/worker_common/rabbitmq.py` | `declare_queue()` — inference-worker, utilities (usa `build_queue_arguments`) |
+| `pkg/worker_common/rabbitmq_async.py` | `declare_queue_async()` — extraction-worker (usa `build_queue_arguments`) |
+
+Los tests que anclan la paridad Go↔Python viven en `pkg/worker_common/tests/test_queue_declaration_sites.py` (los 4 sites Python, con broker mockeado) y `pkg/worker_common/tests/test_queue_args.py` (helper).
 
 ### Args actuales
 
 ```python
-arguments={
+# Tabla compartida: pkg/worker_common/queue_args.py:build_queue_arguments()
+# (espejo exacto de internal/broker/rabbitmq.go:declareQueue())
+arguments = {
     "x-dead-letter-exchange": "document_processor_dlx",
     "x-dead-letter-routing-key": f"{queue_name}_failed",
 }
+if QUEUE_MAX_LENGTH > 0:  # default 1000; 0 = sin límite (env QUEUE_MAX_LENGTH)
+    arguments["x-max-length"] = QUEUE_MAX_LENGTH
+    arguments["x-overflow"] = "reject-publish"
 ```
+
+### Migración (colas ya existentes)
+
+Los args de una cola NO se pueden cambiar in situ: RabbitMQ rechaza con `PRECONDITION_FAILED` cualquier re-declaración con args distintos. En despliegues con RabbitMQ persistente (mnesia/volumen), las colas ya existen con la tabla vieja (solo DLX) y el Go orchestrator ya declara con `x-max-length` — al desplegar la versión nueva, drain y borra/recrea las colas (o wipe del volumen de RabbitMQ) ANTES de arrancar, si no Go y Python fallan ambos con `PRECONDITION_FAILED` en loop. Con RabbitMQ efímero (dev, sin volumen) no hace falta nada.
 
 ### Síntomas de inconsistencia
 

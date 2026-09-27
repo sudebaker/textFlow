@@ -11,10 +11,10 @@ from typing import Generator, Optional, Tuple
 
 import pika
 
-logger = logging.getLogger(__name__)
+# Local
+from pkg.worker_common.queue_args import build_queue_arguments
 
-# Dead Letter Exchange config — must match internal/broker/rabbitmq.go
-DLX_EXCHANGE = "document_processor_dlx"
+logger = logging.getLogger(__name__)
 
 
 def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
@@ -50,10 +50,11 @@ def parse_rabbitmq_url(url: str) -> pika.ConnectionParameters:
 
 
 def declare_queue(channel, queue_name: str, durable: bool = True) -> None:
-    """Declare a durable queue with DLX arguments matching the Go orchestrator.
+    """Declare a durable queue with the shared declaration arguments.
 
     This is idempotent — safe to call from both workers and orchestrator.
-    The DLX args must match internal/broker/rabbitmq.go:declareQueue().
+    The arguments table comes from pkg.worker_common.queue_args so it
+    always matches internal/broker/rabbitmq.go:declareQueue().
 
     Args:
         channel: An open pika channel.
@@ -63,10 +64,7 @@ def declare_queue(channel, queue_name: str, durable: bool = True) -> None:
     channel.queue_declare(
         queue=queue_name,
         durable=durable,
-        arguments={
-            "x-dead-letter-exchange": DLX_EXCHANGE,
-            "x-dead-letter-routing-key": f"{queue_name}_failed",
-        },
+        arguments=build_queue_arguments(queue_name),
     )
 
 

@@ -41,8 +41,7 @@ from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app")
 from pkg.events_python import EventBus
-
-DLX_EXCHANGE = "document_processor_dlx"
+from pkg.worker_common.queue_args import build_queue_arguments
 
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
@@ -188,10 +187,7 @@ class BaseAsyncWorker:
                 queue = await channel.declare_queue(
                     self.queue_name,
                     durable=True,
-                    arguments={
-                        "x-dead-letter-exchange": DLX_EXCHANGE,
-                        "x-dead-letter-routing-key": f"{self.queue_name}_failed",
-                    },
+                    arguments=build_queue_arguments(self.queue_name),
                 )
                 self.logger.info(
                     f"Connected to RabbitMQ at {self.rabbitmq_url}, "

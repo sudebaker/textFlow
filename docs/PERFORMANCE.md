@@ -15,7 +15,7 @@
 
 - Grafana `textflow-overview` (Fase 3 T3.2): panels `Queue time P50/P95`, `Job duration P50/P95`, `Stage duration P50/P95` (`histogram_quantile(0.95, sum by(le) rate(ia_text_job_duration_seconds_bucket[5m]))` etc.), `Throughput`, `Errors`, `Queue depth` (`ia_text_queue_depth`, `consumer_lag`).
 - Prometheus scrape: orchestrator `8080/metrics`, workers `8001-8006/metrics`, `redis-exporter:9121`, `rabbitmq:15692/metrics`. Alertas `deploy/prometheus/alerts.yml` (queue saturada, jobs stuck, high failure rate).
-- Perfiles: `?profile=fast|balanced|full`; `fast = extraction+metadata`, `balanced==full = extraction+embeddings+entities+metadata` (full intencionalmente == balanced, §8; inferences solo vía `-f/features=[inferences]`, Fase 4).
+- Perfiles: `?profile=fast|balanced|full`; `fast = extraction+metadata`, `balanced = extraction+embeddings+entities+metadata`, `full = balanced + inferences` (decidido 2026-09-27, §8; inferences también vía `-f/features=[inferences]` para `fast`/`balanced`).
 
 ## Cómo reproducir benchmarks
 

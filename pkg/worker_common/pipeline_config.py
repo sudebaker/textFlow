@@ -112,10 +112,12 @@ class PipelineDefinition:
     def _profile_or_default(self, profile: str) -> Dict:
         """Resolve a processing profile, falling back to the default pipeline.
 
-        T4.2 (review 2026-08-28 §8): 'full' intencionalmente == 'balanced'.
-        'inferences' no es step base — se activa vía feature_extras con
-        -f / features=[inferences]. Mantener idénticos hasta que benchmarks
-        justifiquen una semántica diferenciada.
+        Profile semantics (review 2026-08-28 §8, decided 2026-09-27):
+        - fast: extraction + metadata
+        - balanced: extraction + embeddings + entities + metadata
+        - full: balanced + inferences (inferences included by default)
+        'inferences' remains available as a feature_extra for callers using
+        'fast' or 'balanced' who want inferences without switching profile.
 
         Returns the profile definition when present, otherwise the default
         pipeline (backward compatibility for callers that do not pass a profile).

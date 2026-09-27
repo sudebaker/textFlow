@@ -31,8 +31,8 @@ CONFIG = {
             "publish_queues": ["embeddings", "entities", "metadata"],
         },
         "full": {
-            "steps": ["extraction", "embeddings", "entities", "metadata"],
-            "publish_queues": ["embeddings", "entities", "metadata"],
+            "steps": ["extraction", "embeddings", "entities", "metadata", "inferences"],
+            "publish_queues": ["embeddings", "entities", "metadata", "inferences"],
         },
     },
 }
@@ -117,7 +117,7 @@ def test_queues_for_balanced_profile():
 def test_queues_for_full_profile():
     pd = PipelineDefinition(CONFIG)
     assert pd.queues_for(is_spreadsheet=False, features=[], profile="full") == [
-        "embeddings", "entities", "metadata",
+        "embeddings", "entities", "metadata", "inferences",
     ]
 
 
@@ -152,7 +152,7 @@ def test_steps_for_balanced_profile():
 def test_steps_for_full_profile():
     pd = PipelineDefinition(CONFIG)
     assert pd.steps_for(is_spreadsheet=False, is_audio=False, features=[], profile="full") == {
-        "extraction", "embeddings", "entities", "metadata",
+        "extraction", "embeddings", "entities", "metadata", "inferences",
     }
 
 

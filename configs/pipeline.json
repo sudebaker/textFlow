@@ -22,8 +22,8 @@
       "publish_queues": ["embeddings", "entities", "metadata"]
     },
     "full": {
-      "steps": ["extraction", "embeddings", "entities", "metadata"],
-      "publish_queues": ["embeddings", "entities", "metadata"]
+      "steps": ["extraction", "embeddings", "entities", "metadata", "inferences"],
+      "publish_queues": ["embeddings", "entities", "metadata", "inferences"]
     }
   },
   "feature_extras": {

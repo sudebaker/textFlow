@@ -48,7 +48,7 @@ GET /v1/documents/:id/download  (chunk-level inferences, embeddings via gzip, en
 `pkg/worker_common/artifact_store.py` (`FSStore`, 65k sharded, atomic write, `65k buckets`). Keys migrated: `:text`, `:chunks`, `:embeddings`, `:inference_embeddings`, `:results` refs; `:micro_inferences_raw` still in Redis. GC `pkg/worker_common/artifact_gc.py` (reachability, min-age 24h).
 
 ### Profiles & PipelineDefinition
-`configs/pipeline.json` (`PipelineDefinition` in `pkg/worker_common/pipeline_config.py`). `profiles: fast/balanced/full` (full intentionally == balanced, §8 / Fase 4; `inferences` only via `feature_extras` with `-f`), `pipelines.spreadsheet` (entities-only), `audio_replaces_extraction`/`image_replaces_extraction`, `feature_extras.inferences → step/queue`.
+`configs/pipeline.json` (`PipelineDefinition` in `pkg/worker_common/pipeline_config.py`). `profiles: fast/balanced/full` (full = balanced + inferences, decidido 2026-09-27 §8; `inferences` also available via `feature_extras` with `-f` for `fast`/`balanced`), `pipelines.spreadsheet` (entities-only), `audio_replaces_extraction`/`image_replaces_extraction`, `feature_extras.inferences → step/queue`.
 
 ### Stages → workers
 

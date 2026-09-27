@@ -402,40 +402,19 @@ Esto debería ser una capa de observabilidad, no lógica de aplicación.
 
 ---
 
-# 8. P3: decidir semántica de `balanced` y `full`
+# 8. P3: decidir semántica de `balanced` y `full` — ✅ DECIDIDO (2026-09-27)
 
-Actualmente `fast`, `balanced` y `full` existen.
+**Decisión:** `full = balanced + inferences` (inferences incluido por defecto en `full`).
 
-Revisar si realmente se desea:
+Implementado en `configs/pipeline.json` (profile `full` añade `inferences` a `steps` y `publish_queues`) + tests actualizados en `cmd/completion-worker/tests/test_pipeline_config.py` + comentario en `pkg/worker_common/pipeline_config.py:_profile_or_default`. `inferences` sigue disponible como `feature_extra` para `fast`/`balanced`.
 
-```text
-balanced ≈ full
-```
-
-o si `full` debería incluir explícitamente más procesamiento.
-
-Una semántica posible:
+Semántica final:
 
 ```text
-fast
-  extraction
-  metadata
-
-balanced
-  extraction
-  metadata
-  embeddings
-  entities
-
-full
-  extraction
-  metadata
-  embeddings
-  entities
-  inferences
+fast       → extraction + metadata
+balanced   → extraction + embeddings + entities + metadata
+full       → balanced + inferences
 ```
-
-No modificarlo sin decisión explícita.
 
 El sistema ya permite activar features adicionales mediante `feature_extras`, por lo que la capacidad existe.
 

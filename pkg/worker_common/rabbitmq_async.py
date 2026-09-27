@@ -12,10 +12,10 @@ from typing import Optional
 import aio_pika
 import aio_pika.abc
 
-logger = logging.getLogger(__name__)
+# Local
+from pkg.worker_common.queue_args import build_queue_arguments
 
-# Dead Letter Exchange config — must match internal/broker/rabbitmq.go
-DLX_EXCHANGE = "document_processor_dlx"
+logger = logging.getLogger(__name__)
 
 
 async def connect_rabbitmq_async(
@@ -60,10 +60,11 @@ async def declare_queue_async(
     queue_name: str,
     durable: bool = True,
 ) -> aio_pika.abc.AbstractQueue:
-    """Declare a durable queue with DLX arguments matching the Go orchestrator.
+    """Declare a durable queue with the shared declaration arguments.
 
     This is idempotent — safe to call from both workers and orchestrator.
-    The DLX args must match internal/broker/rabbitmq.go:declareQueue().
+    The arguments table comes from pkg.worker_common.queue_args so it
+    always matches internal/broker/rabbitmq.go:declareQueue().
 
     Args:
         channel: An open aio_pika channel.
@@ -76,8 +77,5 @@ async def declare_queue_async(
     return await channel.declare_queue(
         queue_name,
         durable=durable,
-        arguments={
-            "x-dead-letter-exchange": DLX_EXCHANGE,
-            "x-dead-letter-routing-key": f"{queue_name}_failed",
-        },
+        arguments=build_queue_arguments(queue_name),
     )

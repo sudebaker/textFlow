@@ -55,6 +55,7 @@ sys.path.insert(0, "/app")
 
 from pkg.events_python import EventBus
 from pkg.logging_python import setup_logging, JobLogger
+from pkg.worker_common.queue_args import build_queue_arguments
 
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
@@ -481,14 +482,14 @@ class BaseWorker:
                     # can call stop_consuming() on graceful shutdown.
                     self._channel = channel
 
-                    # Declare queue with DLX args matching internal/broker/rabbitmq.go
+                    # Declare queue with the shared declaration arguments
+                    # (pkg.worker_common.queue_args) so Go and Python stay
+                    # byte-identical and RabbitMQ never sees an inequivalent
+                    # arg PRECONDITION_FAILED.
                     channel.queue_declare(
                         queue=self.queue_name,
                         durable=True,
-                        arguments={
-                            "x-dead-letter-exchange": "document_processor_dlx",
-                            "x-dead-letter-routing-key": f"{self.queue_name}_failed",
-                        },
+                        arguments=build_queue_arguments(self.queue_name),
                     )
                     self.logger.info(f"Consuming from queue: {self.queue_name}")
 

@@ -204,3 +204,73 @@ curl -s -L https://raw.githubusercontent.com/vllm-project/vllm/<tag>/docs/models
 
 
 ---
+
+## A.4 — Mecanismo de montaje air-gap (y staging spec para `models/minicpm-v-4.5/`)
+
+### COMMANDS RUN
+
+```bash
+grep -rn "gliner-small-v2.1\|huggingface_cache\|models--" deploy/package/*.sh deploy/docker/*.py
+sed -n '95,200p' deploy/package/package.sh
+grep -n "MODELS_PATH\|GLINER_MODEL_PATH\|:ro" deploy/docker/docker-compose.yml
+cat models/MANIFEST.txt            # no existe en el workspace (ver finding)
+ls models/gliner-small-v2.1 models/deberta-v3-small
+# Reproduccion en vivo del staging de docling (la unica pieza ejecutada hoy):
+docker create quay.io/docling-project/docling-serve:latest
+docker cp <cid>:/opt/app-root/src/.cache/docling/models/. models/docling/
+```
+
+### RAW EVIDENCE (recortada)
+
+**Cadena actual (trazada):**
+
+1. **Descarga a HF cache** — `deploy/docker/download_models_offline.py`
+   - `HF_CACHE_DIR = <root>/models/huggingface_cache` → `hub/models--<org>--<repo>/snapshots/<sha>/` (L99).
+   - Modelos: `urchade/gliner_small-v2.1`, `microsoft/deberta-v3-small`, `BAAI/bge-m3` (critical), `Systran/faster-whisper-large-v2` (opcional).
+   - Escribe `models/MANIFEST.txt` via `_write_models_manifest()` (lista exit/fail + cadena `Successful`).
+
+2. **Staging a layout de mount** — dos mecanismos segun modelo:
+   - GLiNER/bge: `deploy/docker/download-models.py` (script separado, legacy pero vigente): `GLiNER.from_pretrained(...).save_pretrained(models/gliner-small-v2.1)` y `SentenceTransformer(...).save(models/bge-m3)` — directorios top-level con archivos REALES (resueltos, no symlinks del HF cache).
+     - Deuda observada (medida): `models/deberta-v3-small/` solo contiene `config.json + spm.model + tokenizer_config.json` (2.4 MB, sin pesos) — el backbone real viaja dentro de `gliner-small-v2.1/pytorch_model.bin`. El staging a top-level NO esta forzado por ningun script ni verify.
+   - Docling: `download_models_offline.py:download_docling_models()` copia artefactos desde la imagen Docker con `docker create` + `docker cp` → `models/docling/` (reproducido en vivo hoy contra `:latest`: 740 MB, 4-5 dirs RapidOcr/EasyOcr/etc).
+
+3. **Packaging air-gap** — `deploy/package/package.sh` Step 4: `tar -czf dist/models.tar.gz models/` (todo el dir; tar resuelve symlinks por defecto) + `docker save` de imagenes. `deploy/package/install.sh` extrae el tar (idempotente si `models/` ya existe). `deploy/package/verify-bundle.sh` valida compose + variables + que `models/MANIFEST.txt` contenga `Successful` (L71-75).
+
+4. **Mount en compose** — `${MODELS_PATH}/<dir-top>:/models/<dir-top>[:ro]`:
+   - L492 bge-m3 `:ro`; L315 `GLINER_MODEL_PATH=/models/gliner-small-v2.1`; L644 whisper `:ro`; L542 docling artifacts `:ro`.
+   - `deploy/package/install.sh:94` extrae `models/` del tar (convencion `models/` en el cwd del instalador; `MODELS_PATH` apunta ahi).
+
+**Medido:** `models/MANIFEST.txt` no existe en el workspace actual (fue generado en una instalacion pasada y no está en git).
+
+### DECISION — staging spec para `models/minicpm-v-4.5/` (para Task D.2; NO implementado aqui)
+
+**Mecanismo elegido: copia de snapshot del HF cache con archivos reales** (patron `download_models_offline.py`), sin usar `download-models.py` (no aplica: no hay wrapper torch para un VLM y `save_pretrained` no aporta nada; vLLM lee un plain HF dir).
+
+1. **Origen:** `models/huggingface_cache/hub/models--openbmb--MiniCPM-V-4_5/snapshots/<sha>/`. Descarga en el host de preparacion con red (via `huggingface_hub.snapshot_download` / `hf download openbmb/MiniCPM-V-4_5 --cache-dir models/huggingface_cache` — HF_HUB_OFFLINE unset solo en ese host). SHA de referencia documentado en A.3: `daef484c35ec…` (2026-08-18).
+2. **Destino layout (archivos RESUELTOS: `cp -aL` desde snapshots, NUNCA symlinks):**
+   ```
+   models/minicpm-v-4.5/
+     config.json
+     configuration_minicpm.py          # remote code (auto_map) — obligatorio offline
+     modeling_*.py                     # todos los *.py del repo (offload/image utils segun repo)
+     generation_config.json
+     preprocessor_config.json
+     tokenizer_config.json             # + tokenizer.model / spm.model, los *.json y *.py extras
+     model.safetensors.index.json
+     model-0000[1-4]-of-00004.safetensors
+   ```
+   Incluir TODO el `*.py` del repo HF: con `HF_HUB_OFFLINE=1`, vLLM/transformers cargan el remote code desde disco; si falta un modulo referenciado por `auto_map`, el serve falla en arranque.
+3. **Integracion en `download_models_offline.py` (D.2):**
+   - `MODEL_REQUIRED_FILE_GROUPS` += grupos: `config.json`; `*.py` (remote code); `tokenizer*`; `preprocessor_config.json`; `chat_template.json` (si existe); `model.safetensors.index.json`; `model-0000[1-4]-of-00004.safetensors`.
+   - `models[]` += `{repo_id: openbmb/MiniCPM-V-4_5, type: MiniCPM-V 4.5 (vision OCR), critical: True}`.
+   - Nueva funcion `stage_snapshot(repo_id, dest_dir)`: resuelve el snapshot mas reciente del cache → `cp -aL` a `models/minicpm-v-4.5/`; falla si falta `config.json` o el set de shards del index. Idempotente (skip si destino vale con los grupos completos, patron de `download_docling_models`).
+   - Presupuesto disco: +~17.4 GB (cache HF) +~17.4 GB (staging) = ~35 GB temporales; opcional `rm -rf hub/models--openbmb--MiniCPM-V-4_5` tras el `cp` exitoso (el staging queda autocontenido en el destino; docling hace lo equivalente al copiar desde imagen).
+4. **Mount (solo overlay GPU, D.2):** en el servicio `vllm-minicpm` de `docker-compose.gpu.yml`:
+   ```yaml
+   volumes:
+   - "${MODELS_PATH:?MODELS_PATH is not set}/minicpm-v-4.5:/models/minicpm-v-4.5:ro"
+   ```
+5. **MANIFEST.txt:** la entrada en `models[]` fluye automaticamente a `_write_models_manifest()` → `verify-bundle.sh` la ancla por la cadena `Successful`. `docs/MODELS.md` (D.2): fila nueva con repo, tamano, mount `:ro`.
+6. **Bundle:** `package.sh` sin cambios (el tar de `models/` lo cubre: +~17.4 GB). `verify-bundle.sh/install.sh` sin cambios.
+
+[Ningun fichero de produccion tocado en esta tarea — spec solo.]

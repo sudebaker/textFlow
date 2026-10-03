@@ -634,6 +634,7 @@ func (c *RedisClient) GetJobProfile(ctx context.Context, jobID string) (string, 
 // - status, text, results, embeddings, entities, metadata, steps, error
 // - created/completed timestamps, features, LLM configuration
 // - supplementary data: chunks, classifications, inferences, raw entities
+// - per-page visual extraction provenance (extraction_provenance)
 // This is called when cleaning up after job completion or on explicit deletion requests.
 // Returns error if any Redis operation fails (partial cleanup may occur).
 func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
@@ -660,6 +661,7 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 		c.key("job", jobID, "chunks"),
 		c.key("job", jobID, "metadata:document"),
 		c.key("job", jobID, "metadata:text"),
+		c.key("job", jobID, "extraction_provenance"),
 	}
 	err := c.client.Del(ctx, keys...).Err()
 	if err != nil {

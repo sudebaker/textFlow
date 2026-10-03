@@ -12,11 +12,22 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# langdetect and textstat are production imports of worker.py but are not
-# installed in the air-gapped test env; analyze_text never runs them here
-# against real implementations.
-sys.modules.setdefault("langdetect", MagicMock())
-sys.modules.setdefault("textstat", MagicMock())
+# The full third-party import surface of worker.py is not installed in the
+# air-gapped test env (aio_pika, aiohttp, tiktoken, magic, redis,
+# prometheus_client included) — stub it before importing so the module loads.
+# langdetect/textstat additionally make analyze_text deterministic.
+for _mod in (
+    "aio_pika",
+    "aio_pika.abc",
+    "aiohttp",
+    "langdetect",
+    "magic",
+    "redis",
+    "textstat",
+    "tiktoken",
+    "prometheus_client",
+):
+    sys.modules.setdefault(_mod, MagicMock())
 
 import worker
 

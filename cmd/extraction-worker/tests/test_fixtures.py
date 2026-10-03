@@ -1,5 +1,7 @@
 """Deterministic minimal-PDF builder (no binary fixtures in git)."""
 
+import pytest
+
 from fixtures import build_pdf  # noqa: F401  (tests add their dir to sys.path)
 
 
@@ -27,8 +29,6 @@ class TestBuildPdfStructure:
         assert b"a \\(b\\) \\\\ c" in pdf
 
     def test_empty_pages_rejected(self):
-        import pytest
-
         with pytest.raises(ValueError):
             build_pdf([])
 
@@ -39,9 +39,16 @@ class TestBuildPdfWithPypdfium2:
     Skips silently in the air-gapped test env (pypdfium2 not installed)."""
 
     def test_parses_pages_and_text(self):
-        import pytest
+        import sys
+        import unittest.mock
 
-        pypdfium2 = pytest.importorskip("pypdfium2")
+        pytest.importorskip("pypdfium2")
+        # test_golden_vision_off stubs pypdfium2 module-wide for later phases;
+        # skip if the entry in sys.modules is a stub rather than the real lib.
+        stubbed = isinstance(sys.modules.get("pypdfium2"), unittest.mock.Mock)
+        if stubbed:
+            pytest.skip("pypdfium2 stubbed by golden tests (not installed here)")
+        pypdfium2 = __import__("pypdfium2")
         pdf = build_pdf(["Hello world page one", "Second page text here"])
         doc = pypdfium2.PdfDocument(pdf)
         try:

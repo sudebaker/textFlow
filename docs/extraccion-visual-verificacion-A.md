@@ -95,3 +95,61 @@ Muestra de `pages` (verbatim): `{"size": {"width": 612.0, "height": 792.0}, "ima
 2. `extract_page_texts()` agrupa por `prov[0].page_no` tal como el plan E.2 ya esboza; `page_count` debe venir de `len(json_content.pages)` (o `pypdfium2.count_pages` en el GATE del slow path — ambos disponibles; cross-check en E.4).
 3. **Caveat registrada:** verificado en vivo SOLO con PDF de texto nativo + `do_ocr=false`. Para manuscritos escaneados (OCR por página) la cobertura se considera plausible pero no probada; Fase F debe validar contra corpus real. El diseño E.2 ya degrada seguro: `page_text=None → suspect`, así que ausencia de `prov` en documentos escaneados solo activaría el slow path, nunca pierde texto.
 4. Si alguien valida esto de nuevo tras un bump de imagen de docling-serve, repetir la secuencia del epígrafe COMMANDS RUN.
+
+---
+
+## A.2 — Inventario GPU/VRAM
+
+### COMMANDS RUN
+
+```bash
+nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv
+nvidia-smi --query-gpu=driver_version,compute_cap --format=csv,noheader
+curl -s http://localhost:9090/metrics | grep -E 'gpu_'          # resource-manager
+docker ps | grep -Ei 'gliner|embeddings|entities|whisper|image|vllm|ollama|docling'
+curl http://localhost:11434/api/tags                            # Ollama local
+df -h /home | tail -1
+grep -n "DEVICE\|CUDA\|runtime" deploy/docker/docker-compose.yml docker-compose.gpu.yml
+```
+
+### RAW EVIDENCE (recortada)
+
+```
+nvidia-smi:
+  0, NVIDIA GeForce RTX 4060, 8188 MiB, 27 MiB, (free 7808 MiB)
+  driver 610.57.04, compute_cap 8.9
+resource-manager :9090 → rc=7 (down; sin métricas gpu_)
+docker ps → SOLO textflow-docling (Up, healthy). Sin embeddings/entities/whisper/image/vllm/ollama containers
+pgrep ollama|vllm → nada; :11434 no responde
+df -h /home → 229 GB libres
+```
+
+Estado declarado en compose (solo lectura):
+- Base (`docker-compose.yml`): TODO en CPU (`EMBEDDINGS_DEVICE=cpu`, `ENTITIES_DEVICE=cpu`, `DOCLING_DEVICE=cpu`, `WHISPER_DEVICE=cpu`).
+- Overlay (`docker-compose.gpu.yml`): `runtime: nvidia` + `CUDA_VISIBLE_DEVICES=0` para **embeddings-worker, entities-worker, completion-worker, docling (imagen cu128-0.12.0)** → TODOS comparten la GPU 0.
+- `models/whisper/` está vacío y las GPUs no residentes: hoy nadie consume VRAM (27 MiB = overhead del driver).
+
+### FINDING
+
+| Dato | Valor | Medido/Supuesto |
+|---|---|---|
+| GPUs | 1× RTX 4060, 8 GB (Ada, CC 8.9) | **medido** |
+| VRAM libre ahora | 7808 MiB / 8188 MiB | **medido** |
+| Modelos residentes hoy | ninguno (27 MiB) | **medido** |
+| resource-manager metrics | :9090 caído | **medido** |
+| Co-residente habitual (overlay GPU) | bge-m3 (~2 GB VRAM) + GLiNER/deberta (~1–2 GB) + docling (~1.5 GB) sobre GPU 0 | **supuesto** (AGENTS.md/overlay; hoy solo CPU) |
+| whisper | external-service (deploy/docker/whisper), `models/whisper/` vacío en este host | **medido** (vacío) |
+| image-analyzer LLM | `host.docker.internal` vía LLM_BASE_URL (gemma4:e4b en REDIS/llanura dev); no corriendo | **medido** (absente) + `assumed` (pesos) |
+| inference-LLM del pipeline | vLLM/Ollama externo, no residente | **medido** (absente) |
+| MiniCPM-V 4.5 BF16 | 16.2 GiB (17.39 GB) de pesos — ver A.3 | **medido** (metadatos HF) |
+
+### DECISION (recomendación para D/F — la prueba real de serving §21 va en Fase D)
+
+Una única GPU de 8 GB compartida excluye BF16 de MiniCPM-V 4.5 (16.2 GiB > 8 GB): **no encaja residente, ni siquiera solo**. Opciones bajo UNA GPU:
+
+1. **AWQ/4-bit (recomendado):** ~4–5 GB de pesos (+ KV cache p/`max-model-len` 4096, `limit-mm-per-prompt image=1`) ⇒ ~6–7 GB físicos. Co-residencia con bge-m3/GLiNER/docling es inviable; requiere política de exclusión (docling/GPU workers en CPU base overlay y vLLM dueño de la GPU, o viceversa). Concurrencia del gate: `VISION_MAX_CONCURRENCY=1..2` + semáforo server-side (§20, ya en el plan D.1/D.2).
+2. **GPU dedicada:** la única ruta segura para despliegues con volumen alto de páginas; opción hardware, no software.
+3. **BF16 entera en 8 GB:** inviable — descartada.
+
+Numeración honesta: los GiB de MiniCPM AWQ son **estimados** (÷4 aprox. + overhead vLLM); el único camino para confirmar es el serve-test real de Fase D (§21), imposible en este host por VRAM.
+

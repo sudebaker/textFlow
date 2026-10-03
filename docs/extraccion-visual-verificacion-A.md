@@ -153,3 +153,54 @@ Una única GPU de 8 GB compartida excluye BF16 de MiniCPM-V 4.5 (16.2 GiB > 8 GB
 
 Numeración honesta: los GiB de MiniCPM AWQ son **estimados** (÷4 aprox. + overhead vLLM); el único camino para confirmar es el serve-test real de Fase D (§21), imposible en este host por VRAM.
 
+
+---
+
+## A.3 — vLLM pinneado + MiniCPM-V 4.5 + pesos offline
+
+### COMMANDS RUN
+
+```bash
+pip show vllm; python3 -c 'import vllm; print(vllm.__version__)'   # no instalado
+curl -s --max-time 3 http://localhost:8000/v1/models               # rc=7 — servicio ausente
+curl -s https://huggingface.co/api/models/openbmb/MiniCPM-V-4_5    # OK (red disponible)
+curl -sI <repo>/resolve/main/model-0000X-of-00004.safetensors      # tamaños reales
+python3 -c "$_MULTIMODAL_REGISTRY" 2>/dev/null                      # sin vllm local → n/a
+# por websearch HTTP: docs.vllm.ai stable + latest + tags v0.10.x/v0.11.x (raw.githubusercontent)
+curl -s -L https://raw.githubusercontent.com/vllm-project/vllm/<tag>/docs/models/supported_models.md | grep -c MiniCPM-V-4_5
+```
+
+### RAW EVIDENCE (recortada)
+
+**Metadatos HF (medidos, 2026-10-03):**
+- Repo: `openbmb/MiniCPM-V-4_5` (no gated, apache-2.0, safetensors). Ortografía alternativa `MiniCPM-V_4_5` → error (40x): el ID exacto importa.
+- `sha`: `daef484c35ec…`, `lastModified 2026-08-18`.
+- Config: `config.json` (architectures: `MiniCPMV`, `auto_map` con remote code: `configuration_minicpm.py`, `modeling_minicpmv.py`), `preprocessor_config.json`, `tokenizer_config.json`, `generation_config.json`, `model.safetensors.index.json`.
+- Shards (x-linked-size, en bytes): 5 286 612 176 + 5 301 855 088 + 4 546 851 120 + 2 256 571 800 = **17.39 GB (16.2 GiB)** BF16 en 4 shards.
+
+**vLLM (medidos):**
+- No hay vllm instalado en el host (pip 26.2.1 sobre Python 3.14 del sistema — vllm no es instalable ahí) y no hay servicio vLLM en :8000.
+- Tabla de modelos soportados (nativa, arquitectura `MiniCPMV`):
+  - `v0.10.1` → 0 menciones de `MiniCPM-V-4_5`
+  - `v0.10.2`, `v0.11.0`, `v0.11.1`, `v0.11.2` → 1 mención c/u
+  - `v0.11.3` → fetch 404 (relación de docs movida/reorganizada; no negativo de soporte)
+  - `latest` y `stable` (docs.vllm.ai) → presentes incl. `openbmb/MiniCPM-V-4_5`
+- Soporta también `MiniCPM-O`, `MiniCPM-V-4`, `MiniCPM-V-4_6`; patrón modal inputs T+I(Experience)+V.
+
+### FINDING
+
+| Ítem | Estado |
+|---|---|
+| Repo HF exacto | **Confirmado**: `openbmb/MiniCPM-V-4_5`, safetensors sharded (4 shards), config.json + tokenizer + preprocessor OK. Favorable a download offline sin imagen custom |
+| Serve-test real | **BLOCKED**: vllm no instalado (host con Python 3.14, no soportado por vllm) y no hay servicio vLLM vivo; además la VRAM de este host (A.2) no basta ni para BF16 |
+| Soporte vLLM >= v0.10.2 | **Confirmado vía docs** (arquitectura `MiniCPMV` nativa) — PERO confirmar-por-docs ≠ serving validado |
+| Pin final de vLLM | **Pendiente de validación humana/serving**: pin ≥ `v0.10.2` (primer tag con la mención); validar el pin exacto con serve-test en Fase D. Nota: v0.11.3 reorganiza la doc — no tomar el 404 como señal de no-soporte |
+
+### DECISION
+
+- **Repo HF y staging: confirmados** → D.2 puede usar `openbmb/MiniCPM-V-4_5` con `MODEL_REQUIRED_FILE_GROUPS`: `config.json`, `configuration_minicpm.py`+`modeling_minicpmv.py`+ otros `*.py` (remote code — necesario por `auto_map`), `tokenizer*`, `preprocessor_config.json`, `chat_template.json` (si existe), `model.safetensors.index.json`, `model-0000[1-4]-of-00004.safetensors`.
+- **Serve-test de vLLM + MiniCPM-V 4.5: BLOCKED en este host** (sin vllm, Python 3.14, GPU 8 GB). Spec §21: la validación real de serving (version pin + VRAM + latencia/página) se ejecuta en Fase D sobre el host objetivo con GPU. Alguien con GPU ≥24 GB debe: `vllm serve <dir> --served-model-name minicpm-v-4.5 --max-model-len 4096 --limit-mm-per-prompt image=1 --gpu-memory-utilization 0.85` + curl /v1/chat/completions con imagen y registrar ahí versión + VRAM + latencia. **No proseguir D.2 servir hasta ese test.**
+- Pin recomendado-con-caveat: `vllm/vllm-openai` en la primera versión estable ≥ `v0.10.2` (arquitectura `MiniCPMV` nativa) — decidir el pin EXACTO con el serve-test de Fase D.
+
+
+---

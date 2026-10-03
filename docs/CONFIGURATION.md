@@ -28,6 +28,23 @@
 | `DOCLING_DO_OCR` / `DOCLING_OCR_ENGINE` | `false` / `rapidocr` | extraction-worker | §14: no activar globalmente; solo escaneados |
 | `MAX_SPREADSHEET_ROWS` | `2000` | orchestrator | spreadsheet guard |
 
+## Vision quality gate (extracción visual)
+
+| Variable | Default | Servicio | Notas |
+|---|---|---|---|
+| `VISION_OCR_ENABLED` | `false` | extraction-worker | master switch del fallback (spec §14); until benchmark OFF |
+| `VISION_GATE_ENABLED` | `true` | extraction-worker | gate log-only (observa/logs, no cambia salida) |
+| `VISION_OCR_URL` | `http://vision-ocr:8080` | extraction-worker | servicio vision-ocr (solo si enabled) |
+| `VISION_OCR_TIMEOUT` | `120` s | extraction-worker | timeout HTTP por página |
+| `VISION_OCR_MAX_PAGES_PER_DOCUMENT` | `50` | extraction-worker | presupuesto páginas Vision/doc |
+| `VISION_OCR_MAX_SECONDS_PER_DOCUMENT` | `900` s | extraction-worker | presupuesto segundos Vision/doc |
+| `VISION_OCR_MAX_CONCURRENCY` | `4` | extraction-worker | semáforo cliente (spec §20) |
+| `VISION_OCR_IMAGE_DPI` | `200` | extraction-worker | DPI render pypdfium2 (bench: 120/200/300) |
+| `VISION_MIN_CHARS_PER_PAGE` | `100` | extraction-worker | threshold gate página/doc (calibrar F.3) |
+| `VISION_IMAGE_PLACEHOLDER_RATIO_MAX` | `0.3` | extraction-worker | ratio placeholders → suspect |
+| `VISION_GARBAGE_RATIO_MAX` | `0.2` | extraction-worker | ratio basura (cid:/ufffd) → suspect |
+| `VISION_LLM_BASE_URL` / `VISION_LLM_MODEL` | `http://vllm-minicpm:8000` / `minicpm-v-4.5` | vision-ocr | backend-agnóstico; dev: Ollama mac-mini `minicpm-v4.5:latest` |
+
 ## Embeddings / Entities / Metadata
 
 | Variable | Default | Servicio | Notas |

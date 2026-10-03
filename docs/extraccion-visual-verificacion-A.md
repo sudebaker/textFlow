@@ -221,7 +221,7 @@ timeout 5 curl -s http://192.168.88.12:11434/api/tags \
 
 **DECISION**: el servicio `vision-ocr` permanece backend-agnóstico. Las variables del plan se renombran para reflejarlo:
 - `VLLM_BASE_URL` → **`VISION_LLM_BASE_URL`** (default prod `http://vllm-minicpm:8000`; dev/bench de calidad → `http://192.168.88.12:11434`).
-- `VISION_MODEL` default prod `minicpm-v-4.5`; dev/bench → `minicpm-v4.5:latest` (ojO: id de Ollama ≠ id de vLLM; el env ya lo parametriza).
+- `VISION_MODEL` default prod `minicpm-v-4.5`; dev/bench → `minicpm-v4.5:latest` (OJO: id de Ollama ≠ id de vLLM; el env ya lo parametriza).
 - Añadir fila a `.env.example` en D.2 cambiando el nombre de las dos variables.
 - Aviso al benchmark (F.2): calidad/latencia sobre Ollama/CPU-Mac NO extrapola a VRAM/throughput de vLLM+GPU; comparar solo calidad de transcripción.
 

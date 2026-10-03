@@ -1,0 +1,309 @@
+{
+  "published": [
+    {
+      "body": {
+        "document_metadata": {
+          "author": null,
+          "creation_date": null,
+          "creator": null,
+          "encrypted": false,
+          "exif_data": {},
+          "file_size_bytes": 868,
+          "filename": "document.pdf",
+          "mime_type": "application/pdf",
+          "modification_date": null,
+          "page_count": 2,
+          "producer": null,
+          "sha256": "0976f87b27750ef5c3a2204a921aa06fe7c3fb56a927d6a24bf3e36ae81ef114",
+          "subject": null,
+          "title": null
+        },
+        "job_id": "golden",
+        "pipeline_version": "v1",
+        "profile": "balanced",
+        "queued_at": "<ts>"
+      },
+      "kwargs": {
+        "content_type": "application/json",
+        "delivery_mode": "PERSISTENT"
+      },
+      "routing_key": "embeddings"
+    },
+    {
+      "body": {
+        "document_metadata": {
+          "author": null,
+          "creation_date": null,
+          "creator": null,
+          "encrypted": false,
+          "exif_data": {},
+          "file_size_bytes": 868,
+          "filename": "document.pdf",
+          "mime_type": "application/pdf",
+          "modification_date": null,
+          "page_count": 2,
+          "producer": null,
+          "sha256": "0976f87b27750ef5c3a2204a921aa06fe7c3fb56a927d6a24bf3e36ae81ef114",
+          "subject": null,
+          "title": null
+        },
+        "job_id": "golden",
+        "pipeline_version": "v1",
+        "profile": "balanced",
+        "queued_at": "<ts>"
+      },
+      "kwargs": {
+        "content_type": "application/json",
+        "delivery_mode": "PERSISTENT"
+      },
+      "routing_key": "entities"
+    },
+    {
+      "body": {
+        "document_metadata": {
+          "author": null,
+          "creation_date": null,
+          "creator": null,
+          "encrypted": false,
+          "exif_data": {},
+          "file_size_bytes": 868,
+          "filename": "document.pdf",
+          "mime_type": "application/pdf",
+          "modification_date": null,
+          "page_count": 2,
+          "producer": null,
+          "sha256": "0976f87b27750ef5c3a2204a921aa06fe7c3fb56a927d6a24bf3e36ae81ef114",
+          "subject": null,
+          "title": null
+        },
+        "job_id": "golden",
+        "pipeline_version": "v1",
+        "profile": "balanced",
+        "queued_at": "<ts>"
+      },
+      "kwargs": {
+        "content_type": "application/json",
+        "delivery_mode": "PERSISTENT"
+      },
+      "routing_key": "metadata"
+    }
+  ],
+  "writes": [
+    {
+      "key": "orchestrator:job:golden:status",
+      "op": "hset",
+      "value": [
+        "status",
+        "extracting"
+      ]
+    },
+    {
+      "key": "job:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.started",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "extraction"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:golden:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.started",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "extraction"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "orchestrator:job:golden:status",
+      "op": "hset",
+      "value": [
+        "status",
+        "processing"
+      ]
+    },
+    {
+      "key": "orchestrator:job:golden:text",
+      "op": "set",
+      "value": "sha256:deabdd9b1009903309cf2c0ee957451ca83d7fb2cbbdbe7a69f78f344e738f93"
+    },
+    {
+      "key": "orchestrator:job:golden:chunks",
+      "op": "set",
+      "value": "sha256:051072d29ec6ab27b701ef5b0173c3db0cd7f28fe014960b08bd41c7db49cebe"
+    },
+    {
+      "key": "orchestrator:job:golden:metadata:document",
+      "op": "set",
+      "value": {
+        "author": null,
+        "creation_date": null,
+        "creator": null,
+        "encrypted": false,
+        "exif_data": {},
+        "file_size_bytes": 868,
+        "filename": "document.pdf",
+        "mime_type": "application/pdf",
+        "modification_date": null,
+        "page_count": 2,
+        "producer": null,
+        "sha256": "0976f87b27750ef5c3a2204a921aa06fe7c3fb56a927d6a24bf3e36ae81ef114",
+        "subject": null,
+        "title": null
+      }
+    },
+    {
+      "key": "orchestrator:job:golden:metadata:text",
+      "op": "set",
+      "value": {
+        "language": "es"
+      }
+    },
+    {
+      "key": "orchestrator:job:golden:steps",
+      "op": "hset",
+      "value": [
+        "extraction",
+        "completed"
+      ]
+    },
+    {
+      "key": "job:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.completed",
+        "job_id": "golden",
+        "metadata": {
+          "chunks_ref": "sha256:051072d29ec6ab27b701ef5b0173c3db0cd7f28fe014960b08bd41c7db49cebe",
+          "stage": "extraction",
+          "text_ref": "sha256:deabdd9b1009903309cf2c0ee957451ca83d7fb2cbbdbe7a69f78f344e738f93"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:golden:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.completed",
+        "job_id": "golden",
+        "metadata": {
+          "chunks_ref": "sha256:051072d29ec6ab27b701ef5b0173c3db0cd7f28fe014960b08bd41c7db49cebe",
+          "stage": "extraction",
+          "text_ref": "sha256:deabdd9b1009903309cf2c0ee957451ca83d7fb2cbbdbe7a69f78f344e738f93"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "orchestrator:job:golden:source_classification",
+      "op": "set",
+      "value": {
+        "classifier_version": "1.0",
+        "confidence": 1.0,
+        "document_type": "notariado"
+      }
+    },
+    {
+      "key": "job:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.queued",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "embeddings"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:golden:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.queued",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "embeddings"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.queued",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "entities"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:golden:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.queued",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "entities"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.queued",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "metadata"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:golden:events",
+      "op": "publish",
+      "value": {
+        "event_type": "stage.queued",
+        "job_id": "golden",
+        "metadata": {
+          "stage": "metadata"
+        },
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:events",
+      "op": "publish",
+      "value": {
+        "event_type": "job_progress",
+        "job_id": "golden",
+        "progress": 25,
+        "status": "processing",
+        "timestamp": "<ts>"
+      }
+    },
+    {
+      "key": "job:golden:events",
+      "op": "publish",
+      "value": {
+        "event_type": "job_progress",
+        "job_id": "golden",
+        "progress": 25,
+        "status": "processing",
+        "timestamp": "<ts>"
+      }
+    }
+  ]
+}

@@ -9,3 +9,7 @@ tiktoken>=0.5.0
 langdetect>=1.0.9
 textstat>=1.0.0a1
 python-magic>=0.4.27
+
+# Vision fallback (Fase B: page render)
+pypdfium2>=4.30
+Pillow>=10.0

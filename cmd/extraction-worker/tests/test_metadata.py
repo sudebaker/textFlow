@@ -157,7 +157,11 @@ class TestExtractDocumentMetadata:
         exif_json = json.dumps(
             [{"Author": "Alice", "Title": "T", "PageCount": "3"}]
         )
-        with patch("worker.subprocess.run") as m_run:
+        # magic is a MagicMock stub in this env; pin from_file so mime_type
+        # is a plain str like the real exif path would produce.
+        with patch("worker.subprocess.run") as m_run, patch(
+            "worker.magic.from_file", return_value="application/pdf"
+        ):
             m_run.return_value = MagicMock(returncode=0, stdout=exif_json)
             md = asyncio.run(extract_document_metadata(str(f), "doc.pdf"))
 

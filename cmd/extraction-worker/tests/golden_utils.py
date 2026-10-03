@@ -111,25 +111,37 @@ def canonical_json(result: dict) -> str:
     return json.dumps(result, sort_keys=True, indent=2)
 
 
+_TIMESTAMP_FIELDS = {"queued_at", "timestamp"}
+
+
 def _norm_value(value):
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
+        # Fall through to the str logic: published/redis payloads are bytes
+        # that may BE JSON documents (job message, EventBus events).
+        return _norm_value(value.decode("utf-8", errors="replace"))
     if isinstance(value, dict):
         out = {}
         for k in sorted(value, key=str):
-            v = value[k]
             key = k.decode("utf-8") if isinstance(k, bytes) else k
-            out[key] = _norm_value(v)
+            # Timestamps never survive into the golden: queued_at (worker),
+            # timestamp (EventBus pub/sub payloads).
+            out[key] = "<ts>" if key in _TIMESTAMP_FIELDS else _norm_value(value[k])
         return out
     if isinstance(value, (list, tuple)):
         return [_norm_value(v) for v in value]
-    if isinstance(value, str) and value in _DETERMINISTIC_SENTINELS:
-        return _DETERMINISTIC_SENTINELS[value]
-    if isinstance(value, (int, float, bool)) or value is None:
+    if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
+        if value[:1] in ("{", "["):
+            # Nested JSON payload (published job message, EventBus pub/sub
+            # event): parse and recurse so inner **timestamp fields are
+            # neutralized too.
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return value
+            if isinstance(parsed, (dict, list)):
+                return _norm_value(parsed)
         return value
+    # Non-JSON-serializable (MagicMocks, sentinels from real I/O objects).
     return "<repr>"
-
-
-_DETERMINISTIC_SENTINELS = {"<ts>"}

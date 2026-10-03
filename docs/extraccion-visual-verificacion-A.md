@@ -205,6 +205,28 @@ curl -s -L https://raw.githubusercontent.com/vllm-project/vllm/<tag>/docs/models
 
 ---
 
+## A.3.1 — Backend de prueba (dev) — añidido a petición del usuario (2026-10-03)
+
+**COMMANDS RUN**
+
+```bash
+grep -E "LLM_URL|LLM_MODEL" deploy/docker/.env
+# LLM_URL=http://192.168.88.12:11434 · LLM_MODEL=ornith:latest
+timeout 5 curl -s http://192.168.88.12:11434/api/tags \
+  | python3 -c "import sys,json; print([m['name'] for m in json.load(sys.stdin)['models']])"
+# ['minicpm-v4.5:latest', 'minicpm5-2b-64k:latest', 'openbmb/minicpm5-2b:latest', ...20 modelos]
+```
+
+**FINDING** (medido): Ollama en `192.168.88.12:11434` (mac-mini) sirve **`minicpm-v4.5:latest`**, con API OpenAI-compatible `/v1/chat/completions` con imágenes (mismo patrón que `image-analyzer`). El resto del pipeline ya usa este host/endpoint como LLM de inferencias.
+
+**DECISION**: el servicio `vision-ocr` permanece backend-agnóstico. Las variables del plan se renombran para reflejarlo:
+- `VLLM_BASE_URL` → **`VISION_LLM_BASE_URL`** (default prod `http://vllm-minicpm:8000`; dev/bench de calidad → `http://192.168.88.12:11434`).
+- `VISION_MODEL` default prod `minicpm-v-4.5`; dev/bench → `minicpm-v4.5:latest` (ojO: id de Ollama ≠ id de vLLM; el env ya lo parametriza).
+- Añadir fila a `.env.example` en D.2 cambiando el nombre de las dos variables.
+- Aviso al benchmark (F.2): calidad/latencia sobre Ollama/CPU-Mac NO extrapola a VRAM/throughput de vLLM+GPU; comparar solo calidad de transcripción.
+
+---
+
 ## A.4 — Mecanismo de montaje air-gap (y staging spec para `models/minicpm-v-4.5/`)
 
 ### COMMANDS RUN

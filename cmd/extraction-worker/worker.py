@@ -65,6 +65,8 @@ from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.rabbitmq_async import declare_queue_async
 
+from vision.fallback import FallbackContext, run_quality_flow
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -1039,6 +1041,29 @@ class ExtractionWorker:
                     document_bytes_for_meta = result.get("document_bytes")
                 else:
                     raise ValueError("No document provided")
+
+                # Vision quality flow (spec extraccion-visual §8/§14): with
+                # VISION_OCR_ENABLED=false this only observes (log+metrics) and
+                # returns `text` unchanged — golden test enforces byte-identical.
+                def _get_document_bytes() -> bytes:
+                    if body.get("document_path"):
+                        with open(body["document_path"], "rb") as f:
+                            return f.read()
+                    if document_bytes_for_meta:
+                        return document_bytes_for_meta
+                    return base64.b64decode(body.get("document_base64", ""))
+
+                text = await run_quality_flow(FallbackContext(
+                    job_id=job_id,
+                    text=text,
+                    docling_document=result.get("docling_document", {}),
+                    page_count=result.get("docling_pages")
+                    if isinstance(result.get("docling_pages"), int)
+                    else None,
+                    get_document_bytes=_get_document_bytes,
+                    redis_client=self.redis_client,
+                    raise_if_cancelled=self._raise_if_cancelled,
+                ))
 
                 # Cooperative cancellation: abort before metadata (expensive exiftool)
                 self._raise_if_cancelled(job_id)

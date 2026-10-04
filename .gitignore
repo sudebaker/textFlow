@@ -69,3 +69,6 @@ docling_extraction_result.json
 # Benchmark corpus (contains real documents; never commit)
 scripts/bench/corpus/
 scripts/bench/corpus_chunks.json
+
+# Benchmark corpus (user-provided local docs; never commit)
+/corpus/

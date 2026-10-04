@@ -37,6 +37,8 @@ import asyncio  # noqa: E402
 
 import pytest  # noqa: E402
 
+from unittest.mock import AsyncMock  # noqa: E402
+
 import worker  # noqa: E402
 from fixtures import build_pdf  # noqa: E402
 from golden_utils import FakeExchange, FakeRedis, FakeStore  # noqa: E402
@@ -293,6 +295,354 @@ class TestFlagEarlyReturn:
             ctx, _, _ = make_ctx(settings=settings)
             assert asyncio.run(fb.run_quality_flow(ctx)) == DENSE_TEXT
         gate.labels.assert_called_once_with(decision="pass")
+
+
+# --- extract_page_texts (Task E.2) --------------------------------------------
+
+
+def _doc_json(texts_items, num_pages=3):
+    """docling_response['document']['json_content']-shaped dict (A.1 shape)."""
+    return {
+        "texts": [
+            {"text": t, "prov": [{"page_no": p}]} for (t, p) in texts_items
+        ],
+        "pages": {str(i): {"page_no": i, "image": None} for i in range(1, num_pages + 1)},
+    }
+
+
+class TestExtractPageTexts:
+    def test_groups_by_prov_page_no_joining_newlines(self):
+        from vision.fallback import extract_page_texts
+
+        doc = {
+            "texts": [
+                {"text": "uno", "prov": [{"page_no": 1}]},
+                {"text": "dos", "prov": [{"page_no": 2}]},
+                {"text": "uno-b", "prov": [{"page_no": 1}]},
+            ]
+        }
+        pages = extract_page_texts(doc, 3)
+        assert pages[0] == "uno\nuno-b"
+        assert pages[1] == "dos"
+        # Page with no items -> None (page gate marks it suspect)
+        assert pages[2] is None
+
+    def test_none_shape_returns_all_none(self):
+        from vision.fallback import extract_page_texts
+
+        # Unknown shape (no texts anywhere) -> all-None branch
+        pages = extract_page_texts({}, 3)
+        assert pages == [None, None, None]
+
+    def test_none_mode_returns_all_none(self, monkeypatch):
+        import vision.fallback as fb
+
+        monkeypatch.setattr(fb, "PAGE_TEXT_MODE", "none")
+        doc = {"texts": [{"text": "x", "prov": [{"page_no": 1}]}]}
+        assert fb.extract_page_texts(doc, 2) == [None, None]
+
+    def test_text_prov_short_page_becomes_none(self):
+        from vision.fallback import extract_page_texts
+
+        doc = {"texts": [{"text": "   ", "prov": [{"page_no": 1}]}]}
+        assert extract_page_texts(doc, 1) == [None]
+
+    def test_out_of_range_page_no_ignored(self):
+        from vision.fallback import extract_page_texts
+
+        doc = {"texts": [{"text": "x", "prov": [{"page_no": 99}]}]}
+        assert extract_page_texts(doc, 2) == [None, None]
+
+    def test_json_content_string_unwrapped(self):
+        from vision.fallback import extract_page_texts
+
+        # json_content may arrive as a JSON string (A.1 raw response) — must
+        # be unwrapped to reach texts[].
+        jc = json.dumps({"texts": [{"text": "hola", "prov": [{"page_no": 1}]}]})
+        doc = {"json_content": jc}
+        assert extract_page_texts(doc, 1) == ["hola"]
+
+    def test_json_content_dict_unwrapped(self):
+        from vision.fallback import extract_page_texts
+
+        doc = {"json_content": {"texts": [{"text": "p1", "prov": [{"page_no": 1}]}]}}
+        assert extract_page_texts(doc, 1) == ["p1"]
+
+    def test_json_content_priority_over_plain_texts(self):
+        from vision.fallback import extract_page_texts
+
+        doc = {
+            "texts": [{"text": "plain", "prov": [{"page_no": 1}]}],
+            "json_content": {"texts": [{"text": "json", "prov": [{"page_no": 1}]}]},
+        }
+        assert extract_page_texts(doc, 1) == ["json"]
+
+
+# --- slow path (Task E.2) ------------------------------------------------------
+
+# Doc-level suspicion requires chars/page < min_chars_per_page. Slow-path tests
+# use min_chars_per_page=150; per-page dense texts are >=150 chars.
+SLOW_MIN_CHARS = 150
+
+
+def _slow_settings(**overrides):
+    return make_settings(ocr_enabled=True, min_chars_per_page=SLOW_MIN_CHARS, **overrides)
+
+
+def make_suspect_doc():
+    """3-page doc: page 2 thin-text (suspect), pages 1/3 dense (>=150 chars)."""
+    p1 = "(Pagina uno con texto denso y suficiente) " * 4  # ~168 chars
+    p3 = "(Pagina tres con contenido abundante) " * 4
+    p2 = "thin"
+    return _doc_json([(p1, 1), (p2, 2), (p3, 3)], num_pages=3)
+
+
+# Realistic docling md blob for a suspect 3-page doc: all page text present in
+# markdown (as the real worker sees it), page 2 with only placeholder lines.
+SUSPECT_BLOB = (
+    "(Pagina uno con texto denso y suficiente) " * 4
+    + "\n\n![](img1.png)\n![](img2.png)\n"
+    "The scanned manuscript page shows handwritten notes.\n\n"
+    + "(Pagina tres con contenido abundante) " * 4
+)
+SUSPECT_TEXT = SUSPECT_BLOB
+
+
+class SlowPathCase:
+    """Fixture bundle for slow-path tests: patched client + renderer."""
+
+    def __init__(self, monkeypatch, vision_text="VISION PAGE 2 " + "x" * 120):
+        import vision.fallback as fb
+
+        self.fb = fb
+        monkeypatch.setattr(fb, "render_page_async", AsyncMock(return_value=b"\x89PNG"))
+
+        self.client = MagicMock()
+        self.client.transcribe = AsyncMock(return_value=vision_text)
+        monkeypatch.setattr(fb, "VisionOCRClient", MagicMock(return_value=self.client))
+
+    def client_calls(self):
+        return self.client.transcribe
+
+
+def make_slow_ctx(**overrides):
+    defaults = dict(
+        job_id=JOB_ID,
+        text=SUSPECT_TEXT,
+        docling_document=make_suspect_doc(),
+        page_count=3,
+        get_document_bytes=lambda: build_pdf([DENSE_TEXT, SUSPECT_TEXT, DENSE_TEXT]),
+        redis_client=FakeRedis(),
+        raise_if_cancelled=lambda job_id: None,
+    )
+    defaults.update(overrides)
+    settings = defaults.pop("settings", None) or _slow_settings()
+    from vision.fallback import FallbackContext
+
+    ctx = FallbackContext(settings=settings, **defaults)
+    return ctx
+
+
+def _provenance_report(redis):
+    """Parse the JSON extraction_provenance report from the FakeRedis writes."""
+    prov_writes = [w for w in redis.writes if w[0] == "set" and ":extraction_provenance" in w[1]]
+    assert len(prov_writes) == 1, f"expected exactly 1 provenance write, got {prov_writes}"
+    return json.loads(prov_writes[0][2])
+
+
+async def _run_rf(ctx):
+    """Import-time helper: run_quality_flow is fetched fresh (patchable)."""
+    import vision.fallback as fb
+
+    return await fb.run_quality_flow(ctx)
+
+
+class TestSlowPath:
+    def test_pass_doc_never_enters_slow_path(self, monkeypatch):
+        case = SlowPathCase(monkeypatch)
+        redis = FakeRedis()
+        out = asyncio.run(
+            case.fb.run_quality_flow(
+                make_slow_ctx(
+                    text=DENSE_TEXT,
+                    docling_document={},
+                    page_count=None,
+                    redis_client=redis,
+                    settings=make_settings(ocr_enabled=True),
+                )
+            )
+        )
+        assert out == DENSE_TEXT  # exact, byte-identical
+        case.client_calls().assert_not_called()
+        case.fb.render_page_async.assert_not_called()
+        assert redis.writes == []
+
+    def test_suspect_vision_replaces_thin_page(self, monkeypatch):
+        case = SlowPathCase(monkeypatch, vision_text="V " * 60)
+        ctx = make_slow_ctx()
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        pages = out.split("\n\n")
+        assert len(pages) == 3
+        vision_page = "V " * 60
+        assert pages[1] == vision_page  # vision text (full string, not stripped)
+        assert pages[0] != pages[1]
+        # page 1 and 3 keep docling text unmodified
+        assert "Pagina uno" in pages[0] and "Pagina tres" in pages[2]
+        # only ONE vision call: only page 2 is suspect
+        assert case.client_calls().await_count == 1
+
+    def test_vision_http_error_keeps_docling_page(self, monkeypatch):
+        case = SlowPathCase(monkeypatch)
+        from vision.client import VisionHTTPError
+
+        case.client.transcribe = AsyncMock(side_effect=VisionHTTPError("HTTP 500: boom"))
+        ctx = make_slow_ctx()
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        # No vision page succeeded (any_vision=False): contract is ctx.text
+        # byte-exact — all 3 pages still present via the docling blob.
+        assert out == ctx.text
+        assert len(out.split("\n\n")) == 3
+        # provenance signals the error
+        prov = _provenance_report(ctx.redis_client)
+        assert prov["pages"][1]["backend"] == "vision_error"
+        assert prov["pages"][1]["status"] == "vision_error"
+        assert "HTTP 500" in prov["pages"][1]["reason"]
+
+    def test_vision_saturated_keeps_docling_page(self, monkeypatch):
+        case = SlowPathCase(monkeypatch)
+        from vision.client import VisionSaturatedError
+
+        case.client.transcribe = AsyncMock(side_effect=VisionSaturatedError("saturated"))
+        ctx = make_slow_ctx()
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        assert out == ctx.text  # byte-exact: page keeps docling text
+        prov = _provenance_report(ctx.redis_client)
+        assert prov["pages"][1]["backend"] == "vision_error"
+
+    def test_provenance_written_with_full_report(self, monkeypatch):
+        case = SlowPathCase(monkeypatch, vision_text="V " * 60)
+        ctx = make_slow_ctx()
+        asyncio.run(case.fb.run_quality_flow(ctx))
+        prov = _provenance_report(ctx.redis_client)
+        assert prov["gate"]["decision"] == "suspect"
+        assert [p["backend"] for p in prov["pages"]] == [
+            "docling",
+            "vision",
+            "docling",
+        ]
+        assert [p["status"] for p in prov["pages"]] == ["pass", "fallback", "pass"]
+        assert prov["vision_pages"] == 1
+        assert prov["fallback_whole_document"] is False
+        assert "duration_s" in prov
+
+    def test_budget_pages_exhausted_degrades(self, monkeypatch):
+        # max_pages=1: page 1 is... dense (pass). Put the thin page FIRST:
+        # with max_pages=1 only ONE page gets visioned; the other suspect
+        # pages degrade with docling text kept.
+        p1 = "thin page one"  # suspect
+        p2 = "Pagina dos densa " * 20
+        p3 = "thin page three"  # suspect -> degraded (budget exhausted)
+        doc = _doc_json([(p1, 1), (p2, 2), (p3, 3)], num_pages=3)
+        case = SlowPathCase(monkeypatch, vision_text="VISION TEXT " * 10)
+        ctx = make_slow_ctx(
+            docling_document=doc,
+            settings=_slow_settings(max_pages_per_document=1),
+        )
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        pages = out.split("\n\n")
+        assert pages[0].startswith("VISION TEXT")  # visioned
+        assert pages[1].startswith("Pagina dos")  # dense: pass
+        assert pages[2] == "thin page three"  # degraded: docling kept
+        assert case.client_calls().await_count == 1
+        prov = _provenance_report(ctx.redis_client)
+        assert [p["backend"] for p in prov["pages"]] == [
+            "vision",
+            "docling",
+            "docling",
+        ]
+        assert prov["pages"][2]["status"] == "degraded"
+        assert prov["pages"][2]["reason"] == "budget_exhausted"
+
+    def test_budget_seconds_zero_degrades_all(self, monkeypatch):
+        case = SlowPathCase(monkeypatch, vision_text="V " * 60)
+        ctx = make_slow_ctx(
+            settings=_slow_settings(max_seconds_per_document=0.0)
+        )
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        # No vision happened (budget exhausted before any render): the output
+        # contract is ctx.text byte-exact, NOT re-assembled page text.
+        assert out == SUSPECT_TEXT
+        assert out == ctx.text
+        assert case.client_calls().await_count == 0
+        assert case.fb.render_page_async.await_count == 0
+        # The budget gate NEVER blocks provenance: degraded pages are still
+        # reported (plan E.2: provenance when vision replaces/degrades).
+        prov = _provenance_report(ctx.redis_client)
+        assert [p["backend"] for p in prov["pages"]] == [
+            "docling",
+            "docling",
+            "docling",
+        ]
+        assert prov["pages"][1]["status"] == "degraded"
+        assert prov["pages"][1]["reason"] == "budget_exhausted"
+
+    def test_all_vision_errors_falls_back_to_whole_document(self, monkeypatch):
+        case = SlowPathCase(monkeypatch)
+        from vision.client import VisionHTTPError
+
+        case.client.transcribe = AsyncMock(side_effect=VisionHTTPError("kaboom"))
+        # Whole-document fallback (§16): assembled page text ends up EMPTY.
+        # Every suspect page keeps only its (empty/None) docling page text,
+        # so the join is "" -> the intact docling blob is the last defense.
+        doc = _doc_json([(" ", 1), (" ", 2), (" ", 3)], num_pages=3)  # blank-only pages -> None
+        ctx = make_slow_ctx(docling_document=doc)
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        assert out == SUSPECT_TEXT  # intact docling blob returned...
+        prov = _provenance_report(ctx.redis_client)
+        assert prov["fallback_whole_document"] is True
+        case.fb.render_page_async.assert_awaited()  # vision WAS attempted
+
+    def test_non_pdf_bytes_returns_text_without_vision(self, monkeypatch):
+        case = SlowPathCase(monkeypatch)
+
+        class Bom(SlowPathCase):
+            pass
+
+        ctx = make_slow_ctx(get_document_bytes=lambda: b"XXYY-not-a-pdf")
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        assert out == SUSPECT_TEXT
+        case.client_calls().assert_not_called()
+        case.fb.render_page_async.assert_not_called()
+        assert ctx.redis_client.writes == []
+
+    def test_job_cancelled_error_propagates(self, monkeypatch):
+        SlowPathCase(monkeypatch)
+        calls = {"n": 0}
+
+        def raise_after_first(job_id):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                from pkg.shared.exceptions import JobCancelledError
+
+                raise JobCancelledError("cancelled")
+
+        ctx = make_slow_ctx(raise_if_cancelled=raise_after_first)
+        from pkg.shared.exceptions import JobCancelledError
+
+        with pytest.raises(JobCancelledError):
+            import vision.fallback as fb
+
+            asyncio.run(fb.run_quality_flow(ctx))
+        assert calls["n"] >= 2  # raised at start + between pages
+
+    def test_ocr_disabled_suspect_fast_return(self, monkeypatch):
+        case = SlowPathCase(monkeypatch)
+        ctx = make_slow_ctx(settings=make_settings(ocr_enabled=False))
+        out = asyncio.run(case.fb.run_quality_flow(ctx))
+        assert out == SUSPECT_TEXT
+        case.client_calls().assert_not_called()
+        case.fb.render_page_async.assert_not_called()
+        assert ctx.redis_client.writes == []
 
 
 # --- worker hook integration (Task C.3 hook) ---------------------------------

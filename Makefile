@@ -96,9 +96,26 @@ test-coverage: ## Run tests with coverage
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
-test-python: ## Run all Python tests
+test-python: ## Run all Python tests (per-dir pytest loop, see comment)
 	@echo -e "${YELLOW}Running Python tests...${NC}"
-	pytest cmd/*/tests deploy/docker/vision-ocr/tests -v
+	# Per-dir pytest loop. WHY NOT one invocation with many dirs: every tests dir
+	# is named `tests` (some with __init__.py, some without), so a single pytest
+	# run across them binds the first dir's `tests.conftest` and every later dir
+	# fails at conftest load with pytest ImportPathMismatchError
+	# ('tests.conftest', audio-worker/conftest bound for completion-worker/...).
+	# One pytest process per dir = each dir gets its own conftest environment.
+	# Deliberately NOT --import-mode=importlib (verified, harmful on pytest
+	# 9.1): importlib mode collects parents as namespace packages, shadowing the
+	# stdlib `cmd` module with this repo's cmd/ directory, so pytest's own
+	# `import pdb` (class Pdb(bdb.Bdb, cmd.Cmd)) dies with INTERNALERROR on every
+	# dir under cmd/, and the plain `from fixtures import build_pdf` sys.path
+	# imports in extraction tests no longer resolve. Legacy mode keeps both
+	# working. A red dir aborts the loop loudly (no masking); host dep gaps
+	# (pydantic_settings, aio_pika, torch) surface as visible per-dir failures.
+	@for d in cmd/*/tests deploy/docker/vision-ocr/tests; do \
+		echo -e "${YELLOW}--- $$d ---${NC}"; \
+		pytest -v $$d || exit 1; \
+	done
 
 ***REMOVED***=================
 # Quality

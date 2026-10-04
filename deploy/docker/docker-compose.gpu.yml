@@ -31,3 +31,36 @@ services:
     environment:
       - DOCLING_DEVICE=cuda
       - NVIDIA_VISIBLE_DEVICES=0
+
+  # Vision OCR serving (vLLM): MiniCPM-V 4.5. Alternative without GPU hardware:
+  # point VISION_LLM_BASE_URL at any external OpenAI-compatible backend (e.g.
+  # the dev Ollama on the mac-mini serving minicpm-v4.5:latest) and skip this
+  # service entirely.
+  # Pin exact: serve-test real en D.3/§21 (docs: soporte MiniCPMV >= v0.10.2)
+  vllm-minicpm:
+    image: vllm/vllm-openai:0.10.2
+    runtime: nvidia
+    volumes:
+    - "${MODELS_PATH:?MODELS_PATH is not set}/minicpm-v-4.5:/models/minicpm-v-4.5:ro"
+    command: >
+      vllm serve /models/minicpm-v-4.5
+      --served-model-name minicpm-v-4.5
+      --max-model-len 4096
+      --limit-mm-per-prompt image=1
+      --gpu-memory-utilization 0.85
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=0
+    networks:
+    - docker_default
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8000/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped

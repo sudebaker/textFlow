@@ -46,6 +46,14 @@ MODEL_REQUIRED_FILE_GROUPS = {
         ("tokenizer.json", "vocabulary.txt", "vocab.json"),
         ("preprocessor_config.json",),
     ],
+    "openbmb/MiniCPM-V-4_5": [
+        ("config.json",),
+        ("tokenizer.json", "tokenizer_config.json"),
+        ("preprocessor_config.json", "processor_config.json", "chat_template.json"),
+        ("model.safetensors.index.json",),
+        ("model-00001-of-00004.safetensors", "model.safetensors",
+         "model-00001-of-00002.safetensors", "model-00001-of-00003.safetensors"),
+    ],
 }
 
 # Check dependencies
@@ -366,6 +374,11 @@ def main():
         {
             "repo_id": "Systran/faster-whisper-large-v2",
             "type": "Whisper large-v2 (audio)",
+            "critical": False,
+        },
+        {
+            "repo_id": "openbmb/MiniCPM-V-4_5",
+            "type": "MiniCPM-V 4.5 (vision OCR)",
             "critical": False,
         },
     ]

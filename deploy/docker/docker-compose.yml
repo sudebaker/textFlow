@@ -645,6 +645,41 @@ services:
     restart: unless-stopped
     depends_on:
     - redis
+  vision-ocr:
+    build:
+      context: ./vision-ocr
+      dockerfile: Dockerfile
+    container_name: textflow-vision-ocr
+    # docker_default lets the container reach the external vision LLM backend
+    # (vllm-minicpm via the GPU overlay, or the dev Ollama on the mac-mini).
+    networks:
+    - backend
+    - datastore
+    - docker_default
+    environment:
+    # VISION_MODEL maps from the .env-level VISION_LLM_MODEL name: dev override
+    # is minicpm-v4.5:latest (Ollama mac-mini), prod default minicpm-v-4.5 (vLLM).
+    - VISION_LLM_BASE_URL=${VISION_LLM_BASE_URL:-http://vllm-minicpm:8000}
+    - VISION_MODEL=${VISION_LLM_MODEL:-minicpm-v-4.5}
+    - VISION_TIMEOUT=${VISION_TIMEOUT:-180}
+    - VISION_MAX_CONCURRENCY=${VISION_MAX_CONCURRENCY:-2}
+    - CACHE_TTL_SECONDS=${VISION_CACHE_TTL_SECONDS:-604800}
+    - MAX_IMAGE_DIM=0
+    - REDIS_URL=${REDIS_URL}
+    - PORT=8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    depends_on:
+    - redis
   whisper:
     build:
       context: ./whisper

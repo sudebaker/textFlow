@@ -241,6 +241,7 @@ Mount `-v ../../models:/models` with:
 - `models/deberta-v3-small/` → GLiNER backbone (config.json, pytorch_model.bin, spm.model, tokenizer_config.json)
 - `models/gliner-small-v2.1/` → GLiNER extractor (gliner_config.json, pytorch_model.bin)
 - `models/modern-gliner/` → embeddings-worker GLiNER variant
+- `models/minicpm-v-4.5/` → vision-ocr vLLM serving (openbmb/MiniCPM-V-4_5, opcional: dev vía Ollama en el mac-mini)
 
 ### Docker Build Rules
 

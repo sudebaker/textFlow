@@ -97,6 +97,15 @@ scrape_configs:
           service: 'extraction-worker'
           component: 'worker'
 
+  # Vision OCR service (transcription serving)
+  - job_name: 'vision-ocr'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['vision-ocr:9090']
+        labels:
+          service: 'vision-ocr'
+          component: 'serving'
+
   # Image worker (Python)
   - job_name: 'image-worker'
     metrics_path: '/metrics'

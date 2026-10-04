@@ -104,6 +104,17 @@ Notas:
 - Servicio: `cmd/inference-worker` consume runtime OpenAI-compatible (`LLM_URL=http://vllm:8000/v1`, `LLM_MODEL`, `LLM_TIMEOUT`, `INFERENCE_MAX_CONCURRENCY`, `INFERENCE_WORKER_REPLICAS`).
 - Air-gapped igual que (6): externo, no en `models/`. Documentar `vLLM` vs `Ollama` por separado (§19) y cómo provisionar cada uno offline. Fase A: *externo al bundle*.
 
+### 8. openbmb/MiniCPM-V-4_5 (vision OCR)
+
+- Repositorio: `https://huggingface.co/openbmb/MiniCPM-V-4_5`.
+- Ruta host / montaje: `models/minicpm-v-4.5/` → `vllm-minicpm` monta `${MODELS_PATH}/minicpm-v-4.5:/models/minicpm-v-4.5:ro` (`deploy/docker/docker-compose.gpu.yml`).
+- Formato: snapshot HF plano (no cache hub): `config.json`, `tokenizer.json`, `tokenizer_config.json`, `preprocessor_config.json`, `model.safetensors.index.json`, shards `model-00001..00004-of-00004.safetensors` (4 shards, ~17.4 GB, BF16 ≈ 8.7B params, verificado en el repo HF). Existen variantes AWQ cuantizadas de la comunidad como alternativa con menos VRAM; el bundle usa la BF16 original.
+- Descarga: `hf download openbmb/MiniCPM-V-4_5 --local-dir models/minicpm-v-4.5/` (o `huggingface-cli download` en máquinas sin `hf`), desde la máquina online de preparación.
+- `deploy/docker/download_models_offline.py` lista la entrada (`critical: False`) para descarga/validación con snapshot_download.
+- Serving **prod (GPU)**: `vllm/vllm-openai:0.10.2` (pin validado en §21, soporte MiniCPMV >= v0.10.2) vía `docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.gpu.yml up -d vllm-minicpm`; el backend OpenAI-compatible queda en `http://vllm-minicpm:8000/v1`.
+- Serving **dev/benchmark (sin GPU)**: Ollama del mac-mini `192.168.88.12:11434`, modelo `minicpm-v4.5:latest` (`ollama pull minicpm-v4.5`); en `.env`: `VISION_LLM_BASE_URL=http://192.168.88.12:11434`, `VISION_LLM_MODEL=minicpm-v4.5:latest`.
+- Consumidor: `vision-ocr` (`deploy/docker/vision-ocr`, `POST /transcribe`) vía `VISION_LLM_BASE_URL`/`VISION_LLM_MODEL`. `critical: False` hasta validar VRAM/latencia en serving real (Fase D/D.3) — en dev el modelo vive fuera del bundle (passthrough Ollama).
+
 ## Procedimientos canónicos
 
 ### Online prep machine

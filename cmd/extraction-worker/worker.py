@@ -1087,12 +1087,13 @@ class ExtractionWorker:
                         return document_bytes_for_meta
                     return base64.b64decode(body.get("document_base64", ""))
 
+                docling_pages_result = (result.get("metadata") or {}).get("docling_pages")
                 text = await run_quality_flow(FallbackContext(
                     job_id=job_id,
                     text=text,
                     docling_document=result.get("docling_document", {}),
-                    page_count=result.get("docling_pages")
-                    if isinstance(result.get("docling_pages"), int)
+                    page_count=docling_pages_result
+                    if isinstance(docling_pages_result, int)
                     else None,
                     get_document_bytes=_get_document_bytes,
                     redis_client=self.redis_client,

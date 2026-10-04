@@ -115,6 +115,24 @@ except Exception:
     tokenizer = None
 
 
+def _docling_page_count(doc: dict):
+    """Page count from a docling response `document` (Fase A finding A.1).
+
+    docling-serve latest does NOT populate `document.pages` without
+    to_formats=json; with it, `document.json_content.pages` is a dict indexed
+    by page_no. Prefers json_content.pages, falls back to legacy
+    `document.pages` (list of page entries) for older responses.
+    """
+    jc = doc.get("json_content") if isinstance(doc, dict) else None
+    if isinstance(jc, dict) and jc.get("pages"):
+        try:
+            return len(jc["pages"])
+        except TypeError:
+            pass
+    legacy = doc.get("pages") if isinstance(doc, dict) else None
+    return legacy and len(legacy)
+
+
 def compute_file_hash(file_bytes: bytes) -> str:
     """Compute SHA-256 hash digest of raw file bytes.
 
@@ -693,6 +711,9 @@ class ExtractionWorker:
             )
             form_data.add_field("do_ocr", str(DOCLING_DO_OCR).lower())
             form_data.add_field("ocr_engine", DOCLING_OCR_ENGINE)
+            # json content enables per-page provenance (Fase A finding A.1)
+            form_data.add_field("to_formats", "md")
+            form_data.add_field("to_formats", "json")
             # Use placeholder instead of embedded base64 to keep output size
             # manageable. Embedded images inflate markdown to tens of MB,
             # producing thousands of unnecessary chunks downstream.
@@ -788,11 +809,15 @@ class ExtractionWorker:
             text = doc.get("md_content") or doc.get("text_content") or ""
 
             metadata = {
-                "docling_pages": doc.get("pages") and len(doc.get("pages", [])),
+                "docling_pages": _docling_page_count(doc),
                 "extraction_method": "base64",
             }
 
-            return {"text": text, "metadata": metadata}
+            return {
+                "text": text,
+                "metadata": metadata,
+                "docling_document": doc,
+            }
 
         except Exception as e:
             import traceback
@@ -833,11 +858,15 @@ class ExtractionWorker:
             text = doc.get("md_content") or doc.get("text_content") or ""
 
             metadata = {
-                "docling_pages": doc.get("pages") and len(doc.get("pages", [])),
+                "docling_pages": _docling_page_count(doc),
                 "extraction_method": "file",
             }
 
-            return {"text": text, "metadata": metadata}
+            return {
+                "text": text,
+                "metadata": metadata,
+                "docling_document": doc,
+            }
 
         except Exception as e:
             import traceback
@@ -917,11 +946,16 @@ class ExtractionWorker:
             text = doc.get("md_content") or doc.get("text_content") or ""
 
             metadata = {
-                "docling_pages": doc.get("pages") and len(doc.get("pages", [])),
+                "docling_pages": _docling_page_count(doc),
                 "extraction_method": "url",
             }
 
-            return {"text": text, "metadata": metadata, "document_bytes": document_bytes}
+            return {
+                "text": text,
+                "metadata": metadata,
+                "document_bytes": document_bytes,
+                "docling_document": doc,
+            }
 
         except Exception as e:
             import traceback

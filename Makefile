@@ -98,7 +98,7 @@ test-coverage: ## Run tests with coverage
 
 test-python: ## Run all Python tests
 	@echo -e "${YELLOW}Running Python tests...${NC}"
-	pytest cmd/*/tests -v
+	pytest cmd/*/tests deploy/docker/vision-ocr/tests -v
 
 ***REMOVED***=================
 # Quality

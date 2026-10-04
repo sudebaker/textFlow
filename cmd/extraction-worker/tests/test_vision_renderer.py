@@ -8,15 +8,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest  # noqa: E402
 
-# The golden test (alphabetically earlier, once the whole tests dir runs)
-# unconditionally stubs pypdfium2/PIL/PIL.Image as MagicMocks in sys.modules.
-# Restore the real modules so these tests exercise the actual renderer.
-# Standalone runs are unaffected (KeyError pass-through).
-for _mod in ("pypdfium2", "PIL", "PIL.Image"):
-    sys.modules.pop(_mod, None)
+# Other test files stub pypdfium2/PIL/PIL.Image as MagicMocks in sys.modules AT
+# COLLECTION (module import order: this file may be imported BEFORE a later
+# stub-block file re-registers the stubs). A module-scoped autouse fixture
+# restores the REAL modules at RUN time — after every collection import — so
+# these tests always exercise the actual renderer. Standalone runs: KeyError
+# pass-through (pop).
+_RENDERER_MODULE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-pytest.importorskip("pypdfium2")
-pytest.importorskip("PIL")
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_real_renderer_modules():
+    for _mod in ("pypdfium2", "PIL", "PIL.Image"):
+        sys.modules.pop(_mod, None)
+    pytest.importorskip("pypdfium2")
+    pytest.importorskip("PIL")
+    sys.modules.pop("vision.renderer", None)  # re-import fresh (lazy deps resolve real)
+    import vision.renderer  # noqa: F401 — now lazily bound to real pypdfium2/PIL
+
 
 from vision.renderer import count_pages, render_page, render_page_async  # noqa: E402
 from fixtures import build_pdf  # noqa: E402

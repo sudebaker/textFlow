@@ -42,7 +42,7 @@ vision_inference_seconds = Histogram("vision_ocr_inference_seconds", "LLM call (
 vision_in_flight = Gauge("vision_ocr_in_flight", "In-flight transcriptions")
 
 
-def _call_vllm(image_bytes: bytes, mime: str) -> str:         # OpenAI-compatible (§9)
+def _call_vllm(image_bytes: bytes, mime: str) -> "tuple[str, dict | None]":  # OpenAI-compatible (§9)
     b64 = base64.b64encode(image_bytes).decode()
     payload = {"model": VISION_MODEL, "temperature": 0, "stream": False,
                "messages": [{"role": "user", "content": [
@@ -53,7 +53,10 @@ def _call_vllm(image_bytes: bytes, mime: str) -> str:         # OpenAI-compatibl
         try:
             r = requests.post(f"{VISION_LLM_BASE_URL}/v1/chat/completions", json=payload, timeout=VISION_TIMEOUT)
             r.raise_for_status()
-            return (r.json()["choices"][0]["message"]["content"] or "").strip()
+            body = r.json()
+            content = (body["choices"][0]["message"]["content"] or "").strip()
+            usage = body.get("usage")
+            return content, (usage if isinstance(usage, dict) else None)
         except Exception as e:
             last = e; logger.warning("vLLM attempt %d failed: %s", attempt + 1, e)
             time.sleep(min(2 ** attempt, 30))
@@ -66,11 +69,15 @@ async def transcribe(file: UploadFile = File(...), dpi: int = Form(0)) -> dict:
     data = await file.read()
     if not data: raise HTTPException(400, "Empty file")
     mime = file.content_type or "image/png"
+    digest = hashlib.sha256(data).hexdigest()
     # cache: prompt-aware key (image-analyzer P1 fix pattern, spec §12)
-    cache_key = f"vision:{hashlib.sha256(f'{hashlib.sha256(data).hexdigest()}:{TRANSCRIBE_PROMPT}:{VISION_MODEL}:{MAX_IMAGE_DIM}'.encode()).hexdigest()}"
+    cache_key = f"vision:{hashlib.sha256(f'{digest}:{TRANSCRIBE_PROMPT}:{VISION_MODEL}:{MAX_IMAGE_DIM}'.encode()).hexdigest()}"
     if (cached := _redis.get(cache_key)):
         vision_requests_total.labels(outcome="cache_hit").inc()
-        return json.loads(cached)
+        logger.info("cache hit %s", digest)
+        payload = json.loads(cached)
+        payload["cached"] = True     # serve-time semantics: was this response cached
+        return payload
     try:    # spec §20: saturated -> 503 + Retry-After (client treats as page error)
         await asyncio.wait_for(_sem.acquire(), timeout=QUEUE_WAIT_SECONDS)
     except Exception:
@@ -79,9 +86,9 @@ async def transcribe(file: UploadFile = File(...), dpi: int = Form(0)) -> dict:
     vision_in_flight.inc(); t0 = time.monotonic()
     try:
         with vision_inference_seconds.time():
-            text = _call_vllm(data, mime)
+            text, usage = _call_vllm(data, mime)
         result = {"extracted_text": text, "model": VISION_MODEL, "cached": False,
-                  "dpi": dpi, "elapsed_ms": int((time.monotonic() - t0) * 1000)}
+                  "dpi": dpi, "elapsed_ms": int((time.monotonic() - t0) * 1000), "usage": usage}
         try: _redis.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(result))
         except Exception as e: logger.warning("cache write failed: %s", e)
         vision_requests_total.labels(outcome="ok").inc()

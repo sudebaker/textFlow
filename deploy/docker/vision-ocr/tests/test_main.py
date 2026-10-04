@@ -62,14 +62,18 @@ class FakeLLMResponse:
 
     status_code = 200
 
-    def __init__(self, content="  transcribed text  "):
+    def __init__(self, content="  transcribed text  ", usage=None):
         self._content = content
+        self._usage = usage
 
     def raise_for_status(self):
         pass
 
     def json(self):
-        return {"choices": [{"message": {"content": self._content}}]}
+        body = {"choices": [{"message": {"content": self._content}}]}
+        if self._usage is not None:
+            body["usage"] = self._usage
+        return body
 
 
 @pytest.fixture
@@ -104,7 +108,8 @@ def post_transcribe():
 
 def test_transcribe_happy_path_returns_text_and_caches(fake_redis, llm_calls):
     calls, record, set_response = llm_calls
-    posts = lambda url, json=None, timeout=None: FakeLLMResponse()
+    posts = lambda url, json=None, timeout=None: FakeLLMResponse(
+        usage={"prompt_tokens": 12, "completion_tokens": 34, "total_tokens": 46})
     set_response(record(posts))
 
     resp = post_transcribe()
@@ -116,6 +121,7 @@ def test_transcribe_happy_path_returns_text_and_caches(fake_redis, llm_calls):
     assert body["model"] == "test-vision-model"
     assert body["dpi"] == 0
     assert isinstance(body["elapsed_ms"], int)
+    assert body["usage"] == {"prompt_tokens": 12, "completion_tokens": 34, "total_tokens": 46}
     # cache miss -> one LLM call + best-effort cache SET
     assert len(calls) == 1
     url, payload, timeout = calls[0]
@@ -131,6 +137,7 @@ def test_transcribe_happy_path_returns_text_and_caches(fake_redis, llm_calls):
     assert cached_key.startswith("vision:")
     stored = json.loads(fake_redis.store[cached_key])
     assert stored["extracted_text"] == "transcribed text"
+    assert stored["usage"] == {"prompt_tokens": 12, "completion_tokens": 34, "total_tokens": 46}
 
 
 def test_transcribe_second_call_hits_cache_without_llm(fake_redis, llm_calls):
@@ -143,7 +150,12 @@ def test_transcribe_second_call_hits_cache_without_llm(fake_redis, llm_calls):
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert second.json() == first.json()
+    # served-on-hit flag semantics: "was this response L1/L2-cached" at serve
+    # time. The stored payload keeps cached:false from the first write, but a
+    # hit must report cached:true (source of truth: the Prometheus counter).
+    assert first.json()["cached"] is False
+    assert second.json()["cached"] is True
+    assert second.json()["extracted_text"] == first.json()["extracted_text"]
     # one vLLM call total: the second POST is served from the cache
     assert len(calls) == 1
     assert len(fake_redis.store) == 1
@@ -208,3 +220,14 @@ def test_health_reports_in_flight_and_concurrency():
     assert body["backend"] == "http://mock-llm:8000"
     assert body["max_concurrency"] == 1
     assert "in_flight" in body
+
+
+def test_transcribe_usage_none_when_backend_omits_usage(fake_redis, llm_calls):
+    calls, record, set_response = llm_calls
+    posts = lambda url, json=None, timeout=None: FakeLLMResponse()  # no usage key
+    set_response(record(posts))
+
+    resp = post_transcribe()
+
+    assert resp.status_code == 200
+    assert resp.json()["usage"] is None

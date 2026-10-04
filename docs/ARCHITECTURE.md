@@ -32,6 +32,14 @@ GET /v1/documents/:id/download  (chunk-level inferences, embeddings via gzip, en
 
 ## Component responsibilities
 
+### Extraction-worker: cut interno de calidad visual (flag `VISION_OCR_ENABLED`)
+
+El fast path documental es **intacto** (salida byte-idéntica, golden test): tras el blob de Docling, el paquete `cmd/extraction-worker/vision/` aplica una puerta de dos niveles:
+- **Document-level gate** (señales baratas del blob: chars/página, ratio placeholders, ratio basura) → PASS devuelve la salida actual sin render.
+- **Slow path** solo en SUSPECT: materializa páginas con `pypdfium2` (bytes ya en memoria, sin re-descarga), gate por página (texto por página derivado de `document.json_content.texts[].prov[].page_no`, `to_formats=md,json`), y **Vision OCR** (`vision-ocr` FastAPI, cache SHA256 + semáforo server-side, backend OpenAI-compatible: vLLM en prod / Ollama solo-DEV) **reemplaza** el texto de página (no fusiona). Presupuesto por doc (timeout/página, max páginas, max segundos) + cancelación cooperativa → `degraded`; error de vision conserva el texto Docling y escribe provenance `vision_error` en `orchestrator:job:{id}:extraction_provenance` (Redis, job-scoped).
+
+Ver `docs/OPERATIONS.md` §Vision OCR para activación/calibración y `docs/extraccion-visual-benchmark.md` para el protocolo (backend-agnóstico).
+
 ### Orchestrator (Go, 8080)
 `cmd/orchestrator` (Gin). Admission via `internal/broker/rabbitmq.go` (backpressure on `QueueDepthRejectThreshold`), SSRF guard on `DocumentURL`, `POST /v1/documents`, `GET /v1/documents/:id`, `POST /v1/documents/:id/cancel` (`status=cancelled`), batch `CreateBatchHandler`. Ver §23 rabbitmq `3.13-management` drift fixed.
 

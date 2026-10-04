@@ -11,6 +11,13 @@
 | `Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf` | manuscrito (formulario, EN) | 10 | 3.1 MB |
 | `week10_day3.pdf` | impreso con fórmulas LaTeX (doc física) | 13 | 1.9 MB |
 
+## 0. Alcance y validez de los datos (decisión del owner, 2026-10-04)
+
+**Los números de este informe son puntuales (dev, 2026-10-04) y NO definen producción.** El backend usado (Ollama en mac-mini) es exclusivamente DEV y compartido con otras apps. En producción puede desplegarse vLLM (p. ej. sobre GPU H200) u otro serving OpenAI-compatible: la cadena es backend-agnóstica por diseño (`VISION_LLM_BASE_URL` + `VISION_MODEL` env; sin cola nueva; semáforos en ambos extremos). El objetivo del owner ahora es **que funcione, no optimizar rapidez ni calidad**:
+- NO fijar DPI/tokens/etc. por estos datos — defaults provisionales (env-driven, cambiables sin código).
+- Matriz DPI 120/300 y métricas de latencia/VRAM/throughput: APLAZADAS hasta existir serving real de producción (F.3/F.5 con GPU, p. ej. H200/AWQ según inventario del despliegue).
+- Lo único estable de hoy: el gate SUSPECT discriminó correctamente documentos manuscrito/fórmulas y `PAGE_TEXT_MODE="texts_prov"` funciona con corpus real (independiente del backend).
+
 ## 1. Quality gate sobre extracción real (datos C.5)
 
 Llamada docling-serve exacta del worker (con `to_formats=md,json`, Fase E) + `vision.gate` sobre el blob:

@@ -1,0 +1,24 @@
+file,page,dpi,latency_ms,wall_ms,chars,words,tokens_prompt,tokens_completion,cached,error
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,1,200,64941,64991.8,3523,386,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,2,200,,300105.4,,,,,False,"HTTPConnectionPool(host='vision-ocr-bench', port=8080): Read timed out. (read timeout=300)"
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,3,200,18789,76148.4,992,184,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,4,200,29674,29695.5,1830,326,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,5,200,29627,29650.0,1653,267,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,6,200,41920,41938.1,2260,304,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,7,200,29430,29450.7,2234,314,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,8,200,41015,41036.0,2404,330,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,9,200,23362,23376.3,1078,105,,,False,
+/work/corpus/Handwritten-Concern-Form-reporting-Domestic-Abuse-Good-Example.pdf,10,200,7964,7972.2,7,1,,,False,
+/work/corpus/week10_day3.pdf,1,200,35390,35401.3,1066,139,,,False,
+/work/corpus/week10_day3.pdf,2,200,22178,22188.3,457,104,,,False,
+/work/corpus/week10_day3.pdf,3,200,18851,18861.5,409,112,,,False,
+/work/corpus/week10_day3.pdf,4,200,,300039.6,,,,,False,"HTTPConnectionPool(host='vision-ocr-bench', port=8080): Read timed out. (read timeout=300)"
+/work/corpus/week10_day3.pdf,5,200,23489,80730.8,667,74,,,False,
+/work/corpus/week10_day3.pdf,6,200,28669,28679.2,849,94,,,False,
+/work/corpus/week10_day3.pdf,7,200,28520,28532.6,871,97,,,False,
+/work/corpus/week10_day3.pdf,8,200,18903,18916.2,329,79,,,False,
+/work/corpus/week10_day3.pdf,9,200,23361,23372.8,613,65,,,False,
+/work/corpus/week10_day3.pdf,10,200,30375,30385.8,841,103,,,False,
+/work/corpus/week10_day3.pdf,11,200,,300080.4,,,,,False,"HTTPConnectionPool(host='vision-ocr-bench', port=8080): Read timed out. (read timeout=300)"
+/work/corpus/week10_day3.pdf,12,200,25825,83120.4,749,107,,,False,
+/work/corpus/week10_day3.pdf,13,200,10677,10686.3,76,22,,,False,

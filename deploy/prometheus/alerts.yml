@@ -1,4 +1,63 @@
 groups:
+  - name: textflow-vision
+    interval: 30s
+    rules:
+      # Vision pages falling back with errors (quality-flow degradation)
+      - alert: VisionPageErrorRateHigh
+        expr: |
+          sum(rate(extraction_worker_vision_pages_total{backend="vision_error"}[10m]))
+          / sum(rate(extraction_worker_vision_pages_total[10m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High vision_error page rate on extraction slow path"
+          description: "More than 20% of vision pages end backend=vision_error ({{ $value | humanizePercentage }}). Check VISION_OCR_URL/backend health."
+
+      # Documents being degraded by exhausted vision budget (spec §19 degraded)
+      - alert: VisionDegradationRateHigh
+        expr: |
+          sum(rate(extraction_worker_vision_pages_total{backend="degraded"}[10m]))
+          / sum(rate(extraction_worker_vision_pages_total[10m])) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High degraded-page rate — vision budget exhausted per document"
+          description: "More than 30% of pages end backend=degraded ({{ $value | humanizePercentage }}). Review VISION_OCR_MAX_PAGES_PER_DOCUMENT / MAX_SECONDS or thresholds."
+
+      # vision-ocr service-side backend (vLLM/Ollama) failures
+      - alert: VisionOCRBackendErrorRate
+        expr: |
+          sum(rate(vision_ocr_requests_total{outcome="error"}[5m]))
+          / sum(rate(vision_ocr_requests_total{outcome=~".*"}[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "vision-ocr backend (LLM) error rate high"
+          description: "More than 20% of transcribe requests ended outcome=error ({{ $value | humanizePercentage }}). Backend {{ $labels.backend }} failing."
+
+      # vision-ocr saturation: 503s issued (semaphore backlog)
+      - alert: VisionOCRSaturated
+        expr: rate(vision_ocr_requests_total{outcome="saturated"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vision-ocr returning 503 saturated"
+          description: "Server-side semaphore exceeds queue-wait for 5+ minutes. Reduce worker VISION_OCR_MAX_CONCURRENCY or scale serving."
+
+      # vision-ocr in-flight stuck at capacity (uses serving gauge)
+      - alert: VisionOCRInFlightCapped
+        expr: vision_ocr_in_flight >= vision_ocr_max_concurrency
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vision-ocr in_flight at capacity for 10m"
+          description: "GPU serving pinned at max concurrency for 10+ minutes — saturation risk or need of GPU capacity review."
+
   - name: textflow-critical
     interval: 30s
     rules:

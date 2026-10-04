@@ -40,6 +40,9 @@ _sem = asyncio.Semaphore(MAX_CONCURRENCY)                     # spec §20 server
 vision_requests_total = Counter("vision_ocr_requests_total", "Requests", ["outcome"])
 vision_inference_seconds = Histogram("vision_ocr_inference_seconds", "LLM call (s)")
 vision_in_flight = Gauge("vision_ocr_in_flight", "In-flight transcriptions")
+vision_max_concurrency = Gauge(
+    "vision_ocr_max_concurrency", "Configured in-flight capacity (semaphore)")
+vision_max_concurrency.set(MAX_CONCURRENCY)
 
 
 def _call_vllm(image_bytes: bytes, mime: str) -> "tuple[str, dict | None]":  # OpenAI-compatible (§9)

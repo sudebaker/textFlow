@@ -765,6 +765,7 @@ Desplegar con `VISION_OCR_ENABLED=false`; verificar golden en producción vía j
 - **F.1 Corpus:** 10-30 pág/categoría (manuscrito limpio/difícil, escaneado, PDF imagen, mixto, texto digital, layout complejo) — procedural, fuera de git.
 - **F.2 Herramienta:** Create `tools/bench-vision-ocr.py` — renderiza corpus a 120/200/300 DPI → `/transcribe` → CSV (archivo, página, dpi, latencia_ms, chars, tokens, VRAM del resource-manager). Resultados a `docs/extraccion-visual-benchmark.md`.
 - **F.3 Calibración + freeze:** actualizar defaults `VISION_MIN_CHARS_PER_PAGE`/ratios con datos de C y F → commit `feat(extraction): calibrate quality-gate thresholds from real traffic`. Congelar `TRANSCRIBE_PROMPT` (§10) → commit. Runbook de activación en `docs/OPERATIONS.md` (drain estilo runbook D4 de AGENTS.md, flip `VISION_OCR_ENABLED=true`, verificación con job de prueba). **La activación en producción es decisión explícita del usuario, no del plan.**
+- **Restricción del owner (2026-10-04):** el backend dev (Ollama mac-mini compartido) NO define producción (posible vLLM/H200 u otro). Herramienta y cadena backend-agnósticos; **la matriz DPI y toda calibración/latencia se aplazan al serving real** — hasta entonces solo se toca lo que hace que funcione, no lo que optimiza rendimiento.
 - **F.4 Calidad downstream:** jobs full+`features=["inferences"]` sobre corpus → comparar entidades pre/post (prioridad 1 de métricas §23); CER/WER solo en subconjunto con ground truth.
 
 ## FASE G — LightOnOCR (condicionado, §25)

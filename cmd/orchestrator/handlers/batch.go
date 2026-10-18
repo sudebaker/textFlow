@@ -262,8 +262,12 @@ func CreateBatchHandler(c *gin.Context) {
 	wg.Wait()
 
 	c.JSON(http.StatusAccepted, BatchResponse{
-		BatchID:   batchID,
-		Total:     len(req.Documents),
+		BatchID: batchID,
+		// Accepted-jobs semantics, consistent with the stored batch metadata
+		// (batch:meta total) and with GET /v1/batches/:id/status, whose
+		// completed+failed+pending == total invariant counts jobs only.
+		// Submitted = Total + len(Rejected).
+		Total:     accepted,
 		Jobs:      jobs,
 		Rejected:  plan.Rejected,
 		StatusURL: fmt.Sprintf("/v1/batches/%s/status", batchID),

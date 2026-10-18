@@ -1037,11 +1037,13 @@ class ExtractionWorker:
             orchestrator:job:{job_id}:source_classification -> classification result
             orchestrator:job:{job_id}:steps -> hash with extraction="completed"
 
-        Queue publishing:
-            - Publishes to "embeddings" queue (all non-spreadsheet documents)
-            - Publishes to "entities" queue (all documents)
-            - Publishes to "metadata" queue (non-spreadsheet documents)
-            - Spreadsheets (csv, xls, xlsx) route to "entities" only
+        Queue publishing (configs/pipeline.json v2, entry × profile):
+            - The target queues come from PipelineDefinition.queues_for(
+              entry="extraction", features, profile): rag dispatches
+              embeddings+inferences, full adds entities+metadata.
+            - Inference chunk messages are dispatched here (entry stage owns
+              them since D3), one per non-empty chunk.
+            - Spreadsheets follow the same profile routing (no short-circuit).
 
         Message published to queues contains:
             {

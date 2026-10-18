@@ -50,6 +50,8 @@ tests/e2e/*.txt
 # Internal documentation (not for public repo)
 docs/internal/
 todo.md
+# Exception: spec-driven flow task list is versioned with its spec/plan
+!tasks/todo.md
 *.session-notes.md
 
 # Avoid re-adding the binary that was removed from history

@@ -38,25 +38,26 @@ entities step; batch document with invalid profile → `rejected[]`; all-invalid
 - **Spec**: processing-profiles (Profile set)
 
 ### Task 1.3 — RED: batch per-document validation
-- **Description:** Failing Go test for per-document profile validation: invalid doc → `rejected[]` entry, siblings unaffected; all-invalid → 400.
+- **Description:** Failing Go test for per-document profile validation: invalid doc → `rejected[]` entry, siblings unaffected; all-invalid → 400. Tested via a pure planner `planBatchProfiles()` because the handler uses package-global concrete `redisInst`/`mqBroker` (not injectable); the planner is the real decision path the handler calls.
 - **Acceptance criteria:**
-  - [ ] `TestBatchValidation` pins partial rejection and the all-invalid 400.
+  - [x] `TestPlanBatchProfiles_*` pins partial rejection, inheritance, override and the all-invalid condition.
 - **Verification:**
-  - [ ] Tests pass: `go test ./cmd/orchestrator/... -run TestBatch`
+  - [x] Tests pass: `go test ./cmd/orchestrator/handlers/ -run TestPlanBatchProfiles`
 - **Dependencies:** 1.2
 - **Files likely touched:** `cmd/orchestrator/handlers/batch_test.go`
 - **Spec**: batch-ingestion (MODIFIED) — invalid profile rollback
 
 ### Task 1.4 — GREEN: per-doc `Profile` in batch
-- **Description:** Add `Profile` to `BatchDocument`, validate per document in `batch.go`, populate `BatchResponse.rejected[]`; documents without profile inherit the batch profile (default `full`).
+- **Description:** Added `Profile` to `BatchDocument` and `BatchRequest` (batch-level default), `RejectedDocument` + `BatchResponse.Rejected`; `CreateBatchHandler` calls `planBatchProfiles()`, validates the batch profile (400 `invalid_profile`), rejects invalid docs into `rejected[]` with index/filename/reason, excludes them from job creation, and 400s when every document is invalid. Jobs now carry `Profile` (Redis + `JobMessage`). Base normalizer moved to `internal/models.NormalizeProfile` (shared by package `main` and `handlers`).
 - **Acceptance criteria:**
-  - [ ] Mixed `rag`/`full` batch accepted; omitted profile inherits batch profile.
-  - [ ] Invalid doc reported in `rejected[]` with a clear error; siblings proceed.
-  - [ ] All-invalid → HTTP 400.
+  - [x] Mixed `rag`/`full` batch accepted; omitted profile inherits batch profile.
+  - [x] Invalid doc reported in `rejected[]` with a clear error; siblings proceed.
+  - [x] All-invalid → HTTP 400.
 - **Verification:**
-  - [ ] Tests pass: `go test ./cmd/orchestrator/... -run TestBatch`
+  - [x] Tests pass: `go test ./cmd/orchestrator/...`
+  - [x] Regression: `make test` green (full Go suite)
 - **Dependencies:** 1.3
-- **Files likely touched:** `cmd/orchestrator/handlers/batch_models.go`, `cmd/orchestrator/handlers/batch.go`
+- **Files likely touched:** `cmd/orchestrator/handlers/batch_models.go`, `cmd/orchestrator/handlers/batch.go`, `internal/models/profile.go`
 - **Spec**: batch-ingestion (MODIFIED); D8
 
 ### Task 1.5 — RED: type×profile resolver matrix
@@ -375,7 +376,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 
 | Unit | PR | Status |
 |---|---|---|
-| W1 | PR 1 | 🟡 1.1–1.2 done (normalizeProfile rag\|full) — resolver v2 pending (1.6) |
+| W1 | PR 1 | 🟡 1.1–1.4 done (admission + batch profiles) — resolver v2 pending (1.6) |
 | W2 | PR 2 | ⬜ blocked by W1 |
 | W3 | PR 3 | ⬜ blocked by W1 |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |

@@ -1459,16 +1459,11 @@ func downloadHandler(c *gin.Context) {
 // Accepts rag|full (case-insensitive). Empty values default to "full";
 // any other value is rejected.
 func normalizeProfile(profile string) (string, error) {
-	normalized := strings.ToLower(strings.TrimSpace(profile))
-	switch normalized {
-	case "":
-		return "full", nil
-	case "rag", "full":
-		return normalized, nil
-	default:
+	normalized, err := models.NormalizeProfile(profile)
+	if err != nil {
 		logger.Warn().Str("profile", profile).Msg("Invalid profile requested (valid: rag, full)")
-		return "", fmt.Errorf("invalid profile %q (valid: rag, full)", profile)
 	}
+	return normalized, err
 }
 
 // validateFeatures validates, deduplicates, and normalizes feature strings.

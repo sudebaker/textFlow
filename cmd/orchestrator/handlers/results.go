@@ -20,10 +20,9 @@ func SetResultsPath(path string) {
 }
 
 type GraphResponse struct {
-	SchemaVersion string `json:"schema_version"`
-	JobID         string `json:"job_id"`
-	Nodes         []Node `json:"nodes"`
-	Edges         []Edge `json:"edges"`
+	JobID string `json:"job_id"`
+	Nodes []Node `json:"nodes"`
+	Edges []Edge `json:"edges"`
 }
 
 type Node struct {
@@ -39,10 +38,9 @@ type Edge struct {
 }
 
 type VectorsResponse struct {
-	SchemaVersion string            `json:"schema_version"`
-	JobID         string            `json:"job_id"`
-	Chunks        []ChunkVector     `json:"chunks"`
-	Inferences    []InferenceVector `json:"inferences"`
+	JobID      string            `json:"job_id"`
+	Chunks     []ChunkVector     `json:"chunks"`
+	Inferences []InferenceVector `json:"inferences"`
 }
 
 type ChunkVector struct {
@@ -59,9 +57,8 @@ type InferenceVector struct {
 }
 
 type EntitiesResponse struct {
-	SchemaVersion string       `json:"schema_version"`
-	JobID         string       `json:"job_id"`
-	Entities      []EntityFlat `json:"entities"`
+	JobID    string       `json:"job_id"`
+	Entities []EntityFlat `json:"entities"`
 }
 
 type EntityFlat struct {
@@ -72,9 +69,8 @@ type EntityFlat struct {
 }
 
 type InferencesResponse struct {
-	SchemaVersion string          `json:"schema_version"`
-	JobID         string          `json:"job_id"`
-	Inferences    []InferenceFlat `json:"inferences"`
+	JobID      string          `json:"job_id"`
+	Inferences []InferenceFlat `json:"inferences"`
 }
 
 type InferenceFlat struct {
@@ -160,10 +156,9 @@ func toGraphView(results *models.JobResults) *GraphResponse {
 	}
 
 	return &GraphResponse{
-		SchemaVersion: results.SchemaVersion,
-		JobID:         results.JobID,
-		Nodes:         nodes,
-		Edges:         edges,
+		JobID: results.JobID,
+		Nodes: nodes,
+		Edges: edges,
 	}
 }
 
@@ -294,8 +289,7 @@ func VectorsHandler(c *gin.Context) {
 	}
 
 	resp := VectorsResponse{
-		SchemaVersion: results.SchemaVersion,
-		JobID:         results.JobID,
+		JobID: results.JobID,
 	}
 
 	if includeChunks {
@@ -387,9 +381,8 @@ func EntitiesHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, EntitiesResponse{
-		SchemaVersion: results.SchemaVersion,
-		JobID:         results.JobID,
-		Entities:      entities,
+		JobID:    results.JobID,
+		Entities: entities,
 	})
 }
 
@@ -448,9 +441,8 @@ func InferencesHandler(c *gin.Context) {
 	end := start + limitInferences
 	if start > len(allInferences) {
 		c.JSON(http.StatusOK, InferencesResponse{
-			SchemaVersion: results.SchemaVersion,
-			JobID:         results.JobID,
-			Inferences:    []InferenceFlat{},
+			JobID:      results.JobID,
+			Inferences: []InferenceFlat{},
 		})
 		return
 	}
@@ -459,8 +451,7 @@ func InferencesHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, InferencesResponse{
-		SchemaVersion: results.SchemaVersion,
-		JobID:         results.JobID,
-		Inferences:    allInferences[start:end],
+		JobID:      results.JobID,
+		Inferences: allInferences[start:end],
 	})
 }

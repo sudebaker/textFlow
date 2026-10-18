@@ -87,8 +87,8 @@ entities step; batch document with invalid profile → `rejected[]`; all-invalid
 ### Task 1.7 — GREEN: `JobResults` media fields
 - **Description:** Add `ImageOcrText`, `ImageDescription *string`, `MetadataImage`, `MetadataAudio`, `AudioSegments` to `JobResults`; remove `SchemaVersion`.
 - **Acceptance criteria:**
-  - [ ] Struct compiles and serializes with the new fields (`image_description` nullable).
-  - [ ] `SchemaVersion` no longer present in the result struct.
+  - [x] Struct compiles and serializes with the new fields (`image_description` nullable).
+  - [x] `SchemaVersion` no longer present in the result struct.
 - **Verification:**
   - [ ] Build succeeds: `make build-orchestrator`
   - [ ] Tests pass: `make test`
@@ -376,7 +376,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 
 | Unit | PR | Status |
 |---|---|---|
-| W1 | PR 1 | 🟡 1.1–1.6 done (admission + batch profiles + resolver v2) — media fields (1.7–1.8) pending |
+| W1 | PR 1 | ✅ 1.1–1.7 done (admission, batch profiles, resolver v2, media result fields) — ready for review |
 | W2 | PR 2 | ⬜ blocked by W1 |
 | W3 | PR 3 | ⬜ blocked by W1 |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |

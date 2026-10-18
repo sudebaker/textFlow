@@ -96,7 +96,8 @@ type InferenceItem struct {
 
 // JobResults represents the final aggregated results of a completed job.
 // It contains extracted text, chunks with per-chunk embeddings/entities/inferences,
-// a deduplicated entity map, document metadata, and source classification.
+// a deduplicated entity map, document metadata, source classification, and the
+// explicit media outputs of image/audio jobs.
 // All fields except JobID, Status, CreatedAt, and CompletedAt are optional,
 // depending on which processing stages were executed.
 type JobResults struct {
@@ -105,12 +106,21 @@ type JobResults struct {
 	CreatedAt            string                      `json:"created_at"`
 	CompletedAt          string                      `json:"completed_at"`
 	Text                 string                      `json:"text"`
-	SchemaVersion        string                      `json:"schema_version,omitempty"`
 	Chunks               []Chunk                     `json:"chunks,omitempty"`
 	Entities             map[string]EntityMinimal    `json:"entities,omitempty"`
 	DocumentMetadata     map[string]interface{}      `json:"document_metadata,omitempty"`
 	TextMetadata         map[string]interface{}      `json:"text_metadata,omitempty"`
 	SourceClassification *SourceClassificationResult `json:"source_classification,omitempty"`
+
+	// Media outputs. ImageOcrText is the RAG field for images; ImageDescription
+	// is the semantic description (null when the profile did not request it —
+	// it is never chunked or embedded). AudioSegments carries the transcribed
+	// timed segments of audio jobs.
+	ImageOcrText     string         `json:"image_ocr_text,omitempty"`
+	ImageDescription *string        `json:"image_description"`
+	MetadataImage    *ImageMetadata `json:"metadata_image,omitempty"`
+	MetadataAudio    *AudioMetadata `json:"metadata_audio,omitempty"`
+	AudioSegments    []AudioSegment `json:"audio_segments,omitempty"`
 }
 
 // Chunk represents a segment of extracted text with token metadata, per-chunk embeddings,
@@ -224,7 +234,7 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
-	Profile        string   `json:"profile,omitempty"`   // fast|balanced|full
+	Profile        string   `json:"profile,omitempty"`  // rag|full
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }

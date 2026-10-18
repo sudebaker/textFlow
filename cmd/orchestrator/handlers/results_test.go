@@ -101,7 +101,6 @@ func TestVectorsHandler_SeparatePagination(t *testing.T) {
 		},
 		Entities: map[string]models.EntityMinimal{},
 	}
-	results.SchemaVersion = "1.1.0"
 	data, _ := json.Marshal(results)
 	filePath := filepath.Join(tmpDir, results.JobID+".json")
 	os.WriteFile(filePath, data, 0644)
@@ -151,10 +150,10 @@ func TestIsValidJobID(t *testing.T) {
 
 	invalidIDs := []string{
 		"invalid",
-		"a0000000-0000-0000-0000-00000000000",  // 35 chars
+		"a0000000-0000-0000-0000-00000000000",   // 35 chars
 		"a0000000-0000-0000-0000-0000000000000", // 37 chars
 		"a00000000000-0000-0000-000000000000",   // wrong hyphen pos
-		"g0000000-0000-0000-0000-000000000000", // g is not hex
+		"g0000000-0000-0000-0000-000000000000",  // g is not hex
 		"",
 	}
 	for _, id := range invalidIDs {
@@ -200,8 +199,6 @@ func TestToGraphViewPreallocatedCapacity(t *testing.T) {
 		Chunks:   chunks,
 		Entities: entities,
 	}
-	results.SchemaVersion = "1.1.0"
-
 	resp := toGraphView(results)
 
 	if len(resp.Nodes) > cap(resp.Nodes) {
@@ -232,8 +229,6 @@ func TestToGraphViewMinimal(t *testing.T) {
 			"e1": {Label: "ORG", Text: "Acme", Confidence: 1.0},
 		},
 	}
-	results.SchemaVersion = "1.1.0"
-
 	resp := toGraphView(results)
 
 	if len(resp.Nodes) != 3 {
@@ -277,8 +272,6 @@ func TestToGraphViewWithEntityRefs(t *testing.T) {
 			"entity_go": {Label: "LANG", Text: "Go", Confidence: 1.0},
 		},
 	}
-	results.SchemaVersion = "1.1.0"
-
 	resp := toGraphView(results)
 
 	refToEdges := 0
@@ -307,8 +300,6 @@ func TestToGraphViewEmptyInferences(t *testing.T) {
 		},
 		Entities: map[string]models.EntityMinimal{},
 	}
-	results.SchemaVersion = "1.1.0"
-
 	resp := toGraphView(results)
 
 	if len(resp.Nodes) != 2 {
@@ -328,8 +319,6 @@ func TestEntitiesHandlerFlat(t *testing.T) {
 			"def456": {Label: "LANG", Text: "Go", Confidence: 1.0},
 		},
 	}
-	results.SchemaVersion = "1.1.0"
-
 	entities := []EntityFlat{}
 	for entityID, entity := range results.Entities {
 		entities = append(entities, EntityFlat{
@@ -363,8 +352,6 @@ func TestInferencesHandlerFlat(t *testing.T) {
 			},
 		},
 	}
-	results.SchemaVersion = "1.1.0"
-
 	allInferences := []InferenceFlat{}
 	for _, chunk := range results.Chunks {
 		for idx, inf := range chunk.Inferences {

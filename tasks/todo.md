@@ -107,9 +107,9 @@ inference env source exists (no `LLM_URL`/`LLM_MODEL`).
 ### Task 2.1 — RED: dispatch ownership + counter race
 - **Description:** Failing pytest: extraction fan-out publishes inference chunks with `inferences:remaining`/`:total` set **before** publish.
 - **Acceptance criteria:**
-  - [ ] Test asserts counters exist before the publish call and fails on the current code.
+  - [x] Test asserts counters exist before the publish call and fails on the current code. (3 failures pre-2.2)
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/extraction-worker/tests/test_dispatch.py -v`
+  - [x] Tests pass: `pytest cmd/extraction-worker/tests/test_dispatch.py -v` (3 passed)
 - **Dependencies:** 1.6
 - **Files likely touched:** `cmd/extraction-worker/tests/test_dispatch.py`
 - **Spec**: processing-profiles (Inference dispatch decoupled)
@@ -117,20 +117,20 @@ inference env source exists (no `LLM_URL`/`LLM_MODEL`).
 ### Task 2.2 — GREEN: move dispatch to extraction fan-out
 - **Description:** Move inference dispatch from `entities_worker.py` to `cmd/extraction-worker/worker.py` fan-out, preserving the counter-before-publish race fix.
 - **Acceptance criteria:**
-  - [ ] `rag` document job produces inference chunks without an entities step.
-  - [ ] Counters set before publish (race fix intact).
+  - [x] `rag` document job produces inference chunks without an entities step.
+  - [x] Counters set before publish (race fix intact).
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/extraction-worker/tests/test_dispatch.py -v`
+  - [x] Tests pass: `pytest cmd/extraction-worker/tests/ -v` (122 passed, 10 skipped)
 - **Dependencies:** 2.1
-- **Files likely touched:** `cmd/extraction-worker/worker.py`
+- **Files likely touched:** `cmd/extraction-worker/worker.py`, `pkg/worker_common/inference_dispatch.py`
 - **Spec**: processing-profiles (Inference dispatch decoupled); D3
 
 ### Task 2.3 — GREEN: audio/image own inference dispatch
 - **Description:** Apply the same dispatch pattern to `audio-worker` and `image-worker`.
 - **Acceptance criteria:**
-  - [ ] Audio and image jobs publish inference chunks from their own fan-out.
+  - [x] Audio and image jobs publish inference chunks from their own fan-out.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/audio-worker/tests/ cmd/image-worker/tests/ -v`
+  - [x] `pytest cmd/audio-worker/tests/ -v` (5 passed) · image: `pytest cmd/image-worker/tests/` cannot run locally (`aio_pika` missing) — 2 stale v1 tests updated to v2 semantics + dispatch/TTL test added.
 - **Dependencies:** 2.2
 - **Files likely touched:** `cmd/audio-worker/worker.py`, `cmd/image-worker/worker.py`
 - **Spec**: processing-profiles (Inference dispatch decoupled); D3
@@ -138,10 +138,10 @@ inference env source exists (no `LLM_URL`/`LLM_MODEL`).
 ### Task 2.4 — GREEN: remove dispatch from entities-worker
 - **Description:** Remove the inference dispatch coupling from `entities_worker.py` (entities no longer triggers inferences).
 - **Acceptance criteria:**
-  - [ ] `entities_worker.py` has no inference-dispatch code path.
-  - [ ] Entities still publish their own result step.
+  - [x] `entities_worker.py` has no inference-dispatch code path (block + `INFERENCES_QUEUE` import gone).
+  - [x] Entities still publish their own result step (`publish_job_progress` + `:entities` write intact).
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/entities-worker/tests/ -v`
+  - [x] `python -m py_compile` OK; `pytest cmd/entities-worker/tests/` cannot collect locally (`pydantic_settings` missing — pre-existing).
 - **Dependencies:** 2.3
 - **Files likely touched:** `cmd/entities-worker/entities_worker.py`
 - **Spec**: processing-profiles (Inference dispatch decoupled); D3
@@ -377,7 +377,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 | Unit | PR | Status |
 |---|---|---|
 | W1 | PR 1 | ✅ 1.1–1.7 done (admission, batch profiles, resolver v2, media result fields) — ready for review |
-| W2 | PR 2 | ⬜ blocked by W1 |
+| W2 | PR 2 | 🔄 2.1–2.4 done (dispatch ownership → entry stage; extraction/audio/image; entities decoupled) — 2.5–2.7 pending |
 | W3 | PR 3 | ⬜ blocked by W1 |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |
 | W5 | PR 5 | ⬜ blocked by W1–W4 |

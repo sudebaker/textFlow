@@ -9,6 +9,12 @@ from pkg.image_client.client import MultimodalLLMClientPool
 from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.async_base import BaseAsyncWorker
 from pkg.worker_common.chunking import chunk_text
+from pkg.worker_common.inference_dispatch import (
+    INFERENCES_QUEUE,
+    INFERENCES_TTL_SECONDS,
+    dispatch_inference_chunks,
+    inference_counter_key,
+)
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
 
@@ -26,6 +32,31 @@ class ImageWorker(BaseAsyncWorker):
         )
         self.llm_pool = MultimodalLLMClientPool()
         self.pipeline = PipelineDefinition.load()
+
+    async def _dispatch_inferences(self, job_id: str, chunks: list) -> int:
+        """Own the inference dispatch from the image fan-out (D3)."""
+
+        async def publish(message: Dict[str, Any]) -> None:
+            await self._channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    content_type="application/json",
+                ),
+                routing_key=INFERENCES_QUEUE,
+            )
+
+        def set_counter(suffix: str, value: int) -> None:
+            self.redis_client.setex(
+                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
+            )
+
+        return await dispatch_inference_chunks(
+            publish=publish,
+            set_counter=set_counter,
+            job_id=job_id,
+            chunks=chunks,
+        )
 
     async def process_message(self, message: Dict[str, Any]) -> None:
         job_id = message.get("job_id")
@@ -96,6 +127,10 @@ class ImageWorker(BaseAsyncWorker):
             target_queues = self.pipeline.queues_for(
                 entry="image", features=features, profile=profile
             )
+
+            # Inference dispatch is owned by the entry stage (D3).
+            if INFERENCES_QUEUE in target_queues:
+                await self._dispatch_inferences(job_id, chunks)
 
             for qs in target_queues:
                 try:

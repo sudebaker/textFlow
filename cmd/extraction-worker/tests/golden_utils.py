@@ -13,8 +13,8 @@ import json
 class FakeRedis:
     """Records every write in order as tuples; hget always returns None.
 
-    The worker only needs hset/set/publish/hget from Redis during extraction
-    (job never appears cancelled since hget -> None).
+    The worker only needs hset/set/setex/publish/hget from Redis during
+    extraction (job never appears cancelled since hget -> None).
     """
 
     def __init__(self):
@@ -25,6 +25,9 @@ class FakeRedis:
 
     def set(self, key, value):
         self.writes.append(("set", key, value))
+
+    def setex(self, key, ttl, value):
+        self.writes.append(("setex", key, value, ttl))
 
     def hget(self, key, field):
         return None
@@ -85,9 +88,13 @@ def normalize(writes, published) -> dict:
       ``timestamp`` in EventBus pub/sub payloads) -> "<ts>"
     Output is sorted-key JSON-serializable so ``json.dumps`` is deterministic.
     """
-    normalized_writes = [
-        {"op": w[0], "key": w[1], "value": _norm_value(w[2])} for w in writes
-    ]
+    normalized_writes = []
+    for w in writes:
+        row = {"op": w[0], "key": w[1], "value": _norm_value(w[2])}
+        if w[0] == "setex":
+            # TTL is part of the contract for job TTL'd keys (D6/D7).
+            row["ttl"] = w[3]
+        normalized_writes.append(row)
     normalized_published = [
         {
             "routing_key": routing_key,

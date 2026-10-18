@@ -24,7 +24,14 @@ def mock_deps():
         }
 
 
-def _make_msg(job_id="j1", filename="test.png", entity_types=None, features=None, path=None):
+def _make_msg(
+    job_id="j1",
+    filename="test.png",
+    entity_types=None,
+    features=None,
+    path=None,
+    profile=None,
+):
     body = {
         "job_id": job_id,
         "document_path": path or "/tmp/test.png",
@@ -34,7 +41,17 @@ def _make_msg(job_id="j1", filename="test.png", entity_types=None, features=None
         body["entity_types"] = entity_types
     if features:
         body["features"] = features
+    if profile:
+        body["profile"] = profile
     return body
+
+
+def _routing_keys(channel):
+    """Routing keys of every publish, in order (envelopes + inference chunks)."""
+    return [
+        call.kwargs.get("routing_key") or (call.args[0] if call.args else None)
+        for call in channel.default_exchange.publish.call_args_list
+    ]
 
 
 # --- Basic tests ---
@@ -108,26 +125,7 @@ class TestProcessMessageSuccess:
             os.unlink(path)
 
     @pytest.mark.asyncio
-    async def test_publishes_to_downstream_queues(self, mock_deps):
-        from worker import ImageWorker
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            f.write(b"\x89PNG\r\n\x1a\n")
-            path = f.name
-        try:
-            w = ImageWorker()
-            w._channel = AsyncMock()
-            mock_result = MagicMock()
-            mock_result.extracted_text = "text"
-            mock_result.description = None
-            mock_result.language = "en"
-            with patch.object(w.llm_pool, "analyze", return_value=mock_result):
-                await w.process_message(_make_msg(features=["inferences"], path=path))
-            assert w._channel.default_exchange.publish.call_count == 4
-        finally:
-            os.unlink(path)
-
-    @pytest.mark.asyncio
-    async def test_publishes_without_inferences_queue(self, mock_deps):
+    async def test_full_profile_publishes_all_four_stages(self, mock_deps):
         from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
@@ -141,7 +139,58 @@ class TestProcessMessageSuccess:
             mock_result.language = "en"
             with patch.object(w.llm_pool, "analyze", return_value=mock_result):
                 await w.process_message(_make_msg(path=path))
-            assert w._channel.default_exchange.publish.call_count == 3
+            assert {"embeddings", "entities", "metadata", "inferences"} <= set(
+                _routing_keys(w._channel)
+            )
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_rag_profile_skips_entities_and_metadata(self, mock_deps):
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.extracted_text = "text"
+            mock_result.description = None
+            mock_result.language = "en"
+            with patch.object(w.llm_pool, "analyze", return_value=mock_result):
+                await w.process_message(_make_msg(profile="rag", path=path))
+            routing = _routing_keys(w._channel)
+            assert {"embeddings", "inferences"} <= set(routing)
+            assert "entities" not in routing
+            assert "metadata" not in routing
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_dispatches_inference_chunks_with_counters(self, mock_deps):
+        """The image entry stage owns dispatch: envelope + chunk message (D3)."""
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.extracted_text = "text"
+            mock_result.description = None
+            mock_result.language = "en"
+            with patch.object(w.llm_pool, "analyze", return_value=mock_result):
+                await w.process_message(_make_msg(path=path))
+            routing = _routing_keys(w._channel)
+            assert routing.count("inferences") >= 2, routing
+            mock_deps["redis_client"].setex.assert_any_call(
+                "orchestrator:job:j1:inferences:remaining", 86400, 1
+            )
+            mock_deps["redis_client"].setex.assert_any_call(
+                "orchestrator:job:j1:inferences:total", 86400, 1
+            )
         finally:
             os.unlink(path)
 

@@ -37,7 +37,6 @@ from sliding_window import (
 )
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
-INFERENCES_QUEUE = os.getenv("INFERENCES_QUEUE", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 
 app_settings = AppSettings()
@@ -413,67 +412,6 @@ class EntitiesWorker(BaseWorker):
             metadata={"entities_key": entities_key, "count": len(all_entities)},
         )
         self.event_bus.publish_job_progress(job_id, 66, "entities")
-
-        # Check cancellation before publishing downstream inference jobs
-        self._raise_if_cancelled(job_id)
-
-        try:
-            features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
-            inferences_enabled = False
-            if features_json:
-                features = json.loads(features_json)
-                inferences_enabled = "inferences" in features
-
-            if inferences_enabled and chunks:
-                entities_by_chunk = {}
-                for entity in all_entities:
-                    cid = entity.get("chunk_id")
-                    if cid not in entities_by_chunk:
-                        entities_by_chunk[cid] = []
-                    entities_by_chunk[cid].append(entity)
-
-                valid_chunks = [c for c in chunks if c.get("text", "").strip()]
-                if valid_chunks:
-                    source_type_json = self.redis_client.get(f"orchestrator:job:{job_id}:source_classification")
-                    source_type = "generico"
-                    if source_type_json:
-                        try:
-                            source_data = json.loads(source_type_json)
-                            source_type = source_data.get("document_type", "generico")
-                        except Exception:
-                            pass
-
-                    # Fix race: set counters BEFORE publishing so consumers never DECR
-                    # a non-existent key (which Redis creates as -1).
-                    total = len(valid_chunks)
-                    pipe = self.redis_client.pipeline()
-                    pipe.setex(
-                        f"orchestrator:job:{job_id}:inferences:remaining",
-                        86400,
-                        total,
-                    )
-                    pipe.setex(
-                        f"orchestrator:job:{job_id}:inferences:total",
-                        86400,
-                        total,
-                    )
-                    pipe.execute()
-
-                    for chunk in valid_chunks:
-                        chunk_id = chunk.get("chunk_id")
-                        chunk_text = chunk.get("text", "")
-                        chunk_entities = entities_by_chunk.get(chunk_id, [])
-                        inference_msg = {
-                            "job_id": job_id,
-                            "chunk_id": chunk_id,
-                            "chunk_text": chunk_text,
-                            "entities": chunk_entities,
-                            "source_type": source_type,
-                            "total_chunks": total,
-                        }
-                        self._publish_to_queue(INFERENCES_QUEUE, inference_msg)
-        except Exception as e:
-            self.logger.error(f"Failed to trigger inferences: {e}", exc_info=True)
 
         self.logger.info(f"Entities completed for job: {job_id}, found {len(all_entities)} entities")
         return {"status": "success", "job_id": job_id, "entities": len(all_entities)}

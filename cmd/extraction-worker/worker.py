@@ -62,6 +62,13 @@ from prometheus_client import Counter, Histogram, start_http_server
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
 from pkg.worker_common.artifact_store import STORE
+from pkg.worker_common.inference_dispatch import (
+    INFERENCES_QUEUE,
+    INFERENCES_TTL_SECONDS,
+    dispatch_inference_chunks,
+    inference_counter_key,
+    resolve_source_type,
+)
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.rabbitmq_async import declare_queue_async
 
@@ -665,6 +672,32 @@ class ExtractionWorker:
 
             raise JobCancelledError(f"Job {job_id} was cancelled")
 
+    async def _dispatch_inferences(self, channel, job_id: str, chunks: List[Dict]) -> int:
+        """Own the inference dispatch from the extraction fan-out (D3)."""
+
+        async def publish(message: Dict[str, Any]) -> None:
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    content_type="application/json",
+                ),
+                routing_key=INFERENCES_QUEUE,
+            )
+
+        def set_counter(suffix: str, value: int) -> None:
+            self.redis_client.setex(
+                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
+            )
+
+        return await dispatch_inference_chunks(
+            publish=publish,
+            set_counter=set_counter,
+            job_id=job_id,
+            chunks=chunks,
+            source_type=resolve_source_type(self.redis_client, job_id),
+        )
+
     def __del__(self):
         """Clean up temporary directory on worker deletion."""
         import shutil
@@ -1216,6 +1249,12 @@ class ExtractionWorker:
                     f"Detected {body.get('mime_type') or 'document'} pipeline, "
                     f"routing to queues: {target_queues}"
                 )
+
+                # Inference dispatch is owned by the entry stage (D3): a `rag`
+                # job produces inferences with no entities step. Counters are
+                # written before the first chunk publish inside the helper.
+                if INFERENCES_QUEUE in target_queues:
+                    await self._dispatch_inferences(channel, job_id, chunks)
 
                 # stage.queued contract: emit per-stage before the RabbitMQ publish (best-effort)
                 for qs in target_queues:

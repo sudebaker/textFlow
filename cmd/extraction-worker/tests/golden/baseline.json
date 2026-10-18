@@ -2,6 +2,36 @@
   "published": [
     {
       "body": {
+        "chunk_id": "chunk_000",
+        "chunk_text": "# ESCRITURA P\u00daBLICA DE COMPRAVENTA N\u00daMERO CIENTO CINCO\n\n## Comparecientes\n\nEn la ciudad de nuestro notario, don Fernando \u00c1lvarez de Toledo, fedatario p\u00fablico del Ilustre Colegio, se hace constar que comparecen: don Juan P\u00e9rez Gald\u00f3s, mayor de edad, vecino de esta ciudad, con domicilio en la calle Mayor n\u00famero ocho, piso tercero, LN12345678 en el Documento Nacional de Identidad; y do\u00f1a Mar\u00eda Sotelongos Viuda de Dep\u00f3sito, mayor de edad, actuando en su propio nombre y derecho, en adelante cada una la parte y conjuntamente las partes.\n\n## Intervenci\u00f3n y capacidad\n\nEl notario fedatario certifica que les conozco y les tengo por personas capaces: les advierto de que les va a ser le\u00edda esta escritura p\u00fablica, se les hacen las prevenciones del art\u00edculo ciento cuarenta y seis del Reglamento Notarial y toda vez que les parece, se hacen comparecer bajo la fe p\u00fablica del notario actuario, con los mismos ratos de identidad consignados que anteceden, definidos en este acta notarial.\n\n## Objeto de la compraventa\n\nSe vende un inmueble r\u00fastico sito en el paraje denominado El Romeral, t\u00e9rmino municipal de Baeza, con superficie de tres hect\u00e1reas noventa \u00e1reas veinte centi\u00e1reas, referencia catastral 23026A0150013900001YH, con la finca registral n\u00famero cuatro mil doscientos once de la Secci\u00f3n Primera del Registro de la Propiedad de Baeza.\n\n## Precio y forma de pago\n\nEl precio de la compraventa queda fijado en la cuant\u00eda total de ciento veinte mil euros (120.000 \u20ac), que recibe la parte vendedora a su entera satisfacci\u00f3n, y la restante mediante cheque bancario cruzado, tal como queda reflejado en el protocolo notarial del acta notarial en que la presente escritura p\u00fablica se inscribe.\n\n## Cargas\n\nLa finca se transmite libre de cargas, arrendatarios y grav\u00e1menes, estando al corriente de pago las cuotas del Impuesto de Bienes Inmuebles, as\u00ed como los gastos de la Comunidad de Propietarios, seg\u00fan certificado expedido por el secretario de dicha finca.\n\n## Prevenciones finales\n\nEn el supuesto de incumplimiento de lo estipulado en el plazo con",
+        "entities": [],
+        "job_id": "golden",
+        "source_type": "generico",
+        "total_chunks": 2
+      },
+      "kwargs": {
+        "content_type": "application/json",
+        "delivery_mode": "PERSISTENT"
+      },
+      "routing_key": "inferences"
+    },
+    {
+      "body": {
+        "chunk_id": "chunk_001",
+        "chunk_text": "omo los gastos de la Comunidad de Propietarios, seg\u00fan certificado expedido por el secretario de dicha finca.\n\n## Prevenciones finales\n\nEn el supuesto de incumplimiento de lo estipulado en el plazo convenido, las partes se someten a los Juzgados y Tribunales del domicilio de la finca, con renuncia expresa a cualquier otro fuero que pudiera corresponderles. Protocolo: lotes 865.321 pedidos de copia autorizada han sido solicitados por la parte compradora.\n\nY de conformidad con todo lo anterior, los comparecientes aceptan y firman la presente escritura p\u00fablica. Do lo as\u00ed otorgan y ante m\u00ed el notario fedatario certifica, de todo lo cual doy fe.\n\n",
+        "entities": [],
+        "job_id": "golden",
+        "source_type": "generico",
+        "total_chunks": 2
+      },
+      "kwargs": {
+        "content_type": "application/json",
+        "delivery_mode": "PERSISTENT"
+      },
+      "routing_key": "inferences"
+    },
+    {
+      "body": {
         "document_metadata": {
           "author": null,
           "creation_date": null,
@@ -239,6 +269,18 @@
         "confidence": 1.0,
         "document_type": "notariado"
       }
+    },
+    {
+      "key": "orchestrator:job:golden:inferences:remaining",
+      "op": "setex",
+      "ttl": 86400,
+      "value": 2
+    },
+    {
+      "key": "orchestrator:job:golden:inferences:total",
+      "op": "setex",
+      "ttl": 86400,
+      "value": 2
     },
     {
       "key": "job:events",

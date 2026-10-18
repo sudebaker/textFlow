@@ -72,6 +72,21 @@ def _stub_worker_modules(monkeypatch) -> None:
     monkeypatch.setattr(worker.magic, "from_file", lambda *a, **k: "application/pdf")
 
 
+def _split_published(published):
+    """Normalized publishes split into job fan-out envelopes and chunk messages.
+
+    Since the entry stage owns inference dispatch (D3), the extraction fan-out
+    publishes BOTH the job envelopes (one per target queue, carrying
+    ``queued_at``) and one inference message per non-empty chunk (carrying
+    ``chunk_id``). Chunk counts are fixture-dependent, so the golden-parity
+    assertions below compare envelopes only.
+    """
+    norm = normalize([], published)["published"]
+    envelopes = [p for p in norm if "queued_at" in p["body"]]
+    chunks = [p for p in norm if "chunk_id" in p["body"]]
+    return envelopes, chunks
+
+
 def _it_settings(**overrides):
     defaults = dict(
         ocr_enabled=True,
@@ -258,13 +273,18 @@ class TestVisionIntegrationFlagOn:
     def test_publish_contract_unchanged(self, monkeypatch):
         fake_redis, _, published = _run_job(monkeypatch, _it_settings())
         baseline = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+        envelopes, chunks = _split_published(published)
+        base_envelopes = [p for p in baseline["published"] if "queued_at" in p["body"]]
         # SAME routing keys as baseline (full profile: embeddings+entities+metadata+inferences)
-        routing = [p[0] for p in published]
-        assert routing == [p["routing_key"] for p in baseline["published"]]
+        assert [p["routing_key"] for p in envelopes] == [
+            p["routing_key"] for p in base_envelopes
+        ]
+        # Inference chunks are dispatched by the entry stage, one per non-empty chunk
+        assert chunks, "entry stage must publish inference chunk messages"
+        assert {p["routing_key"] for p in chunks} == {"inferences"}
 
-        norm = normalize([], published)["published"]  # queued_at -> "<ts>"
-        bodies = [p["body"] for p in norm]
-        for body, base_body in zip(bodies, baseline["published"]):
+        bodies = [p["body"] for p in envelopes]
+        for body, base_body in zip(bodies, base_envelopes):
             # Same job_message shape as the baseline (NORMALIZED capture of the
             # golden harness already applies queued_at="<ts>").
             assert sorted(body.keys()) == sorted(base_body["body"].keys())
@@ -286,13 +306,14 @@ class TestFlagOffStillBaseline:
         by the untouched test_golden_vision_off.py in the same suite."""
         fake_redis, _, published = _run_job(monkeypatch, _it_settings(ocr_enabled=False))
         assert [w[1] for w in fake_redis.writes if "provenance" in w[1]] == []
-        norm = normalize([], published)["published"]  # queued_at -> "<ts>"
+        envelopes, _chunks = _split_published(published)
         baseline = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
-        assert len(norm) == len(baseline["published"])
-        routings_a = [p["routing_key"] for p in norm]
-        routings_b = [p["routing_key"] for p in baseline["published"]]
+        base_envelopes = [p for p in baseline["published"] if "queued_at" in p["body"]]
+        assert len(envelopes) == len(base_envelopes)
+        routings_a = [p["routing_key"] for p in envelopes]
+        routings_b = [p["routing_key"] for p in base_envelopes]
         assert routings_a == routings_b
-        for p, base_p in zip(norm, baseline["published"]):
+        for p, base_p in zip(envelopes, base_envelopes):
             body = p["body"]
             assert sorted(body.keys()) == sorted(base_p["body"].keys())
             assert body["queued_at"] == "<ts>"

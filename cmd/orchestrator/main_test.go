@@ -62,3 +62,40 @@ func TestCalculateCurrentStep(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty defaults to full", input: "", want: "full"},
+		{name: "whitespace defaults to full", input: "   ", want: "full"},
+		{name: "rag passes through", input: "rag", want: "rag"},
+		{name: "full passes through", input: "full", want: "full"},
+		{name: "case insensitive", input: "RAG", want: "rag"},
+		{name: "trimmed", input: "  Full  ", want: "full"},
+		{name: "fast removed", input: "fast", wantErr: true},
+		{name: "balanced removed", input: "balanced", wantErr: true},
+		{name: "unknown rejected", input: "bogus", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeProfile(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeProfile(%q) error = nil; want error", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeProfile(%q) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("normalizeProfile(%q) = %q; want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

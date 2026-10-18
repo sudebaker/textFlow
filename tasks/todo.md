@@ -18,20 +18,21 @@ entities step; batch document with invalid profile → `rejected[]`; all-invalid
 ### Task 1.1 — RED: `normalizeProfile` contract
 - **Description:** Failing Go test pinning the `rag|full` contract: invalid profile → error/fallback documented, empty → `full`.
 - **Acceptance criteria:**
-  - [ ] `TestNormalizeProfile` fails before implementation, passes after.
-  - [ ] Empty input resolves to `full`; `rag`/`full` pass through; other values are rejected per D1.
+  - [x] `TestNormalizeProfile` fails before implementation, passes after.
+  - [x] Empty input resolves to `full`; `rag`/`full` pass through; other values are rejected per D1.
 - **Verification:**
-  - [ ] Tests pass: `go test ./cmd/orchestrator/... -run TestNormalizeProfile`
+  - [x] Tests pass: `go test ./cmd/orchestrator/... -run TestNormalizeProfile`
 - **Dependencies:** None
 - **Files likely touched:** `cmd/orchestrator/main_test.go`
 - **Spec**: processing-profiles (Profile set)
 
 ### Task 1.2 — GREEN: `normalizeProfile()` implementation
-- **Description:** Implement `normalizeProfile()` in the orchestrator: accept exactly `rag|full`, default `full`, reject others (breaking rename: `fast`/`balanced` removed).
+- **Description:** Implement `normalizeProfile()` in the orchestrator: accept exactly `rag|full`, default `full`, reject others (breaking rename: `fast`/`balanced` removed). Returns `(string, error)`; both handlers validate before creating job state and answer HTTP 400 `invalid_profile`.
 - **Acceptance criteria:**
-  - [ ] `rag` → `rag`; `full` → `full`; empty → `full`; `fast`/`balanced`/garbage → explicit rejection.
+  - [x] `rag` → `rag`; `full` → `full`; empty → `full`; `fast`/`balanced`/garbage → explicit rejection.
 - **Verification:**
-  - [ ] Tests pass: `go test ./cmd/orchestrator/... -run TestNormalizeProfile`
+  - [x] Tests pass: `go test ./cmd/orchestrator/... -run TestNormalizeProfile`
+  - [x] Regression: `go test ./cmd/orchestrator/...` green
 - **Dependencies:** 1.1
 - **Files likely touched:** `cmd/orchestrator/main.go`
 - **Spec**: processing-profiles (Profile set)
@@ -74,6 +75,7 @@ entities step; batch document with invalid profile → `rejected[]`; all-invalid
   - [ ] Resolver returns `embeddings`+`inferences` and no `entities`/`metadata` for `rag`.
   - [ ] Spreadsheet honors the profile (no override).
   - [ ] No new queues introduced → queue-arg parity unchanged.
+  - [ ] Sweep worker-side `profile` defaults (`balanced` fallbacks in extraction/audio/image/completion workers and the resolver signature) to `full`, so no legacy `balanced` default can resurrect the old pipeline.
 - **Verification:**
   - [ ] Tests pass: `pytest pkg/worker_common/tests/test_pipeline_config.py -v`
   - [ ] Tests pass: `pytest pkg/worker_common/tests/test_queue_declaration_sites.py -v`
@@ -373,7 +375,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 
 | Unit | PR | Status |
 |---|---|---|
-| W1 | PR 1 | ⬜ not started |
+| W1 | PR 1 | 🟡 1.1–1.2 done (normalizeProfile rag\|full) — resolver v2 pending (1.6) |
 | W2 | PR 2 | ⬜ blocked by W1 |
 | W3 | PR 3 | ⬜ blocked by W1 |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |

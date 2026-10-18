@@ -461,6 +461,16 @@ func createJobHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate the processing profile before creating any job state
+	profile, err := normalizeProfile(req.Profile)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_profile",
+			Detail: err.Error(),
+		})
+		return
+	}
+
 	// Admission control: check system capacity before accepting job
 	if admission != nil {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -514,8 +524,7 @@ func createJobHandler(c *gin.Context) {
 		logger.Info().Msgf("Job %s: No features requested", jobID)
 	}
 
-	// Normalize and store the processing profile (fast/balanced/full)
-	profile := normalizeProfile(req.Profile)
+	// Store the processing profile (rag|full)
 	if err := redis.SetJobProfile(ctx, jobID, profile); err != nil {
 		logger.Error().Err(err).Str("job_id", jobID).Str("profile", profile).Msg("Failed to store job profile")
 	} else {
@@ -1041,6 +1050,16 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate the processing profile before creating any job state
+	profile, err := normalizeProfile(c.PostForm("profile"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_profile",
+			Detail: err.Error(),
+		})
+		return
+	}
+
 	// Check spreadsheet size and row limits
 	if ext == ".csv" || ext == ".xls" || ext == ".xlsx" {
 		// Check file size
@@ -1212,8 +1231,7 @@ func uploadHandler(c *gin.Context) {
 		}
 	}
 
-	// Normalize and store the processing profile (fast/balanced/full)
-	profile := normalizeProfile(c.PostForm("profile"))
+	// Store the processing profile (rag|full) from multipart
 	if err := redis.SetJobProfile(ctx, jobID, profile); err != nil {
 		logger.Error().Err(err).Str("job_id", jobID).Str("profile", profile).Msg("Failed to store job profile")
 	} else {
@@ -1438,18 +1456,18 @@ func downloadHandler(c *gin.Context) {
 }
 
 // normalizeProfile validates and normalizes a processing profile string.
-// Accepts fast|balanced|full (case-insensitive). Unknown or empty values
-// fall back to "balanced" (the default pipeline behavior).
-func normalizeProfile(profile string) string {
+// Accepts rag|full (case-insensitive). Empty values default to "full";
+// any other value is rejected.
+func normalizeProfile(profile string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(profile))
 	switch normalized {
-	case "fast", "balanced", "full":
-		return normalized
+	case "":
+		return "full", nil
+	case "rag", "full":
+		return normalized, nil
 	default:
-		if normalized != "" {
-			logger.Warn().Str("profile", profile).Msg("Invalid profile requested, defaulting to balanced (valid: fast, balanced, full)")
-		}
-		return "balanced"
+		logger.Warn().Str("profile", profile).Msg("Invalid profile requested (valid: rag, full)")
+		return "", fmt.Errorf("invalid profile %q (valid: rag, full)", profile)
 	}
 }
 

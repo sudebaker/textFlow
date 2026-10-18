@@ -56,6 +56,7 @@ todo.md
 
 # Avoid re-adding the binary that was removed from history
 cmd/orchestrator/orchestrator
+/orchestrator
 
 # Local agent/tooling state (never commit)
 .atl/

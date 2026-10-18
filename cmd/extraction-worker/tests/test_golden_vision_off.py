@@ -277,7 +277,7 @@ def test_golden_capture_plumbing_sanity(monkeypatch):
     assert f"orchestrator:job:{JOB_ID}:metadata:document" in sets
 
     published_keys = {p["routing_key"] for p in result["published"]}
-    assert published_keys == {"embeddings", "entities", "metadata"}
+    assert published_keys == {"embeddings", "entities", "metadata", "inferences"}
     for p in result["published"]:
         assert isinstance(p["body"], dict)
         assert p["body"].get("queued_at") == "<ts>"

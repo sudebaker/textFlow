@@ -448,27 +448,11 @@ class CompletionWorker(BasePubSubWorker):
 
             self.logger.info(f"Job {job_id} completed steps: {completed_steps}")
 
-            # Determine required steps based on document type and features
-            document_metadata_json = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:document"
-            )
-            document_metadata = (
-                json.loads(document_metadata_json) if document_metadata_json else {}
-            )
-            mime_type = document_metadata.get("mime_type", "")
-
-            # Check if it's a spreadsheet
-            is_spreadsheet = "spreadsheet" in mime_type.lower() or mime_type in [
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.ms-excel",
-                "text/csv",
-                "application/zip",  # Excel files may show as ZIP
-            ]
-
-            # Check if it's an audio job (has audio step instead of extraction)
+            # Entry stage is type-driven (v2): audio/image jobs replace
+            # extraction, documents and spreadsheets both enter at extraction.
             is_audio = "audio" in completed_steps
-            # Check if it's an image job (has image step instead of extraction)
             is_image = "image" in completed_steps
+            entry = "audio" if is_audio else "image" if is_image else "extraction"
 
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
@@ -478,19 +462,16 @@ class CompletionWorker(BasePubSubWorker):
                 except Exception as e:
                     self.logger.warning(f"Failed to parse features: {e}")
 
-            profile = self.redis_client.get(f"orchestrator:job:{job_id}:profile") or "balanced"
+            profile = self.redis_client.get(f"orchestrator:job:{job_id}:profile") or "full"
 
             required_steps = self.pipeline.steps_for(
-                is_spreadsheet=is_spreadsheet,
-                is_audio=is_audio,
-                is_image=is_image,
+                entry=entry,
                 features=features,
                 profile=profile,
             )
 
             self.logger.info(
-                f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "
-                f"required steps: {required_steps}"
+                f"Job {job_id} entry stage: {entry}, required steps: {required_steps}"
             )
 
             if required_steps.issubset(completed_steps):

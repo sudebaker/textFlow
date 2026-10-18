@@ -1,28 +1,41 @@
 """PipelineDefinition loader for textFlow Python workers.
 
 Reads configs/pipeline.json (JSON, no new dependencies) and exposes helpers
-to derive routing queues (extraction-worker) and required steps
+to derive routing queues (entry-stage workers) and required steps
 (completion-worker) for a job.
+
+Schema v2 is declarative: the file type selects the entry stage and the
+processing profile composes the downstream stages (compose, never override).
+Chunking is declared as an entry-stage capability — it runs inside the entry
+stage and is not a queue, so no worker/queue is added for it.
 """
 
 import json
+import logging
 import os
 from typing import Dict, List, Optional, Set
 
 DEFAULT_CONFIG_PATH = "/app/configs/pipeline.json"
 
+#: Default processing profile (mirrors the orchestrator default).
+DEFAULT_PROFILE = "full"
+
+logger = logging.getLogger(__name__)
+
 
 class PipelineDefinition:
-    """Declarative DAG definition: pipelines, feature extras and rules."""
+    """Declarative DAG definition: types, profiles, feature extras and rules."""
 
     def __init__(self, data: Dict):
         self.data = data
-        self.version = data.get("version", "v1")
-        self.default_pipeline = data["default_pipeline"]
-        self.pipelines = data.get("pipelines", {})
+        self.version = data.get("version", "v2")
         self.profiles = data.get("profiles", {})
+        self.types = data.get("types", {})
         self.feature_extras = data.get("feature_extras", {})
         self.rules = data.get("rules", {})
+        self.entries = sorted(
+            {spec["entry"] for spec in self.types.values() if "entry" in spec}
+        )
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "PipelineDefinition":
@@ -43,83 +56,79 @@ class PipelineDefinition:
             return cls(json.load(f))
 
     def queues_for(
-        self, *, is_spreadsheet: bool, features: List[str], profile: str = "balanced"
+        self, *, entry: str, features: List[str], profile: str = DEFAULT_PROFILE
     ) -> List[str]:
-        """Routing queues for extraction-worker.
+        """Downstream routing queues for an entry-stage worker.
 
         Args:
-            is_spreadsheet: whether the document is a spreadsheet (entities-only).
+            entry: entry stage that is publishing (extraction/audio/image).
             features: requested features (e.g. ["inferences"]).
-            profile: processing profile (fast/balanced/full). Falls back to the
-                default pipeline when the profile is unknown or absent.
+            profile: processing profile (rag/full). Unknown values fall back
+                to the default profile.
 
         Returns:
             Ordered list of target queues to publish the job to.
         """
-        base = (
-            self.pipelines["spreadsheet"]["publish_queues"]
-            if is_spreadsheet
-            else self._profile_or_default(profile)["publish_queues"]
-        )
-        queues = list(base)
+        self._validate_entry(entry)
+        queues: List[str] = []
+        for stage in self._profile(profile).get("downstream", []):
+            if stage != entry and stage not in queues:
+                queues.append(stage)
         for feature in features:
             extra = self.feature_extras.get(feature)
-            if extra and extra.get("queue") and extra["queue"] not in queues:
-                queues.append(extra["queue"])
+            queue = extra.get("queue") if extra else None
+            if queue and queue != entry and queue not in queues:
+                queues.append(queue)
         return queues
 
     def steps_for(
-        self,
-        *,
-        is_spreadsheet: bool,
-        is_audio: bool,
-        is_image: bool = False,
-        features: List[str],
-        profile: str = "balanced",
+        self, *, entry: str, features: List[str], profile: str = DEFAULT_PROFILE
     ) -> Set[str]:
         """Required completion steps for completion-worker.
 
-        Applies the audio_replaces_extraction / image_replaces_extraction
-        rules and feature extra steps.
+        The entry stage (type-driven) plus the profile's downstream stages.
+        Chunking is not a step: entry stages chunk internally.
 
         Args:
-            is_spreadsheet: whether the document is a spreadsheet.
-            is_audio: whether the job produced an 'audio' step.
-            is_image: whether the job produced an 'image' step.
+            entry: entry stage (extraction/audio/image).
             features: requested features (e.g. ["inferences"]).
-            profile: processing profile (fast/balanced/full). Falls back to the
-                default pipeline when the profile is unknown or absent.
+            profile: processing profile (rag/full). Unknown values fall back
+                to the default profile.
 
         Returns:
             Set of step names that must be completed before finalization.
         """
-        base = list(self._profile_or_default(profile)["steps"])
-        if is_spreadsheet:
-            base = list(self.pipelines["spreadsheet"]["steps"])
-        steps = set(base)
-        if is_audio and self.rules.get("audio_replaces_extraction", True):
-            steps.discard("extraction")
-            steps.add("audio")
-        if is_image and self.rules.get("image_replaces_extraction", True):
-            steps.discard("extraction")
-            steps.add("image")
+        self._validate_entry(entry)
+        steps = {entry}
+        steps.update(self._profile(profile).get("downstream", []))
         for feature in features:
             extra = self.feature_extras.get(feature)
             if extra and extra.get("step"):
                 steps.add(extra["step"])
         return steps
 
-    def _profile_or_default(self, profile: str) -> Dict:
-        """Resolve a processing profile, falling back to the default pipeline.
+    def has_capability(self, type_name: str, capability: str) -> bool:
+        """Whether a declared file type advertises an entry-stage capability."""
+        spec = self.types.get(type_name, {})
+        return capability in spec.get("capabilities", [])
 
-        Profile semantics (review 2026-08-28 §8, decided 2026-09-27):
-        - fast: extraction + metadata
-        - balanced: extraction + embeddings + entities + metadata
-        - full: balanced + inferences (inferences included by default)
-        'inferences' remains available as a feature_extra for callers using
-        'fast' or 'balanced' who want inferences without switching profile.
+    def _validate_entry(self, entry: str) -> None:
+        if self.entries and entry not in self.entries:
+            raise ValueError(
+                f"unknown entry stage {entry!r} (valid: {self.entries})"
+            )
 
-        Returns the profile definition when present, otherwise the default
-        pipeline (backward compatibility for callers that do not pass a profile).
+    def _profile(self, profile: str) -> Dict:
+        """Resolve a processing profile, falling back to the default.
+
+        Profiles (v2, schema in configs/pipeline.json):
+        - rag:  entry + chunking + embeddings + inferences (no entities/metadata)
+        - full: rag + entities + metadata (default; + image description)
         """
-        return self.profiles.get(profile, self.default_pipeline)
+        if profile in self.profiles:
+            return self.profiles[profile]
+        if profile and profile != DEFAULT_PROFILE:
+            logger.warning(
+                "Unknown profile %r, falling back to %r", profile, DEFAULT_PROFILE
+            )
+        return self.profiles.get(DEFAULT_PROFILE, {})

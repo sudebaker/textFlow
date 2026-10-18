@@ -108,10 +108,10 @@ class AudioWorker(BaseAsyncWorker):
             if features:
                 job_message["features"] = features
 
-            profile = message.get("profile", "balanced")
+            profile = message.get("profile", "full")
             self._raise_if_cancelled(job_id)
             target_queues = self.pipeline.queues_for(
-                is_spreadsheet=False, features=features, profile=profile
+                entry="audio", features=features, profile=profile
             )
 
             for qs in target_queues:

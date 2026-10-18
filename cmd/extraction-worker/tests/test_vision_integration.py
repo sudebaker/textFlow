@@ -258,7 +258,7 @@ class TestVisionIntegrationFlagOn:
     def test_publish_contract_unchanged(self, monkeypatch):
         fake_redis, _, published = _run_job(monkeypatch, _it_settings())
         baseline = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
-        # SAME routing keys as baseline (full pipeline: embeddings+entities+metadata)
+        # SAME routing keys as baseline (full profile: embeddings+entities+metadata+inferences)
         routing = [p[0] for p in published]
         assert routing == [p["routing_key"] for p in baseline["published"]]
 
@@ -270,7 +270,7 @@ class TestVisionIntegrationFlagOn:
             assert sorted(body.keys()) == sorted(base_body["body"].keys())
             assert body["queued_at"] == "<ts>"
             assert body["pipeline_version"] == "v1"
-            assert body["profile"] == "balanced"
+            assert body["profile"] == "full"
             assert sorted(body["document_metadata"].keys()) == sorted(
                 base_body["body"]["document_metadata"].keys()
             )

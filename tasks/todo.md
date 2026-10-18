@@ -63,7 +63,7 @@ entities step; batch document with invalid profile → `rejected[]`; all-invalid
 ### Task 1.5 — RED: type×profile resolver matrix
 - **Description:** Failing pytest table-driven test over 4 types × 2 profiles: entry selection, downstream composition, chunking capability, spreadsheet `rag` → no entities step, spreadsheet short-circuit removed.
 - **Acceptance criteria:**
-  - [ ] `test_pipeline_config.py` covers the full matrix and the removed override.
+  - [x] `test_pipeline_config.py` covers the full matrix and the removed override.
 - **Verification:**
   - [ ] Tests pass: `pytest pkg/worker_common/tests/test_pipeline_config.py -v`
 - **Dependencies:** 1.2
@@ -73,10 +73,10 @@ entities step; batch document with invalid profile → `rejected[]`; all-invalid
 ### Task 1.6 — GREEN: `pipeline.json` v2 + resolver
 - **Description:** Update `configs/pipeline.json` to v2 (`types` with `entry` + `capabilities:[chunking]`, `profiles: rag|full`, drop the spreadsheet pipeline short-circuit); update `queues_for`/`steps_for` to take `entry`, `features`, `profile`.
 - **Acceptance criteria:**
-  - [ ] Resolver returns `embeddings`+`inferences` and no `entities`/`metadata` for `rag`.
-  - [ ] Spreadsheet honors the profile (no override).
-  - [ ] No new queues introduced → queue-arg parity unchanged.
-  - [ ] Sweep worker-side `profile` defaults (`balanced` fallbacks in extraction/audio/image/completion workers and the resolver signature) to `full`, so no legacy `balanced` default can resurrect the old pipeline.
+  - [x] Resolver returns `embeddings`+`inferences` and no `entities`/`metadata` for `rag`.
+  - [x] Spreadsheet honors the profile (no override).
+  - [x] No new queues introduced → queue-arg parity unchanged.
+  - [x] Sweep worker-side `profile` defaults (`balanced` fallbacks in extraction/audio/image/completion workers and the resolver signature) to `full`, so no legacy `balanced` default can resurrect the old pipeline.
 - **Verification:**
   - [ ] Tests pass: `pytest pkg/worker_common/tests/test_pipeline_config.py -v`
   - [ ] Tests pass: `pytest pkg/worker_common/tests/test_queue_declaration_sites.py -v`
@@ -376,7 +376,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 
 | Unit | PR | Status |
 |---|---|---|
-| W1 | PR 1 | 🟡 1.1–1.4 done (admission + batch profiles) — resolver v2 pending (1.6) |
+| W1 | PR 1 | 🟡 1.1–1.6 done (admission + batch profiles + resolver v2) — media fields (1.7–1.8) pending |
 | W2 | PR 2 | ⬜ blocked by W1 |
 | W3 | PR 3 | ⬜ blocked by W1 |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |

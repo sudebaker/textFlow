@@ -1194,7 +1194,7 @@ class ExtractionWorker:
                     # stage_queue_time_seconds (spec 1.1).
                     "queued_at": int(time.time() * 1000),
                     "pipeline_version": body.get("pipeline_version", "v1"),
-                    "profile": body.get("profile", "balanced"),
+                    "profile": body.get("profile", "full"),
                 }
 
                 if body.get("entity_types"):
@@ -1202,26 +1202,18 @@ class ExtractionWorker:
                 if body.get("features"):
                     job_message["features"] = body["features"]
 
-                # Determine if this is a spreadsheet (reduce pipeline: entities only)
-                is_spreadsheet = False
-                if body.get("mime_type") == "application/spreadsheet":
-                    is_spreadsheet = True
-                elif body.get("document_path"):
-                    path_lower = body["document_path"].lower()
-                    if path_lower.endswith((".csv", ".xls", ".xlsx")):
-                        is_spreadsheet = True
-
                 # Cooperative cancellation before publishing downstream
                 self._raise_if_cancelled(job_id)
 
-                # Route to appropriate queues from the declarative PipelineDefinition
+                # Entry stage is type-driven (v2): documents and spreadsheets
+                # both enter at extraction, and the profile composes downstream.
                 target_queues = self.pipeline.queues_for(
-                    is_spreadsheet=is_spreadsheet,
+                    entry="extraction",
                     features=features,
-                    profile=body.get("profile", "balanced"),
+                    profile=body.get("profile", "full"),
                 )
                 logger.info(
-                    f"Detected {'spreadsheet' if is_spreadsheet else 'full'} pipeline, "
+                    f"Detected {body.get('mime_type') or 'document'} pipeline, "
                     f"routing to queues: {target_queues}"
                 )
 

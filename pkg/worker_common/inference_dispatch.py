@@ -62,6 +62,18 @@ def plan_inference_messages(
     ]
 
 
+def skip_empty_inference_stage(target_queues: List[str], redis_client, job_id: str) -> List[str]:
+    """Complete the inferences step as a no-op and drop it from the fan-out.
+
+    When the entry stage yields no non-empty chunk there is nothing to infer:
+    publishing the `inferences` job envelope anyway would leave the consumer
+    with nothing to do (it discards envelopes missing `chunk_id`) while the
+    step stays incomplete — the job would wait for it until the job timeout.
+    """
+    redis_client.hset(f"orchestrator:job:{job_id}:steps", "inferences", "completed")
+    return [queue for queue in target_queues if queue != INFERENCES_QUEUE]
+
+
 async def dispatch_inference_chunks(
     *,
     publish: Callable[[Dict[str, Any]], Any],

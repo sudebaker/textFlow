@@ -75,10 +75,10 @@ def _metadata() -> dict:
     }
 
 
-async def _fake_docling(self, document_bytes, filename):
+async def _fake_docling(self, document_bytes, filename, text=LONG_TEXT):
     return {
         "document": {
-            "md_content": LONG_TEXT,
+            "md_content": text,
             "text_content": None,
             "pages": [{"page_no": 1}],
         },
@@ -113,7 +113,7 @@ class _Redis:
         self.data[key] = value
 
     def hset(self, key, *args, **kw):
-        self.rec.add("redis:hset", key)
+        self.rec.add("redis:hset", key, args, kw)
 
     def hget(self, key, field):
         return None
@@ -157,7 +157,7 @@ class _Incoming:
         return self._noop_cm()
 
 
-def _run(monkeypatch, *, profile: str, features=None) -> _Recorder:
+def _run(monkeypatch, *, profile: str, features=None, text: str = LONG_TEXT) -> _Recorder:
     monkeypatch.setenv(
         "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
     )
@@ -165,7 +165,13 @@ def _run(monkeypatch, *, profile: str, features=None) -> _Recorder:
     monkeypatch.setattr(worker, "tokenizer", None)
     monkeypatch.setattr(worker, "extract_document_metadata", _fake_metadata)
     monkeypatch.setattr(worker, "STORE", FakeStore())
-    monkeypatch.setattr(worker.ExtractionWorker, "_docling_convert_async", _fake_docling)
+    monkeypatch.setattr(
+        worker.ExtractionWorker,
+        "_docling_convert_async",
+        lambda self, document_bytes, filename: _fake_docling(
+            self, document_bytes, filename, text=text
+        ),
+    )
     monkeypatch.setattr(
         worker.SourceClassifier,
         "classify",
@@ -308,3 +314,35 @@ def test_rag_profile_dispatches_without_entities_step(monkeypatch):
     assert "entities" not in _job_envelope_queues(recorder.events)
     assert _counter_index(recorder.events) is not None
     assert len(_inference_messages(recorder.events)) >= 2
+
+
+def _step_events(events, step: str) -> list:
+    """hset writes on the job steps hash for a given step."""
+    return [
+        event
+        for event in events
+        if event[0] == "redis:hset"
+        and event[1] == f"orchestrator:job:{JOB_ID}:steps"
+        and step in event[2]
+    ]
+
+
+def test_no_chunks_completes_inferences_step_without_routing(monkeypatch):
+    """F1: nothing to infer must not hang the job waiting for the step.
+
+    Whitespace-only text passes the extraction guard (`if not text`) but yields
+    no chunk from `chunk_text`, so no counters are written and no chunk message
+    exists. The step must be completed as a no-op and the `inferences` job
+    envelope must NOT be published.
+    """
+    recorder = _run(monkeypatch, profile="full", features=[], text="   \n  \t ")
+    events = recorder.events
+
+    assert _counter_index(events) is None, "no counters without chunks"
+    assert _inference_messages(events) == []
+    assert INFERENCES_QUEUE not in _job_envelope_queues(events), (
+        "no inferences envelope: the step is already completed"
+    )
+    step_events = _step_events(events, "inferences")
+    assert step_events, "inferences step must be marked completed"
+    assert "completed" in step_events[0][2]

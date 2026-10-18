@@ -46,6 +46,7 @@ description `null`; no local model weights are loaded anywhere.
   - GIVEN a batch document without profile → it inherits the batch profile.
 - **Inference dispatch decoupled from entities**: micro-inferences MUST be dispatched from the entry-stage fan-out (extraction/audio/image), independent of the entities step, preserving the `inferences:remaining/:total` counter-before-publish race fix.
   - GIVEN a `rag` document job (no entities step) → inference chunks are published and inferences appear in the result.
+  - GIVEN an entry stage that yields no non-empty chunk (whitespace-only text, empty OCR) → the `inferences` step is completed as a no-op (no counters written, no job envelope published) so the job never waits on it.
   - Accepted consequence: inference messages carry `entities: []` always (the entry stage runs before entities), so the inference prompt no longer receives entity context. Recovering it would require a second, entities-triggered pass and is out of scope.
 
 ### pipeline-dag-declaration (MODIFIED)

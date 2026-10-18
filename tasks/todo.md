@@ -119,6 +119,7 @@ inference env source exists (no `LLM_URL`/`LLM_MODEL`).
 - **Acceptance criteria:**
   - [x] `rag` document job produces inference chunks without an entities step.
   - [x] Counters set before publish (race fix intact).
+  - [x] Entry stage with 0 non-empty chunks → `inferences` step completed as a no-op and the queue dropped from the fan-out (F1, review `601e21f`).
 - **Verification:**
   - [x] Tests pass: `pytest cmd/extraction-worker/tests/ -v` (122 passed, 10 skipped)
 - **Dependencies:** 2.1

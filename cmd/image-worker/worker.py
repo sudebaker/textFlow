@@ -14,6 +14,7 @@ from pkg.worker_common.inference_dispatch import (
     INFERENCES_TTL_SECONDS,
     dispatch_inference_chunks,
     inference_counter_key,
+    skip_empty_inference_stage,
 )
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
@@ -130,7 +131,10 @@ class ImageWorker(BaseAsyncWorker):
 
             # Inference dispatch is owned by the entry stage (D3).
             if INFERENCES_QUEUE in target_queues:
-                await self._dispatch_inferences(job_id, chunks)
+                if await self._dispatch_inferences(job_id, chunks) == 0:
+                    target_queues = skip_empty_inference_stage(
+                        target_queues, self.redis_client, job_id
+                    )
 
             for qs in target_queues:
                 try:

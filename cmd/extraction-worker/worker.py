@@ -68,6 +68,7 @@ from pkg.worker_common.inference_dispatch import (
     dispatch_inference_chunks,
     inference_counter_key,
     resolve_source_type,
+    skip_empty_inference_stage,
 )
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.rabbitmq_async import declare_queue_async
@@ -1256,7 +1257,11 @@ class ExtractionWorker:
                 # job produces inferences with no entities step. Counters are
                 # written before the first chunk publish inside the helper.
                 if INFERENCES_QUEUE in target_queues:
-                    await self._dispatch_inferences(channel, job_id, chunks)
+                    dispatched = await self._dispatch_inferences(channel, job_id, chunks)
+                    if dispatched == 0:
+                        target_queues = skip_empty_inference_stage(
+                            target_queues, self.redis_client, job_id
+                        )
 
                 # stage.queued contract: emit per-stage before the RabbitMQ publish (best-effort)
                 for qs in target_queues:

@@ -110,12 +110,18 @@ test-python: ## Run all Python tests (per-dir pytest loop, see comment)
 	# `import pdb` (class Pdb(bdb.Bdb, cmd.Cmd)) dies with INTERNALERROR on every
 	# dir under cmd/, and the plain `from fixtures import build_pdf` sys.path
 	# imports in extraction tests no longer resolve. Legacy mode keeps both
-	# working. A red dir aborts the loop loudly (no masking); host dep gaps
-	# (pydantic_settings, aio_pika, torch) surface as visible per-dir failures.
-	@for d in cmd/*/tests deploy/docker/vision-ocr/tests; do \
+	# working. Host dep gaps (pydantic_settings, aio_pika, torch) surface as
+	# visible per-dir failures; the loop REPORTS ALL dirs (tally) and exits
+	# nonzero at the end if any dir failed (loud, complete, no masking).
+	@red=0; \
+	for d in cmd/*/tests deploy/docker/vision-ocr/tests; do \
 		echo -e "${YELLOW}--- $$d ---${NC}"; \
-		pytest -v $$d || exit 1; \
-	done
+		pytest -v $$d || { red=1; red_dirs="$$red_dirs $$d"; }; \
+	done; \
+	if [ $$red -ne 0 ]; then \
+		echo -e "${RED}FAILED dirs:$$red_dirs${NC}"; \
+		exit 1; \
+	fi
 
 ***REMOVED***=================
 # Quality

@@ -36,6 +36,15 @@ func SetDependencies(eb *events.EventBus, r *redisclient.RedisClient, mq *broker
 func StreamJobHandler(c *gin.Context) {
 	jobID := c.Param("id")
 
+	// The http.Server sets WriteTimeout (30s) to protect regular routes,
+	// but that deadline also kills every SSE stream before its first
+	// heartbeat. Clear it for this connection only (gin's ResponseWriter
+	// unwraps to the raw conn writer); the server-level protection for all
+	// other routes stays intact.
+	if rc := http.NewResponseController(c.Writer); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+
 	// Use separate contexts: longer timeout for initial check, independent for stream
 	checkCtx, checkCancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer checkCancel()

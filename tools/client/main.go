@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"strconv"
 	"math"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,6 +44,7 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url,omitempty"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"`
+	Profile        string   `json:"profile,omitempty"` // fast|balanced|full
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }
@@ -77,15 +78,24 @@ type JobProgress struct {
 }
 
 type JobResults struct {
-	JobID            string                   `json:"job_id"`
-	Status           string                   `json:"status"`
-	CreatedAt        string                   `json:"created_at"`
-	CompletedAt      string                   `json:"completed_at"`
-	Text             string                   `json:"text"`
-	Chunks           []Chunk                  `json:"chunks,omitempty"`
-	Entities         map[string]EntityMinimal `json:"entities,omitempty"`
-	DocumentMetadata map[string]interface{}   `json:"document_metadata,omitempty"`
-	TextMetadata     map[string]interface{}   `json:"text_metadata,omitempty"`
+	JobID                string                   `json:"job_id"`
+	Status               string                   `json:"status"`
+	CreatedAt            string                   `json:"created_at"`
+	CompletedAt          string                   `json:"completed_at"`
+	SchemaVersion        string                   `json:"schema_version,omitempty"`
+	Text                 string                   `json:"text"`
+	Chunks               []Chunk                  `json:"chunks,omitempty"`
+	Entities             map[string]EntityMinimal `json:"entities,omitempty"`
+	DocumentMetadata     map[string]interface{}   `json:"document_metadata,omitempty"`
+	TextMetadata         map[string]interface{}   `json:"text_metadata,omitempty"`
+	SourceClassification *SourceClassification    `json:"source_classification,omitempty"`
+}
+
+// SourceClassification mirrors internal/models.SourceClassificationResult.
+type SourceClassification struct {
+	DocumentType      string  `json:"document_type"`
+	Confidence        float32 `json:"confidence"`
+	ClassifierVersion string  `json:"classifier_version"`
 }
 
 type Chunk struct {
@@ -109,11 +119,12 @@ type EntityMinimal struct {
 }
 
 type InferenceItem struct {
-	Text       string    `json:"text"`
-	Confidence float32   `json:"confidence"`
-	EntityRefs []string  `json:"entity_refs,omitempty"`
-	EntityID   string    `json:"entity_id,omitempty"`
-	Embedding  []float32 `json:"embedding,omitempty"`
+	Text         string    `json:"text"`
+	Confidence   float32   `json:"confidence"`
+	EntityRefs   []string  `json:"entity_refs,omitempty"`
+	EntityID     string    `json:"entity_id,omitempty"`
+	EntityIDRefs []string  `json:"entity_id_refs,omitempty"`
+	Embedding    []float32 `json:"embedding,omitempty"`
 }
 
 type MicroInference struct {
@@ -136,6 +147,7 @@ type BatchDocument struct {
 
 type BatchRequest struct {
 	Documents      []BatchDocument `json:"documents"`
+	Features       []string        `json:"features,omitempty"`
 	MaxConcurrency int             `json:"max_concurrency,omitempty"`
 	WebhookURL     string          `json:"webhook_url,omitempty"`
 	WebhookSecret  string          `json:"webhook_secret,omitempty"`
@@ -202,6 +214,7 @@ func main() {
 		timeoutStr                 string
 		resumeJobID                string
 		diarizeEnabled             bool
+		profile                    string
 	)
 
 	args := os.Args[1:]
@@ -279,6 +292,14 @@ func main() {
 			i++
 		case "--diarize":
 			diarizeEnabled = true
+		case "--profile":
+			if i+1 >= len(args) {
+				fmt.Println("Error: --profile requires a value")
+				printUsage()
+				os.Exit(1)
+			}
+			profile = args[i+1]
+			i++
 		default:
 			fmt.Printf("Unknown argument: %s\n", args[i])
 			printUsage()
@@ -300,6 +321,18 @@ func main() {
 		fmt.Println("Error: --inference-embeddings requires -f/--inferences flag")
 		printUsage()
 		os.Exit(1)
+	}
+
+	// Validate processing profile (fast|balanced|full)
+	if profile != "" {
+		switch strings.ToLower(strings.TrimSpace(profile)) {
+		case "fast", "balanced", "full":
+			profile = strings.ToLower(strings.TrimSpace(profile))
+		default:
+			fmt.Printf("Error: invalid profile '%s' (valid: fast, balanced, full)\n", profile)
+			printUsage()
+			os.Exit(1)
+		}
 	}
 
 	// Validate required arguments based on mode
@@ -399,7 +432,7 @@ func main() {
 
 		fmt.Printf("\nResults saved to: %s\n", outputFile)
 	} else {
-		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, inferenceEmbeddingsEnabled, webhookURL, webhookSecret, diarizeEnabled)
+		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, inferenceEmbeddingsEnabled, webhookURL, webhookSecret, diarizeEnabled, profile)
 		if err != nil {
 			fmt.Printf("Error uploading document: %v\n", err)
 			os.Exit(1)
@@ -446,8 +479,9 @@ func printUsage() {
 	fmt.Println("  -w, --webhook <url>         Webhook URL for job completion notification")
 	fmt.Println("  --webhook-secret <secret>   Secret for webhook signature verification")
 	fmt.Println("  --diarize                  Enable speaker diarization for audio files (Whisper)")
+	fmt.Println("  --profile <name>           Processing profile: fast, balanced, full (default: balanced)")
 	fmt.Println("  --sse                      Use SSE streaming instead of polling")
-	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 10m)")
+	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 1h)")
 	fmt.Println("  -b, --batch [file]         Batch processing mode (reads JSON file with documents)")
 	fmt.Println("  --job-id <id>              Resume or download results for an existing job ID")
 	fmt.Println("  -h, --help                 Show this help message")
@@ -461,6 +495,10 @@ func printUsage() {
 	fmt.Println("Inference Mode:")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json -f")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json -f --inference-embeddings")
+	fmt.Println("")
+	fmt.Println("Processing Profiles:")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json --profile fast")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json --profile full")
 	fmt.Println("")
 	fmt.Println("Audio Files (MP3, WAV, M4A, OGG):")
 	fmt.Println("  client -i /path/to/audio.mp3 -o output.json")
@@ -478,7 +516,7 @@ func printUsage() {
 	fmt.Println("  client -b documents.json -o results.json -w https://myapp.com/webhook")
 }
 
-func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool) (string, error) {
+func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool, profile string) (string, error) {
 	if strings.HasPrefix(inputFile, "http://") || strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
@@ -489,7 +527,7 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 	if !strings.HasPrefix(inputFile, "http://") && !strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
-			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled, inferenceEmbeddingsEnabled)
+			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled, inferenceEmbeddingsEnabled, profile)
 		}
 	}
 
@@ -520,6 +558,7 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 		Filename:       filename,
 		WebhookURL:     webhookURL,
 		WebhookSecret:  webhookSecret,
+		Profile:        profile,
 	}
 	if inferencesEnabled {
 		if inferenceEmbeddingsEnabled {
@@ -638,7 +677,7 @@ func downloadAndEncode(ctx context.Context, fileURL string) (string, string, err
 	return encoded, filename, nil
 }
 
-func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool) (string, error) {
+func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, profile string) (string, error) {
 	fmt.Printf("Uploading %s file via multipart: %s\n", strings.TrimPrefix(ext, "."), filePath)
 
 	body := &bytes.Buffer{}
@@ -678,6 +717,12 @@ func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ex
 		}
 		if err := writer.WriteField("features", featuresValue); err != nil {
 			return "", fmt.Errorf("failed to write features field: %w", err)
+		}
+	}
+
+	if profile != "" {
+		if err := writer.WriteField("profile", profile); err != nil {
+			return "", fmt.Errorf("failed to write profile field: %w", err)
 		}
 	}
 
@@ -1104,6 +1149,14 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
+					// Stream closed while the job may have finished without a
+					// parsed terminal event (e.g. race between completion and
+					// our subscription). Trust the API status over the stream.
+					if !isTerminalStatus(lastStatus) && lastStatus != "timeout" {
+						if status, _, statErr := getJobStatus(ctx, apiURL, jobID); statErr == nil && isTerminalStatus(status) {
+							lastStatus = status
+						}
+					}
 					mu.RLock()
 					printStatus("\r✓ %s\n", lastLabel)
 					mu.RUnlock()
@@ -1118,8 +1171,13 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 				continue
 			}
 
-			if strings.HasPrefix(line, "data: ") {
-				data := strings.TrimPrefix(line, "data: ")
+			// Gin emits SSE frames without an extra space ("data:{...}").
+			// Accept both "data: {...}" and "data:{...}".
+			if strings.HasPrefix(line, "data") {
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if data == "" {
+					continue
+				}
 
 				var event JobEvent
 				if err := json.Unmarshal([]byte(data), &event); err != nil {

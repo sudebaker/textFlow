@@ -45,7 +45,9 @@ type Config struct {
 	QueueDepthRejectThreshold int     `env:"QUEUE_DEPTH_REJECT_THRESHOLD" default:"500"`
 
 	// RabbitMQ Queue Limits
-	QueueMaxLength int `env:"QUEUE_MAX_LENGTH" default:"1000"`
+	// NOTE: caarlos0/env v11 ignores the `default` struct tag — only `envDefault`
+	// is honored (env.go looks up "envDefault" exclusively).
+	QueueMaxLength int `env:"QUEUE_MAX_LENGTH" envDefault:"1000"`
 
 	// API Key for orchestrator auth (empty = disabled, for dev mode)
 	APIKey string `env:"API_KEY" default:""`

@@ -290,10 +290,10 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 - **Description:** Replace local bge-m3 loading in `cmd/embeddings-worker/`, `pkg/worker_common/inference_embeddings.py` and `cmd/completion-worker/` with `EmbeddingsClient`.
 - **Acceptance criteria:**
   - [x] No local model-loading path remains in the deployed worker paths; no local fallback.
-  - [ ] Vector dimension parity (1024) verified against the dev endpoint (no dev endpoint available in this environment).
+  - [x] Vector dimension parity (1024) verified: local bge-m3 backend (`/v1/embeddings`) returned 1024-dim normalized vectors; end-to-end chunks/inferences carry 1024-dim embeddings.
 - **Verification:**
   - [x] Tests pass: `pytest cmd/embeddings-worker/tests/ -v` (35 passed) + `pytest cmd/completion-worker/tests/ -v` (38 passed)
-  - [ ] Contract check: 1024-dim vector returned by the dev endpoint (blocked: no `EMBEDDINGS_BASE_URL`)
+  - [x] Contract check: 1024-dim vectors returned by the local bge-m3 backend (E2E 2026-10-26)
 - **Dependencies:** 4.4
 - **Files likely touched:** `cmd/embeddings-worker/embeddings_worker.py`, `pkg/worker_common/inference_embeddings.py`, `cmd/completion-worker/completion_worker.py`
 - **Spec**: remote-embeddings (ADDED) — replace all three local paths; D4
@@ -333,7 +333,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
   - [x] Client accepts `rag|full` and includes it in the request; default `full`.
 - **Verification:**
   - [x] Build succeeds: `make build-client` (`tools/client` builds via its own go.mod)
-  - [ ] Manual check: client submits a job carrying a valid `profile` (blocked: no running stack)
+  - [x] Manual check: client submits `rag`/`full` jobs (E2E 2026-10-26; per-doc profile in batch too)
 - **Dependencies:** 1.4
 - **Files likely touched:** `tools/client/main.go`
 - **Spec**: Cross-cutting — Docs and test client
@@ -363,10 +363,10 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.6 — E2E: mixed-profile batch
 - **Description:** End-to-end run with the test client: one batch containing a `rag` and a `full` document produces per-file stage sets per the type×profile matrix.
 - **Acceptance criteria:**
-  - [ ] Each document ends with the stages its profile dictates; no cross-contamination. (unit-level matrix green; E2E blocked)
+  - [x] Each document ends with the stages its profile dictates; no cross-contamination (E2E 2026-10-26).
   - [ ] Full suite green (Go + Python). Go green; touched Python dirs green; full `make test-python` still blocked by pre-existing host deps.
 - **Verification:**
-  - [ ] E2E: mixed-profile batch via `bin/client` (blocked: no stack / no embeddings+inference backends)
+  - [x] E2E: mixed-profile batch via the client (rag/full/inherited + invalid rejected) (2026-10-26)
   - [x] Tests pass: `make test` (Go suite)
   - [ ] Tests pass: `make test-python` (pre-existing rapidfuzz/pydantic_settings gaps)
 - **Dependencies:** 5.1–5.5
@@ -383,8 +383,50 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 | W2 | PR 2 | ✅ Complete 2.1–2.6 + 2.7 unit acceptance (`rag` dispatch test + single `INFERENCE_*` source) |
 | W3 | PR 3 | ✅ Complete 3.1–3.6 (profile-driven OCR/describe, single-field description, media TTL) |
 | W4 | PR 4 | ✅ 4.1–4.5 done (remote client, cache, degraded, cutover) — 4.6 contract check pending dev endpoint |
-| W5 | PR 5 | ✅ 5.1–5.5 done (media fields, client profile, docs, parity) + review fix `2cf6030` (media/degraded end-to-end en `/download` y cliente, docs) — 5.6 E2E pending infra |
+| W5 | PR 5 | ✅ 5.1–5.6 done (media fields, client profile, docs, parity, mixed-profile E2E) + review fix `2cf6030` |
 
 **Verificación del fix de review `2cf6030`** (2026-10-26): `make test` (Go, exit 0, 7 pkgs ok),
 `pytest cmd/completion-worker/tests/` (43 passed), `pytest cmd/audio-worker/tests/` (5 passed),
 `pytest pkg/worker_common/tests/test_queue_declaration_sites.py` (9 passed), `tools/client` build OK.
+
+---
+
+## E2E verification (2026-10-26)
+
+Full local stack without GPU: docker compose + temporary override (no GPU devices), local
+bge-m3 embeddings backend (`/v1/embeddings`, 1024-dim), Ollama on the mac-mini for inference
+and vision, whisper `small`. Client matrix executed end-to-end:
+
+| Case | Result |
+|---|---|
+| PDF `rag` / `full` (+inferences, +inference_embeddings) | ✅ chunks, 1024-dim embeddings, entities (full only), metadata, 3 inferences with 1024-dim embeddings |
+| TXT `rag` | ✅ plain-text fast path (Docling returned empty before the fix) |
+| Image `full` / `rag` | ✅ OCR, description (non-null full / null rag), `metadata_image`, entities; description never embedded |
+| Audio `full` (whisper `small`) | ✅ transcript, 3 segments, `metadata_audio.has_diarization=false`, entity, inferences |
+| Spreadsheet `full` / `rag` | ✅ chunks+embeddings+inferences; entities only in full |
+| Batch mixed (rag/full/inherited + invalid) | ✅ 3 completed, invalid `fast` → `rejected[]`; per-job steps match profile |
+| SSE | ✅ streaming completion + results |
+| Webhook | ✅ delivered `completed` payload to receiver |
+
+### Fixes discovered by E2E
+
+- `cmd/{extraction,audio,image}-worker`: the job envelope was also published to the
+  `inferences` queue (invalid messages); now only chunk messages go there.
+- `cmd/inference-worker/inference_worker.py`: model discovery now prefers `INFERENCE_MODEL`
+  instead of always taking the first `/v1/models` entry (Ollama multi-model).
+- `cmd/orchestrator/handlers/batch.go`: batch text documents were never published
+  (`PublishJobMessage` rejects messages without a document, error ignored). They are now
+  base64-encoded as `.txt` with `text/plain`, and publish failures mark the job failed.
+- `cmd/extraction-worker/worker.py`: `.txt` (and batch text) bypasses Docling with a
+  plain-text fast path; Docling returned empty text for `.txt`.
+- `deploy/docker/docker-compose.yml`: completion-worker now receives `EMBEDDINGS_BASE_URL`
+  / `EMBEDDINGS_MODEL` (inference-embeddings finalization failed without them).
+
+### Known non-blocking findings
+
+- `gliner_config.json` (model artifact, gitignored) points to `microsoft/deberta-v3-small`;
+  air-gapped runs need it patched to `/models/deberta-v3-small` (or an HF cache mount).
+- Raw `/download` re-marshals `image_description` as `null` for non-image jobs.
+- `rag` results still include extraction-time `document_metadata`/`text_metadata` even though
+  the metadata stage is skipped (extraction computes fast/deep metadata for every job).
+- Client batch output shows counts only (not `rejected[]` details or per-job results).

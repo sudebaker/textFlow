@@ -1,6 +1,7 @@
 """Contract tests for the remote embeddings client (remote-embeddings)."""
 
 import hashlib
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -137,3 +138,36 @@ class TestConfiguration:
 
         with pytest.raises(EmbeddingsServiceError):
             EmbeddingsClient(redis_client=_FakeRedis())
+
+
+class TestResponseIntegrity:
+    def test_response_indices_align_vectors(self):
+        client = _client()
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "data": [
+                {"index": 1, "embedding": [0.2] * 1024},
+                {"index": 0, "embedding": [0.1] * 1024},
+            ]
+        }
+
+        with patch("requests.post", return_value=response):
+            result = client.embed_batch(["first", "second"])
+
+        assert result.vectors[0] == [0.1] * 1024
+        assert result.vectors[1] == [0.2] * 1024
+
+    def test_corrupt_cache_entry_is_a_miss(self):
+        redis_client = _FakeRedis()
+        client = _client(redis_client)
+        redis_client.store[client._cache_key("hello")] = json.dumps(
+            [0.1, 0.2]
+        )  # wrong dimension
+
+        with patch("requests.post", return_value=_response([[0.9] * 1024])) as post:
+            result = client.embed_batch(["hello"])
+
+        post.assert_called_once()
+        assert result.vectors[0] == [0.9] * 1024

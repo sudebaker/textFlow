@@ -25,6 +25,7 @@ from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
 from pkg.worker_common.embeddings_client import EmbeddingsClient
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
+from pkg.worker_common.job_keys import set_job_key
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "embeddings")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
@@ -128,36 +129,38 @@ class EmbeddingsWorker(BaseWorker):
         chunk_texts = [chunk.get("text", "") for chunk in chunks]
         chunk_ids = [chunk.get("chunk_id") for chunk in chunks]
 
+        degraded_key = f"orchestrator:job:{job_id}:embeddings_degraded"
+
         def embed(texts: List[str]) -> List[List[float]]:
-            batch_result = self.embeddings_client.embed_batch(
+            result = self.embeddings_client.embed_batch(
                 texts, batch_size=self.batch_size
             )
-            if batch_result.degraded:
-                self.redis_client.set(
-                    f"orchestrator:job:{job_id}:embeddings_degraded", "true"
+            if result.degraded:
+                # Media-style job key: it must expire with the job and a clean
+                # retry must clear a stale flag.
+                set_job_key(
+                    self.redis_client, job_id, "embeddings_degraded", "true"
                 )
-            return batch_result.vectors
+            else:
+                self.redis_client.delete(degraded_key)
+            return result.vectors
 
-        for batch_start in range(0, len(chunk_texts), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(chunk_texts))
-            batch_texts = chunk_texts[batch_start:batch_end]
-            batch_ids = chunk_ids[batch_start:batch_end]
+        batch_start_time = time.time()
+        batch_embeddings = embed(chunk_texts)
+        batch_duration.labels(batch_size=len(chunk_texts)).observe(
+            time.time() - batch_start_time
+        )
 
-            batch_start_time = time.time()
-            batch_embeddings = embed(batch_texts)
-            batch_duration.labels(batch_size=len(batch_texts)).observe(
-                time.time() - batch_start_time
-            )
+        for chunk_id, embedding in zip(chunk_ids, batch_embeddings):
+            if chunk_id and embedding:
+                embeddings_dict[chunk_id] = embedding
+                chunks_total.labels(status="success").inc()
+            elif chunk_id:
+                chunks_total.labels(status="degraded").inc()
 
-            for chunk_id, embedding in zip(batch_ids, batch_embeddings):
-                if chunk_id:
-                    embeddings_dict[chunk_id] = embedding
-                    chunks_total.labels(status="success").inc()
-
-            processed = min(batch_end, total_chunks)
-            self.logger.info(
-                f"Generated embeddings for chunk {processed}/{total_chunks}"
-            )
+        self.logger.info(
+            f"Generated embeddings for {len(embeddings_dict)}/{total_chunks} chunks"
+        )
 
         if detect_gpu():
             self.gpu_memory_gb.set(torch.cuda.memory_allocated() / 1024**3)

@@ -87,11 +87,25 @@ class TestGenerateInferenceEmbeddings:
         )
         assert result["c0"]["inference_0"] == [0.5, 0.6]
 
-    def test_embed_failure_logs_warning_and_skips_chunk(self):
+    def test_total_embed_failure_raises(self):
         logger = MagicMock()
         embed_fn = MagicMock(side_effect=RuntimeError("boom"))
-        result = generate_inference_embeddings({"c0": [{"text": "a"}]}, embed_fn, logger)
-        assert result == {}
+        with pytest.raises(RuntimeError, match="boom"):
+            generate_inference_embeddings({"c0": [{"text": "a"}]}, embed_fn, logger)
+        logger.warning.assert_called_once()
+
+    def test_partial_embed_failure_keeps_successful_chunks(self):
+        logger = MagicMock()
+
+        def embed_fn(texts):
+            if texts == ["boom"]:
+                raise RuntimeError("boom")
+            return [[0.1]]
+
+        result = generate_inference_embeddings(
+            {"c0": [{"text": "ok"}], "c1": [{"text": "boom"}]}, embed_fn, logger
+        )
+        assert result == {"c0": {"inference_0": [0.1]}}
         logger.warning.assert_called_once()
 
 
@@ -250,6 +264,42 @@ class TestDegradedFlag:
         )
 
         assert result["status"] == "success"
-        worker_env["redis_client"].set.assert_any_call(
-            "orchestrator:job:j1:embeddings_degraded", "true"
+        worker_env["redis_client"].setex.assert_any_call(
+            "orchestrator:job:j1:embeddings_degraded", 86400, "true"
+        )
+
+
+class TestPartialDegradation:
+    def test_multi_batch_partial_failure_keeps_job_alive(self, worker_env):
+        """One failed batch degrades the result instead of failing the job."""
+        w = worker_env["worker"]
+        w.batch_size = 1
+        client = worker_env["client"]
+        client.embed_batch.return_value = EmbeddingsResult(
+            vectors=[[0.1, 0.2], [], [0.3, 0.4]], degraded=True
+        )
+        worker_env["redis_client"].exists.return_value = 0
+        worker_env["redis_client"].get.return_value = json.dumps(
+            [
+                {"chunk_id": "c0", "text": "a"},
+                {"chunk_id": "c1", "text": "b"},
+                {"chunk_id": "c2", "text": "c"},
+            ]
+        )
+
+        result = w.process_message({"job_id": "j1"})
+
+        assert result["status"] == "success"
+        client.embed_batch.assert_called_once()
+        embeddings_call = next(
+            c
+            for c in worker_env["redis_client"].set.call_args_list
+            if c[0][0] == "orchestrator:job:j1:embeddings"
+        )
+        stored = msgpack.unpackb(
+            worker_env["store"].get(embeddings_call[0][1]), raw=False
+        )
+        assert stored == {"c0": [0.1, 0.2], "c2": [0.3, 0.4]}
+        worker_env["redis_client"].setex.assert_any_call(
+            "orchestrator:job:j1:embeddings_degraded", 86400, "true"
         )

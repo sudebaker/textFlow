@@ -301,6 +301,7 @@ services:
     container_name: textflow-entities-worker
     <<: *gpu-devices
     volumes:
+    - "${MODELS_PATH:?MODELS_PATH is not set}:/models"
     - artifacts-data:/app/data/artifacts
     - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
     - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro

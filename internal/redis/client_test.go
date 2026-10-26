@@ -296,7 +296,7 @@ func TestRedisClient_DeleteJob(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, deletedProvenance)
 
-	for _, suffix := range []string{"metadata:image", "metadata:audio", "audio_segments"} {
+	for _, suffix := range []string{"metadata:image", "metadata:audio", "audio_segments", "embeddings_degraded"} {
 		deleted, err := client.client.Exists(ctx, client.key("job", jobID, suffix)).Result()
 		require.NoError(t, err)
 		assert.Zero(t, deleted, "DeleteJob must remove %s", suffix)

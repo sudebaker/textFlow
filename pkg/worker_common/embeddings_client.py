@@ -14,6 +14,7 @@ Failure policy:
 
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ import requests
 
 DEFAULT_DIMENSION = 1024
 DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingsServiceError(RuntimeError):
@@ -50,6 +53,7 @@ class EmbeddingsClient:
         cache_ttl: Optional[int] = None,
         batch_size: Optional[int] = None,
         dimension: Optional[int] = None,
+        logger: Optional[Any] = None,
     ):
         self.base_url = (base_url or os.getenv("EMBEDDINGS_BASE_URL", "")).rstrip("/")
         if not self.base_url:
@@ -58,6 +62,7 @@ class EmbeddingsClient:
             )
 
         self.model = model or os.getenv("EMBEDDINGS_MODEL", "BAAI/bge-m3")
+        self.logger = logger or logging.getLogger(__name__)
         self.redis_client = redis_client
         self.timeout = (
             int(os.getenv("EMBEDDINGS_TIMEOUT", "30"))
@@ -125,8 +130,15 @@ class EmbeddingsClient:
             batch = misses[start : start + size]
             try:
                 batch_vectors = self._request([text for _, text in batch])
-            except EmbeddingsServiceError:
+            except EmbeddingsServiceError as e:
                 degraded = True
+                first = batch[0][1][:80] if batch else ""
+                self.logger.warning(
+                    "Embeddings batch failed (%d texts, first=%r): %s",
+                    len(batch),
+                    first,
+                    e,
+                )
                 continue
 
             for (index, text), vector in zip(batch, batch_vectors):
@@ -160,12 +172,29 @@ class EmbeddingsClient:
                 )
                 response.raise_for_status()
                 data = response.json().get("data") or []
-                vectors = [item.get("embedding") for item in data]
 
-                if len(vectors) != len(texts):
+                if len(data) != len(texts):
                     raise EmbeddingsServiceError(
-                        f"expected {len(texts)} embeddings, got {len(vectors)}"
+                        f"expected {len(texts)} embeddings, got {len(data)}"
                     )
+
+                if all("index" in item for item in data):
+                    indexed = {}
+                    for item in data:
+                        index = item.get("index")
+                        if (
+                            not isinstance(index, int)
+                            or index < 0
+                            or index >= len(texts)
+                            or index in indexed
+                        ):
+                            raise EmbeddingsServiceError(
+                                f"invalid embedding index: {index!r}"
+                            )
+                        indexed[index] = item.get("embedding")
+                    vectors = [indexed[i] for i in range(len(texts))]
+                else:
+                    vectors = [item.get("embedding") for item in data]
                 for vector in vectors:
                     if not isinstance(vector, list) or len(vector) != self.dimension:
                         raise EmbeddingsServiceError(
@@ -188,13 +217,26 @@ class EmbeddingsClient:
     def _cache_get(self, text: str) -> Optional[List[float]]:
         if self.redis_client is None:
             return None
-        raw = self.redis_client.get(self._cache_key(text))
+        try:
+            raw = self.redis_client.get(self._cache_key(text))
+        except Exception as e:
+            # Cache is an optimization; a Redis hiccup must not fail the job.
+            self.logger.warning("Embeddings cache read failed: %s", e)
+            return None
         if not raw:
             return None
         try:
-            return json.loads(raw)
+            vector = json.loads(raw)
         except (TypeError, ValueError):
             return None
+        if (
+            not isinstance(vector, list)
+            or len(vector) != self.dimension
+            or not all(isinstance(value, (int, float)) for value in vector)
+        ):
+            self.logger.warning("Discarding invalid cached embedding")
+            return None
+        return vector
 
     def _cache_set(self, text: str, vector: List[float]) -> None:
         if self.redis_client is None:

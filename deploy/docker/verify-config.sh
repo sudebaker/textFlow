@@ -47,7 +47,6 @@ print_header "🔍 textFlow - Configuration Check"
 print_header "📦 MODEL FILES"
 
 MODELS_REQUIRED=(
-    "bge-m3"
     "deberta-v3-small"
     "gliner-small-v2.1"
 )
@@ -103,7 +102,6 @@ print_header "🐳 DOCKERFILE CONFIGURATION"
 
 DOCKERFILES=(
     "cmd/entities-worker/Dockerfile"
-    "cmd/embeddings-worker/Dockerfile"
 )
 
 for dockerfile in "${DOCKERFILES[@]}"; do
@@ -133,10 +131,16 @@ else
     check_error "docker-compose.yml: GLiNER model path incorrect"
 fi
 
-if grep -q "volumes:" deploy/docker/docker-compose.yml && grep -q "../../models:/models" deploy/docker/docker-compose.yml; then
-    check_ok "docker-compose.yml: Model volumes mounted"
+if grep -q "MODELS_PATH:?MODELS_PATH is not set}:/models" deploy/docker/docker-compose.yml; then
+    check_ok "docker-compose.yml: entities model volume mounted"
 else
-    check_error "docker-compose.yml: Model volumes NOT mounted correctly"
+    check_error "docker-compose.yml: entities model volume NOT mounted"
+fi
+
+if grep -q "EMBEDDINGS_BASE_URL" deploy/docker/docker-compose.yml; then
+    check_ok "docker-compose.yml: remote embeddings backend configured"
+else
+    check_error "docker-compose.yml: EMBEDDINGS_BASE_URL missing"
 fi
 
 ***REMOVED***================

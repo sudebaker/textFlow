@@ -622,7 +622,7 @@ class CompletionWorker(BasePubSubWorker):
             inference_embeddings_enabled = "inference_embeddings" in features and "inferences" in features
 
             if inference_embeddings_enabled:
-                if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
+                if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embeddings_client():
                     self.logger.info("Feature 'inference_embeddings' enabled, generating embeddings...")
                     inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
                     if inference_embeddings_by_chunk:
@@ -681,6 +681,14 @@ class CompletionWorker(BasePubSubWorker):
 
             if source_classification is not None:
                 results["source_classification"] = source_classification
+
+            if (
+                self.redis_client.get(
+                    f"orchestrator:job:{job_id}:embeddings_degraded"
+                )
+                == "true"
+            ):
+                results["embeddings_degraded"] = True
 
             # Log completion stats
             total_inferences = sum(len(c.get("inferences", [])) for c in enriched_chunks)

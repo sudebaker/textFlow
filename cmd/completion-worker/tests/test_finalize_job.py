@@ -283,3 +283,41 @@ def test_entity_offsets_preserved():
     assert result[eid]["start_offset"] == 100
     assert result[eid]["end_offset"] == 105
     assert result[eid]["chunk_id"] == "chunk_002"
+
+
+def test_inference_embeddings_fallback_uses_remote_client():
+    """Feature on + no precomputed embeddings must use the remote client."""
+    from pkg.worker_common.embeddings_client import EmbeddingsResult
+
+    worker = _make_worker()
+    chunks = [{"chunk_id": "chunk_000", "text": "hello"}]
+    micro = [{"chunk_id": "chunk_000", "inferences": [{"text": "fact"}]}]
+
+    pipe = MagicMock()
+    pipe.execute.return_value = _make_redis_pipeline(chunks, [], micro)
+    worker.redis_client.pipeline.return_value = pipe
+    worker.redis_raw.get.return_value = None
+
+    def _get(key):
+        if key.endswith(":features"):
+            return json.dumps(["inferences", "inference_embeddings"])
+        if key.endswith(":inference_embeddings"):
+            return None
+        if key.endswith(":embeddings_degraded"):
+            return "true"
+        return None
+
+    worker.redis_client.get.side_effect = _get
+    worker._embeddings_client = MagicMock()
+    worker._embeddings_client.embed.return_value = EmbeddingsResult(
+        vectors=[[0.5, 0.6]], degraded=True
+    )
+
+    with patch.object(worker, "save_results_to_file") as mock_save, \
+         patch.object(worker, "send_webhook"), \
+         patch.object(worker.event_bus, "publish_job_completed"):
+        worker.finalize_job("job_abc")
+        saved = mock_save.call_args[0][1]
+
+    worker._embeddings_client.embed.assert_called_once_with(["fact"])
+    assert saved["embeddings_degraded"] is True

@@ -27,6 +27,9 @@ def generate_inference_embeddings(
         return {}
 
     inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
+    attempted = 0
+    failed = 0
+    last_error: Optional[Exception] = None
 
     for chunk_id, inferences in inferences_by_chunk.items():
         if not inferences:
@@ -36,6 +39,7 @@ def generate_inference_embeddings(
         if not any(texts):
             continue
 
+        attempted += 1
         try:
             embeddings = embed_fn(texts)
 
@@ -50,6 +54,12 @@ def generate_inference_embeddings(
                 f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}"
             )
         except Exception as e:
+            failed += 1
+            last_error = e
             logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
+
+    if attempted and failed == attempted:
+        # Total failure must fail the job: there is no local fallback.
+        raise RuntimeError(f"All inference embeddings failed: {last_error}")
 
     return inference_embeddings

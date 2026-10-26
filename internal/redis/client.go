@@ -664,6 +664,7 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 		c.key("job", jobID, "metadata:image"),
 		c.key("job", jobID, "metadata:audio"),
 		c.key("job", jobID, "audio_segments"),
+		c.key("job", jobID, "embeddings_degraded"),
 		c.key("job", jobID, "extraction_provenance"),
 	}
 	err := c.client.Del(ctx, keys...).Err()

@@ -495,6 +495,8 @@ services:
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
     - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
+    - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
+    - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
     volumes:
     - results-data:/app/data/results
     - artifacts-data:/app/data/artifacts

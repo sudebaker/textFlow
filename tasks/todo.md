@@ -178,9 +178,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 3.1 — RED: profile-driven image calls
 - **Description:** Failing pytest: image `full` calls `/analyze` + `/describe`; image `rag` calls `/analyze` only.
 - **Acceptance criteria:**
-  - [ ] Test pins the two call sets and fails on current code.
+  - [x] Test pins the two call sets and fails on current code.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/image-worker/tests/test_image_worker.py -v`
+  - [x] Tests pass: `pytest cmd/image-worker/tests/test_image_worker.py -v` (venv with aio_pika)
 - **Dependencies:** 1.6
 - **Files likely touched:** `cmd/image-worker/tests/test_image_worker.py`
 - **Spec**: image-ocr-description (ADDED) — Profile-driven image capability
@@ -188,9 +188,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 3.2 — GREEN: `describe()` in image client
 - **Description:** Add `describe()` to `pkg/image_client/client.py` calling the new `/describe` endpoint.
 - **Acceptance criteria:**
-  - [ ] Client exposes `describe()` with the configured endpoint/timeout.
+  - [x] Client exposes `describe()` with the configured endpoint/timeout.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/image-worker/tests/ -v`
+  - [x] Tests pass: `pytest pkg/image_client/tests/ -v` (13 passed)
 - **Dependencies:** 3.1
 - **Files likely touched:** `pkg/image_client/client.py`
 - **Spec**: image-ocr-description (ADDED) — distinct endpoints
@@ -198,9 +198,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 3.3 — GREEN: `/describe` route in image-analyzer
 - **Description:** Add `/describe` to `deploy/docker/image-analyzer/app/main.py` (LLM vision description, no OCR).
 - **Acceptance criteria:**
-  - [ ] `/analyze` stays OCR-only; `/describe` returns a semantic description and never OCR text.
+  - [x] `/analyze` stays OCR-only; `/describe` returns a semantic description and never OCR text.
 - **Verification:**
-  - [ ] Manual check: `curl -F file=@x.jpg .../describe` returns a description payload
+  - [x] Tests pass: `pytest deploy/docker/image-analyzer/tests/ -q` (FastAPI TestClient, 3 passed)
 - **Dependencies:** 3.2
 - **Files likely touched:** `deploy/docker/image-analyzer/app/main.py`
 - **Spec**: image-ocr-description (ADDED); D5
@@ -208,10 +208,10 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 3.4 — GREEN: image-worker profile logic + single-field description
 - **Description:** `image-worker/worker.py`: `full` stores the description in `:metadata:image.description` (single field, never chunked/embedded); `rag` skips description. OCR text remains the RAG field.
 - **Acceptance criteria:**
-  - [ ] No `:image_description` key is written.
-  - [ ] Description text never appears in chunks/embeddings.
+  - [x] No `:image_description` key is written.
+  - [x] Description text never appears in chunks/embeddings.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/image-worker/tests/ -v`
+  - [x] Tests pass: `pytest cmd/image-worker/tests/ -v` (21 passed)
 - **Dependencies:** 3.3
 - **Files likely touched:** `cmd/image-worker/worker.py`
 - **Spec**: image-ocr-description (ADDED); D5
@@ -219,9 +219,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 3.5 — RED: media-key TTL
 - **Description:** Failing pytest: media keys (`:metadata:image`, `:metadata:audio`, `:audio_segments`) are written with `setex(JOB_TTL_SECONDS=86400)`.
 - **Acceptance criteria:**
-  - [ ] Test asserts the TTL on write for each key.
+  - [x] Test asserts the TTL on write for each key.
 - **Verification:**
-  - [ ] Tests pass: `pytest pkg/worker_common/tests/test_job_keys.py -v`
+  - [x] Tests pass: `pytest pkg/worker_common/tests/test_job_keys.py -v` (4 passed)
 - **Dependencies:** 3.4
 - **Files likely touched:** `pkg/worker_common/tests/test_job_keys.py`
 - **Spec**: job-result-format (MODIFIED); D7
@@ -229,9 +229,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 3.6 — GREEN: `set_job_key()` TTL helper
 - **Description:** Create `pkg/worker_common/job_keys.py` with `set_job_key()` and use it for `:metadata:image`, `:metadata:audio`, `:audio_segments`.
 - **Acceptance criteria:**
-  - [ ] All three media keys use the helper with TTL 86400.
+  - [x] All three media keys use the helper with TTL 86400.
 - **Verification:**
-  - [ ] Tests pass: `pytest pkg/worker_common/tests/test_job_keys.py -v`
+  - [x] Tests pass: `pytest pkg/worker_common/tests/test_job_keys.py -v` + image/audio worker suites green
 - **Dependencies:** 3.5
 - **Files likely touched:** `pkg/worker_common/job_keys.py`
 - **Spec**: job-result-format (MODIFIED); D7
@@ -380,7 +380,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 | Unit | PR | Status |
 |---|---|---|
 | W1 | PR 1 | ✅ 1.1–1.7 done (admission, batch profiles, resolver v2, media result fields) — ready for review |
-| W2 | PR 2 | ✅ 2.1–2.6 done (dispatch ownership → entry stage; extraction/audio/image; entities decoupled; `INFERENCE_*` env only) — 2.7 pending |
-| W3 | PR 3 | ⬜ blocked by W1 |
+| W2 | PR 2 | ✅ Complete 2.1–2.6 + 2.7 unit acceptance (`rag` dispatch test + single `INFERENCE_*` source) |
+| W3 | PR 3 | ✅ Complete 3.1–3.6 (profile-driven OCR/describe, single-field description, media TTL) |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |
 | W5 | PR 5 | ⬜ blocked by W1–W4 |

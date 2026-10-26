@@ -70,6 +70,26 @@ class TestInferenceWorker:
                 timeout=5,
             )
 
+    def test_discover_model_prefers_configured_model(self):
+        """INFERENCE_MODEL wins when the backend exposes several models."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "data": [
+                    {"id": "other-model", "max_model_len": 4096},
+                    {"id": "gemma4:e2b-mlx", "max_model_len": 8192},
+                ]
+            }
+            mock_get.return_value = mock_response
+
+            with patch("worker.INFERENCE_MODEL", "gemma4:e2b-mlx"):
+                model_id, max_len = InferenceWorker()._discover_model(
+                    "http://localhost:8000"
+                )
+
+            assert model_id == "gemma4:e2b-mlx"
+            assert max_len == 8192
+
     def test_discover_model_unreachable(self):
         """Test graceful fallback when vLLM is unreachable"""
         with patch("requests.get") as mock_get:

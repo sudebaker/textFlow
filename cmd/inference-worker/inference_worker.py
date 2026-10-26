@@ -282,7 +282,8 @@ class InferenceWorker(BaseWorker):
         vLLM API Contract:
             - Endpoint: GET {llm_url}/v1/models
             - Response format: {"data": [{"id": "...", "max_model_len": ...}, ...]}
-            - Returns the first available model from the data array
+            - Returns INFERENCE_MODEL when present in the data array, else the
+              first available model (vLLM single-model servers expose one)
 
         Args:
             llm_url (str): Base URL of vLLM server (e.g., http://localhost:8000).
@@ -318,7 +319,11 @@ class InferenceWorker(BaseWorker):
                 self.logger.warning(f"No models found in vLLM response: {models}")
                 return (None, None)
 
-            model_info = models["data"][0]
+            available = models["data"]
+            model_info = next(
+                (m for m in available if m.get("id") == INFERENCE_MODEL),
+                available[0],
+            )
             model_id = model_info.get("id")
             max_model_len = model_info.get("max_model_len", 4096)
 

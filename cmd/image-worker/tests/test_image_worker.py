@@ -179,7 +179,7 @@ class TestProcessMessageSuccess:
 
     @pytest.mark.asyncio
     async def test_dispatches_inference_chunks_with_counters(self, mock_deps):
-        """The image entry stage owns dispatch: envelope + chunk message (D3)."""
+        """The image entry stage owns dispatch: only chunk messages go to inferences."""
         from worker import ImageWorker
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x89PNG\r\n\x1a\n")
@@ -194,7 +194,7 @@ class TestProcessMessageSuccess:
             with patch.object(w.llm_pool, "analyze", return_value=mock_result):
                 await w.process_message(_make_msg(path=path))
             routing = _routing_keys(w._channel)
-            assert routing.count("inferences") >= 2, routing
+            assert routing.count("inferences") == 1, routing
             mock_deps["redis_client"].setex.assert_any_call(
                 "orchestrator:job:j1:inferences:remaining", 86400, 1
             )

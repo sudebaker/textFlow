@@ -160,13 +160,20 @@ class AudioWorker(BaseAsyncWorker):
                         target_queues, self.redis_client, job_id
                     )
 
+            # Chunk messages already went to `inferences`; never publish the
+            # job envelope there (it lacks chunk_id/chunk_text and the
+            # inference consumer rejects it).
+            envelope_queues = [
+                queue for queue in target_queues if queue != INFERENCES_QUEUE
+            ]
+
             for qs in target_queues:
                 try:
                     self.event_bus.publish_stage_event(job_id, "stage.queued", qs)
                 except Exception:
                     pass
             job_message_json = json.dumps(job_message).encode()
-            for queue_name in target_queues:
+            for queue_name in envelope_queues:
                 await self._channel.default_exchange.publish(
                     aio_pika.Message(
                         body=job_message_json,

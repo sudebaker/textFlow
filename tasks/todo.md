@@ -150,9 +150,9 @@ inference env source exists (no `LLM_URL`/`LLM_MODEL`).
 ### Task 2.5 — RED: inference env contract
 - **Description:** Failing pytest: inference worker reads `INFERENCE_BASE_URL`/`INFERENCE_MODEL` only; unset → startup error.
 - **Acceptance criteria:**
-  - [ ] Test asserts no fallback to `LLM_URL`/`LLM_MODEL` and an explicit failure when unset.
+  - [x] Test asserts no fallback to `LLM_URL`/`LLM_MODEL` and an explicit failure when unset.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/inference-worker/tests/test_config.py -v`
+  - [x] Tests pass: `pytest cmd/inference-worker/tests/test_config.py -v`
 - **Dependencies:** None (same PR)
 - **Files likely touched:** `cmd/inference-worker/tests/test_config.py`
 - **Spec**: Cross-cutting — Inference LLM env separation
@@ -160,9 +160,9 @@ inference env source exists (no `LLM_URL`/`LLM_MODEL`).
 ### Task 2.6 — GREEN: migrate inference worker env
 - **Description:** Migrate `inference_worker.py` from `LLM_URL`/`LLM_MODEL` to `INFERENCE_BASE_URL`/`INFERENCE_MODEL`; no fallback.
 - **Acceptance criteria:**
-  - [ ] Worker starts only with the new env; unset → clear startup error, inferences disabled.
+  - [x] Worker starts only with the new env; unset → clear startup error, inferences disabled.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/inference-worker/tests/ -v`
+  - [x] Tests pass: `pytest cmd/inference-worker/tests/ -v`
 - **Dependencies:** 2.5
 - **Files likely touched:** `cmd/inference-worker/inference_worker.py`
 - **Spec**: Cross-cutting — Inference LLM env separation; D6
@@ -378,7 +378,7 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 | Unit | PR | Status |
 |---|---|---|
 | W1 | PR 1 | ✅ 1.1–1.7 done (admission, batch profiles, resolver v2, media result fields) — ready for review |
-| W2 | PR 2 | 🔄 2.1–2.4 done (dispatch ownership → entry stage; extraction/audio/image; entities decoupled) — 2.5–2.7 pending |
+| W2 | PR 2 | ✅ 2.1–2.6 done (dispatch ownership → entry stage; extraction/audio/image; entities decoupled; `INFERENCE_*` env only) — 2.7 pending |
 | W3 | PR 3 | ⬜ blocked by W1 |
 | W4 | PR 4 | ⬜ blocked by W1 (endpoint prerequisite) |
 | W5 | PR 5 | ⬜ blocked by W1–W4 |

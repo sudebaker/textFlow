@@ -301,7 +301,7 @@ services:
     container_name: textflow-entities-worker
     <<: *gpu-devices
     volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set}:/models"
+    - models-data:/models:ro
     - artifacts-data:/app/data/artifacts
     - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
     - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
@@ -314,6 +314,7 @@ services:
     environment:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
+    - HF_HOME=/models/huggingface_cache
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - LOG_LEVEL=debug
@@ -548,10 +549,11 @@ services:
     ports:
     - 8000:5001
     volumes:
-    - ${MODELS_PATH:-../../models}/docling:/opt/app-root/src/.cache/docling/models:ro
+    - models-data:/models:ro
     environment:
     - DOCLING_DEVICE=${DOCLING_DEVICE:-cpu}
     - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
+    - DOCLING_SERVE_ARTIFACTS_PATH=/models/docling
     - LOG_LEVEL=debug
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -687,12 +689,12 @@ services:
     networks:
     - backend
     volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set}/whisper:/models:ro"
+    - models-data:/models:ro
     environment:
     - DEVICE=${WHISPER_DEVICE:-cpu}
     - COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
     - MODEL_SIZE=${WHISPER_MODEL:-large-v2}
-    - MODEL_PATH=/models
+    - MODEL_PATH=/models/whisper
     - PORT=8080
     deploy:
       resources:
@@ -810,6 +812,17 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+  # One-shot loader: copies the staged models directory into the shared
+  # models-data volume. Usage: `make models-sync` (compose profile "models").
+  models-sync:
+    image: python:3.12-slim
+    profiles: ["models"]
+    volumes:
+    - "${MODELS_PATH:?MODELS_PATH is not set}:/src:ro"
+    - models-data:/dst
+    command: ["sh", "-c", "cp -a /src/. /dst/ && echo 'models synced into /dst'"]
+    restart: "no"
+
 networks:
   docker_default:
     external: true
@@ -835,6 +848,8 @@ volumes:
   results-data:
     driver: local
   artifacts-data:
+    driver: local
+  models-data:
     driver: local
   prometheus-data:
     driver: local

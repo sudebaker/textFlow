@@ -1,6 +1,6 @@
 # Makefile for textFlow
 
-.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models docker-build-offline docker-build-models package package-skip-build deploy install-remote
+.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models models-sync models-verify docker-build-offline docker-build-models package package-skip-build deploy install-remote
 
 # Variables
 GO_VERSION?=1.22
@@ -213,6 +213,14 @@ setup-models: ## Download ML models for air-gapped deployment (~2GB)
 	@echo "This may take several minutes depending on your internet connection."
 	cd deploy/docker && python download_models_offline.py
 	@echo -e "${GREEN}✅ Models ready for air-gapped deployment!${NC}"
+
+models-sync: ## Copy staged models (MODELS_PATH) into the shared models-data volume
+	@echo -e "${YELLOW}Syncing models into the shared volume...${NC}"
+	docker compose -f $(COMPOSE_FILE) --profile models run --rm models-sync
+	@echo -e "${GREEN}✅ models-data ready${NC}"
+
+models-verify: ## Show the contents and sizes of the shared models-data volume
+	docker compose -f $(COMPOSE_FILE) --profile models run --rm models-sync sh -c 'du -sh /dst/*; echo; head -20 /dst/MANIFEST.txt 2>/dev/null || true'
 
 docker-build-models: ## Build images using local models (100% offline after setup)
 	@echo -e "${YELLOW}Building Docker images with local models...${NC}"

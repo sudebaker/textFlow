@@ -116,3 +116,24 @@ class TestDegradedAndFailure:
         assert post.call_count == 2
         assert len(result.vectors) == 3
         assert result.degraded is False
+
+
+class TestConfiguration:
+    def test_reads_env_configuration(self, monkeypatch):
+        monkeypatch.setenv("EMBEDDINGS_BASE_URL", "http://env:9000/")
+        monkeypatch.setenv("EMBEDDINGS_MODEL", "env-model")
+        monkeypatch.setenv("EMBEDDINGS_BATCH_SIZE", "8")
+        monkeypatch.setenv("EMBEDDINGS_CACHE_TTL_SECONDS", "60")
+
+        client = EmbeddingsClient()
+
+        assert client.base_url == "http://env:9000"
+        assert client.model == "env-model"
+        assert client.batch_size == 8
+        assert client.cache_ttl == 60
+
+    def test_missing_base_url_raises(self, monkeypatch):
+        monkeypatch.delenv("EMBEDDINGS_BASE_URL", raising=False)
+
+        with pytest.raises(EmbeddingsServiceError):
+            EmbeddingsClient(redis_client=_FakeRedis())

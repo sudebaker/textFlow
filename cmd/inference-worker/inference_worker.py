@@ -15,7 +15,7 @@ Architecture:
 
 Model Discovery:
     - Attempts to discover available LLM models at startup via vLLM /v1/models API
-    - If discovery fails but LLM_MODEL env var is set, falls back to that value
+    - If discovery fails but INFERENCE_MODEL env var is set, falls back to that value
     - If both methods fail, inferences are permanently disabled (returns [] for all chunks)
     - Model ID and max_model_len are cached in __init__, never re-discovered
 
@@ -35,8 +35,9 @@ Environment Variables:
     - REDIS_URL: Redis connection URL (default: redis://redis:6379)
     - RABBITMQ_URL: RabbitMQ connection URL (default: amqp://rabbitmq:5672/)
     - QUEUE_NAME: Queue name (default: inferences)
-    - LLM_URL: Base URL of vLLM server (e.g., http://localhost:8000) — if empty, inferences disabled
-    - LLM_MODEL: Fallback model ID (optional, used if auto-discovery fails)
+    - INFERENCE_BASE_URL: Base URL of vLLM server (e.g., http://localhost:8000) — REQUIRED
+    - INFERENCE_MODEL: Model ID used when auto-discovery fails — REQUIRED
+      (startup fails when either is unset; LLM_URL/LLM_MODEL are not read)
     - METRICS_PORT: Prometheus metrics port (default: 8006)
     - PREFETCH_COUNT: RabbitMQ prefetch count (default: 3)
     - MAX_CHUNK_WORDS: Maximum chunk size in words before skipping (default: 5000)
@@ -82,8 +83,8 @@ from adaptive_semaphore import AdaptiveSemaphore
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
-LLM_URL = os.getenv("LLM_URL", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "")
+INFERENCE_BASE_URL = os.getenv("INFERENCE_BASE_URL", "")
+INFERENCE_MODEL = os.getenv("INFERENCE_MODEL", "")
 MAX_INFERENCES_SHORT   = int(os.getenv("MAX_INFERENCES_SHORT",   "1"))  # chunks < 200 words
 MAX_INFERENCES_MEDIUM  = int(os.getenv("MAX_INFERENCES_MEDIUM",  "2"))  # chunks 200-499 words
 MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks >= 500 words
@@ -98,6 +99,31 @@ MAX_CHUNK_WORDS = int(os.getenv("MAX_CHUNK_WORDS", "5000"))
 LLM_TIMEOUT = int(os.getenv("INFERENCE_LLM_TIMEOUT", "60"))
 LLM_RETRIES = int(os.getenv("INFERENCE_LLM_RETRIES", "2"))
 LLM_RETRY_BACKOFF = float(os.getenv("INFERENCE_LLM_RETRY_BACKOFF", "2.0"))
+
+
+def resolve_inference_config(
+    environ: Optional[Dict[str, str]] = None,
+) -> tuple[str, str]:
+    """Return the normalized ``(base_url, model)`` pair for inference calls.
+
+    ``LLM_URL``/``LLM_MODEL`` are deliberately not consulted: D6 removed the
+    silent dual env source, so a misconfigured deployment fails fast at
+    startup instead of silently disabling inferences.
+    """
+    env = os.environ if environ is None else environ
+    required = ("INFERENCE_BASE_URL", "INFERENCE_MODEL")
+    missing = [name for name in required if not (env.get(name) or "").strip()]
+    if missing:
+        raise RuntimeError(
+            "inference-worker requires "
+            + " and ".join(missing)
+            + " (LLM_URL/LLM_MODEL are no longer supported)"
+        )
+    return (
+        env["INFERENCE_BASE_URL"].strip().rstrip("/"),
+        env["INFERENCE_MODEL"].strip(),
+    )
+
 
 # Adaptive LLM concurrency (Fase 3). Behind INFERENCE_ADAPTIVE_ENABLED so the
 # current behavior is unchanged until GPU benchmarks are available.
@@ -233,13 +259,13 @@ class InferenceWorker(BaseWorker):
             )
 
         # Discover model at startup (one-time, cached)
-        if LLM_URL:
-            self.llm_model_id, self.llm_max_model_len = self._discover_model(LLM_URL)
-            if not self.llm_model_id and LLM_MODEL:
+        if INFERENCE_BASE_URL:
+            self.llm_model_id, self.llm_max_model_len = self._discover_model(INFERENCE_BASE_URL)
+            if not self.llm_model_id and INFERENCE_MODEL:
                 self.logger.info(
-                    f"Model discovery failed, falling back to LLM_MODEL env var: {LLM_MODEL}"
+                    f"Model discovery failed, falling back to INFERENCE_MODEL env var: {INFERENCE_MODEL}"
                 )
-                self.llm_model_id = LLM_MODEL
+                self.llm_model_id = INFERENCE_MODEL
                 self.llm_max_model_len = None
         else:
             self.llm_model_id = None
@@ -277,7 +303,7 @@ class InferenceWorker(BaseWorker):
         Timeout: 5 seconds per request
         """
         if not llm_url:
-            self.logger.warning("No LLM_URL configured, model discovery skipped")
+            self.logger.warning("No INFERENCE_BASE_URL configured, model discovery skipped")
             return (None, None)
 
         try:
@@ -461,7 +487,7 @@ class InferenceWorker(BaseWorker):
             for attempt in range(retries):
                 try:
                     response = requests.post(
-                        f"{LLM_URL}/v1/chat/completions",
+                        f"{INFERENCE_BASE_URL}/v1/chat/completions",
                         json=payload,
                         timeout=timeout,
                     )
@@ -549,7 +575,7 @@ class InferenceWorker(BaseWorker):
             6. Filters out inferences below MIN_CONFIDENCE_THRESHOLD (silent filter)
 
         vLLM API Contract:
-            - Endpoint: POST {LLM_URL}/v1/chat/completions
+            - Endpoint: POST {INFERENCE_BASE_URL}/v1/chat/completions
             - Request: {"model": model_id, "messages": [...], "max_tokens": N, ...}
             - Response: {"choices": [{"message": {"content": "..."}}]}
             - Timeout: 30 seconds per request
@@ -579,8 +605,8 @@ class InferenceWorker(BaseWorker):
                 }
             Only inferences with confidence >= MIN_CONFIDENCE_THRESHOLD are returned.
             Returns empty list [] if:
-                - No LLM configured (LLM_URL empty or not set)
-                - Model discovery failed and no LLM_MODEL fallback (llm_model_id is None)
+                - No LLM configured (INFERENCE_BASE_URL empty or not set)
+                - Model discovery failed and no INFERENCE_MODEL fallback (llm_model_id is None)
                 - LLM request fails (network error, timeout, HTTP error)
                 - Response parsing fails (invalid JSON, missing fields)
 
@@ -604,7 +630,7 @@ class InferenceWorker(BaseWorker):
             - Prevents exceeding model's maximum context length
             - Falls back to 4096 if max_model_len unknown
         """
-        if not LLM_URL or not self.llm_model_id:
+        if not INFERENCE_BASE_URL or not self.llm_model_id:
             self.logger.warning(
                 "No LLM configured or model discovery failed, skipping inferences"
             )
@@ -770,7 +796,7 @@ Respond with ONLY the JSON array:"""
         Returns:
             Dict mapping chunk_id -> list of inference dicts
         """
-        if not LLM_URL or not self.llm_model_id:
+        if not INFERENCE_BASE_URL or not self.llm_model_id:
             return {c["chunk_id"]: [] for c in chunks_data}
 
         results: Dict[str, List[Dict[str, Any]]] = {
@@ -1703,8 +1729,12 @@ def signal_handler(signum, frame):
 def main():
     import signal
 
-    global _stopping
+    global _stopping, INFERENCE_BASE_URL, INFERENCE_MODEL
     _stopping = False
+
+    # Fail fast on a missing/legacy configuration (D6). The normalized values
+    # replace the import-time constants so every call site sees them.
+    INFERENCE_BASE_URL, INFERENCE_MODEL = resolve_inference_config()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)

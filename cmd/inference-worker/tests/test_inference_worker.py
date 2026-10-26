@@ -20,7 +20,7 @@ class TestInferenceWorker:
         worker.llm_model_id = "qwen3.5-2b"
         worker.llm_max_model_len = 4096
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("requests.post") as mock_post:
                 mock_response = Mock()
                 mock_response.raise_for_status = Mock()
@@ -85,7 +85,7 @@ class TestInferenceWorker:
         worker.llm_model_id = "qwen3.5-2b"
         worker.llm_max_model_len = 2048
         
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("requests.post") as mock_post:
                 mock_response = Mock()
                 mock_response.raise_for_status = Mock()
@@ -110,8 +110,8 @@ class TestInferenceWorker:
                 # max_tokens should be max(200, 2048-900) = 1148
                 assert call_kwargs["json"]["max_tokens"] == 1148
 
-    def test_extract_inferences_no_llm_url(self, worker):
-        with patch("worker.LLM_URL", ""):
+    def test_extract_inferences_no_base_url(self, worker):
+        with patch("worker.INFERENCE_BASE_URL", ""):
             inferences = worker.extract_inferences(
                 chunk_text="Some text", entities=[], source_type="generico"
             )
@@ -123,7 +123,7 @@ class TestInferenceWorker:
         worker.llm_model_id = "qwen3.5-2b"
         worker.llm_max_model_len = 4096
         
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("requests.post") as mock_post:
                 mock_post.side_effect = Exception("Connection failed")
                 inferences = worker.extract_inferences(
@@ -154,7 +154,7 @@ class TestInferenceWorker:
             "total_chunks": 3,
         }
 
-        with patch("worker.LLM_URL", ""):
+        with patch("worker.INFERENCE_BASE_URL", ""):
             with patch("worker.BATCH_ENABLED", False):
                 worker.process(ch, method, None, json.dumps(message).encode())
 
@@ -171,7 +171,7 @@ class TestInferenceWorker:
         worker.llm_max_model_len = 4096
         short_text = "Short text " * 10  # ~20 words → well below 200 tokens
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.MAX_INFERENCES_SHORT", 1):
                 with patch("worker.MAX_INFERENCES_MEDIUM", 2):
                     with patch("worker.MAX_INFERENCES_LONG", 3):
@@ -195,7 +195,7 @@ class TestInferenceWorker:
         worker.llm_max_model_len = 4096
         medium_text = "word " * 300  # ~300 words → medium range
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.MAX_INFERENCES_SHORT", 1):
                 with patch("worker.MAX_INFERENCES_MEDIUM", 2):
                     with patch("worker.MAX_INFERENCES_LONG", 3):
@@ -219,7 +219,7 @@ class TestInferenceWorker:
         worker.llm_max_model_len = 4096
         long_text = "word " * 600  # ~600 words → long range
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.MAX_INFERENCES_SHORT", 1):
                 with patch("worker.MAX_INFERENCES_MEDIUM", 2):
                     with patch("worker.MAX_INFERENCES_LONG", 3):
@@ -243,7 +243,7 @@ class TestInferenceWorker:
         worker.llm_max_model_len = 4096
         text = "word " * 50
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
@@ -264,7 +264,7 @@ class TestInferenceWorker:
         worker.llm_max_model_len = 4096
         text = "word " * 50
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
@@ -290,7 +290,7 @@ class TestInferenceWorker:
         ]
         worker.redis_client.get.return_value = json.dumps(cached_inferences)
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", True):
                 with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
                     with patch("requests.post") as mock_post:
@@ -310,7 +310,7 @@ class TestInferenceWorker:
         worker.redis_client.get.return_value = None
         worker.redis_client.setex = Mock()
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", True):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
@@ -335,7 +335,7 @@ class TestInferenceWorker:
         worker.llm_max_model_len = 4096
         worker.redis_client = Mock()
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", False):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
@@ -412,7 +412,7 @@ class TestBatchProcessing:
             {"passage_id": "chunk_002", "facts": [{"text": "Bank account details", "confidence": 0.85, "entity_refs": []}]},
         ])
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", False):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
@@ -440,7 +440,7 @@ class TestBatchProcessing:
             {"chunk_id": "chunk_001", "text": "Short text.", "source_type": "generico", "entities": []},
         ]
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("requests.post") as mock_post:
                 mock_post.side_effect = requests.RequestException("Connection refused")
 
@@ -622,7 +622,7 @@ class TestBatchProcessing:
             for i in range(10)
         ]
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", False):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
@@ -724,7 +724,7 @@ class TestBatchProcessing:
         worker.llm_model_id = "test-model"
         worker.llm_max_model_len = 4096
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", False):
                 with patch("worker.LLM_TIMEOUT", 60):
                     with patch("worker.LLM_RETRIES", 2):
@@ -753,7 +753,7 @@ class TestBatchProcessing:
             {"chunk_id": "chunk_0", "text": "Text 0", "source_type": "generico", "entities": []},
         ]
 
-        with patch("worker.LLM_URL", "http://localhost:8000"):
+        with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", False):
                 with patch("worker.LLM_RETRIES", 2):
                     with patch("worker.LLM_RETRY_BACKOFF", 0.01):

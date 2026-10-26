@@ -309,9 +309,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.1 — RED: final JSON media fields
 - **Description:** Failing pytest: final JSON includes `image_ocr_text`, `image_description` (null when not requested), `metadata:image`, `metadata:audio`, `audio_segments`.
 - **Acceptance criteria:**
-  - [ ] Test covers image `full`, image `rag`, audio and document outputs.
+  - [x] Test covers image `full`, image `rag`, audio and document outputs.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/completion-worker/tests/test_completion.py -v`
+  - [x] Tests pass: `pytest cmd/completion-worker/tests/test_finalize_job.py -v` (media tests)
 - **Dependencies:** 1.7, 3.6, 4.5
 - **Files likely touched:** `cmd/completion-worker/tests/test_completion.py`
 - **Spec**: job-result-format (MODIFIED)
@@ -319,10 +319,10 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.2 — GREEN: read media keys in completion
 - **Description:** Update `completion_worker.py` to read the media keys from Redis and populate the `JobResults` media fields; text remains the common RAG field.
 - **Acceptance criteria:**
-  - [ ] `image_description` is null (not omitted) when not requested.
-  - [ ] Facets correct for image/audio/document.
+  - [x] `image_description` is null (not omitted) when not requested.
+  - [x] Facets correct for image/audio/document.
 - **Verification:**
-  - [ ] Tests pass: `pytest cmd/completion-worker/tests/ -v`
+  - [x] Tests pass: `pytest cmd/completion-worker/tests/ -v` (43 passed)
 - **Dependencies:** 5.1
 - **Files likely touched:** `cmd/completion-worker/completion_worker.py`
 - **Spec**: job-result-format (MODIFIED)
@@ -330,10 +330,10 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.3 — GREEN: client sends `profile`
 - **Description:** Update `tools/client/main.go` to send `profile` on job submission.
 - **Acceptance criteria:**
-  - [ ] Client accepts `rag|full` and includes it in the request; default `full`.
+  - [x] Client accepts `rag|full` and includes it in the request; default `full`.
 - **Verification:**
-  - [ ] Build succeeds: `make build-client`
-  - [ ] Manual check: client submits a job carrying a valid `profile`
+  - [x] Build succeeds: `make build-client` (`tools/client` builds via its own go.mod)
+  - [ ] Manual check: client submits a job carrying a valid `profile` (blocked: no running stack)
 - **Dependencies:** 1.4
 - **Files likely touched:** `tools/client/main.go`
 - **Spec**: Cross-cutting — Docs and test client
@@ -341,11 +341,11 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.4 — GREEN: docs update
 - **Description:** Update `docs/API.md`, `docs/CONFIGURATION.md`, `docs/MODELS.md`: `rag|full` profiles, breaking rename (`fast`/`balanced` removed), `INFERENCE_BASE_URL`/`INFERENCE_MODEL`, `EMBEDDINGS_BASE_URL`/`EMBEDDINGS_MODEL`, `OCR_*`/`IMAGE_*`, media fields. Also update every living doc that still documents the old inference env: `docs/TROUBLESHOOTING.md`, `docs/README_ARCHITECTURE.md`, `docs/internal/README_ARCHITECTURE.md`, `internal/README_ARCHITECTURE.md`, `cmd/README_ARCHITECTURE.md`, `docs/SECURITY.md`, and regenerate `docs/api/*` (generated artifacts).
 - **Acceptance criteria:**
-  - [ ] Docs describe profiles, per-file profile, media fields and all new env vars.
-  - [ ] No living doc (outside archived plans/specs) references `LLM_URL`/`LLM_MODEL` for inference-worker.
+  - [x] Docs describe profiles, per-file profile, media fields and all new env vars.
+  - [x] No living doc (outside archived plans/specs) references `LLM_URL`/`LLM_MODEL` for inference-worker.
 - **Verification:**
-  - [ ] Manual check: each env var appears in `CONFIGURATION.md`; no stale `LLM_URL`/`fast`/`balanced` references
-  - [ ] `rg -n "LLM_URL|LLM_MODEL" docs/ cmd/ internal/` only matches image/multimodal envs, archived plans/specs, or the removal assertions in `cmd/inference-worker/tests/test_config.py`
+  - [x] Manual check: each env var appears in `CONFIGURATION.md`; no stale `LLM_URL`/`fast`/`balanced` references in living docs
+  - [x] `rg -n "LLM_URL|LLM_MODEL" docs/ cmd/ internal/` only matches image/multimodal envs, archived plans/specs, generated docstrings, and the removal assertions in `cmd/inference-worker/`
 - **Dependencies:** 5.2
 - **Files likely touched:** `docs/API.md`, `docs/CONFIGURATION.md`, `docs/MODELS.md`, `docs/TROUBLESHOOTING.md`, `docs/README_ARCHITECTURE.md`, `docs/internal/README_ARCHITECTURE.md`, `internal/README_ARCHITECTURE.md`, `cmd/README_ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/api/*`
 - **Spec**: Cross-cutting — Docs and test client
@@ -353,9 +353,9 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.5 — Verify queue parity
 - **Description:** Confirm no new queues were added and Go↔Python declaration parity holds.
 - **Acceptance criteria:**
-  - [ ] Parity suite green with no new queue names.
+  - [x] Parity suite green with no new queue names.
 - **Verification:**
-  - [ ] Tests pass: `pytest pkg/worker_common/tests/test_queue_declaration_sites.py -v`
+  - [x] Tests pass: `pytest pkg/worker_common/tests/test_queue_declaration_sites.py -v` (9 passed)
 - **Dependencies:** 5.2
 - **Files likely touched:** — (verification only)
 - **Spec**: Cross-cutting — Migration runbook
@@ -363,12 +363,12 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 ### Task 5.6 — E2E: mixed-profile batch
 - **Description:** End-to-end run with the test client: one batch containing a `rag` and a `full` document produces per-file stage sets per the type×profile matrix.
 - **Acceptance criteria:**
-  - [ ] Each document ends with the stages its profile dictates; no cross-contamination.
-  - [ ] Full suite green (Go + Python).
+  - [ ] Each document ends with the stages its profile dictates; no cross-contamination. (unit-level matrix green; E2E blocked)
+  - [ ] Full suite green (Go + Python). Go green; touched Python dirs green; full `make test-python` still blocked by pre-existing host deps.
 - **Verification:**
-  - [ ] E2E: mixed-profile batch via `bin/client`
-  - [ ] Tests pass: `make test`
-  - [ ] Tests pass: `make test-python`
+  - [ ] E2E: mixed-profile batch via `bin/client` (blocked: no stack / no embeddings+inference backends)
+  - [x] Tests pass: `make test` (Go suite)
+  - [ ] Tests pass: `make test-python` (pre-existing rapidfuzz/pydantic_settings gaps)
 - **Dependencies:** 5.1–5.5
 - **Files likely touched:** — (verification only)
 - **Spec**: Success Criteria — mixed-profile batch
@@ -383,4 +383,4 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 | W2 | PR 2 | ✅ Complete 2.1–2.6 + 2.7 unit acceptance (`rag` dispatch test + single `INFERENCE_*` source) |
 | W3 | PR 3 | ✅ Complete 3.1–3.6 (profile-driven OCR/describe, single-field description, media TTL) |
 | W4 | PR 4 | ✅ 4.1–4.5 done (remote client, cache, degraded, cutover) — 4.6 contract check pending dev endpoint |
-| W5 | PR 5 | ⬜ blocked by W1–W4 |
+| W5 | PR 5 | ✅ 5.1–5.5 done (media fields, client profile, docs, parity) — 5.6 E2E pending infra |

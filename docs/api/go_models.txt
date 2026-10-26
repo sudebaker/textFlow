@@ -1,6 +1,23 @@
 package models // import "textflow/internal/models"
 
 
+CONSTANTS
+
+const (
+	ProfileRag  = "rag"
+	ProfileFull = "full"
+)
+    Accepted processing profiles.
+
+
+FUNCTIONS
+
+func NormalizeProfile(profile string) (string, error)
+    NormalizeProfile validates and normalizes a processing profile string.
+    Accepts rag|full (case-insensitive). Empty values default to "full";
+    any other value is rejected.
+
+
 TYPES
 
 type AudioMetadata struct {
@@ -56,6 +73,7 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url" binding:"required_without=DocumentBase64"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"` // e.g. ["inferences"]
+	Profile        string   `json:"profile,omitempty"`  // rag|full
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }
@@ -176,7 +194,14 @@ type JobMessage struct {
 	ContentType     ContentType `json:"content_type,omitempty"`
 	Diarize         bool        `json:"diarize,omitempty"`
 	Features        []string    `json:"features,omitempty"`
+	Profile         string      `json:"profile,omitempty"`
 	PipelineVersion string      `json:"pipeline_version,omitempty"`
+	StageVersion    string      `json:"stage_version,omitempty"`
+	ModelVersion    string      `json:"model_version,omitempty"`
+	// QueuedAt is the unix-millisecond timestamp set right before the
+	// message is published to RabbitMQ. Consumers use it to report
+	// stage_queue_time_seconds (time spent waiting in the queue).
+	QueuedAt int64 `json:"queued_at,omitempty"`
 }
     JobMessage represents the RabbitMQ envelope for job execution. It carries
     minimal job metadata and routing information to workers, with the document
@@ -189,19 +214,29 @@ type JobResults struct {
 	CreatedAt            string                      `json:"created_at"`
 	CompletedAt          string                      `json:"completed_at"`
 	Text                 string                      `json:"text"`
-	SchemaVersion        string                      `json:"schema_version,omitempty"`
 	Chunks               []Chunk                     `json:"chunks,omitempty"`
 	Entities             map[string]EntityMinimal    `json:"entities,omitempty"`
 	DocumentMetadata     map[string]interface{}      `json:"document_metadata,omitempty"`
 	TextMetadata         map[string]interface{}      `json:"text_metadata,omitempty"`
 	SourceClassification *SourceClassificationResult `json:"source_classification,omitempty"`
+
+	// Media outputs. ImageOcrText is the RAG field for images; ImageDescription
+	// is the semantic description (null when the profile did not request it —
+	// it is never chunked or embedded). AudioSegments carries the transcribed
+	// timed segments of audio jobs.
+	ImageOcrText     string         `json:"image_ocr_text,omitempty"`
+	ImageDescription *string        `json:"image_description"`
+	MetadataImage    *ImageMetadata `json:"metadata_image,omitempty"`
+	MetadataAudio    *AudioMetadata `json:"metadata_audio,omitempty"`
+	AudioSegments    []AudioSegment `json:"audio_segments,omitempty"`
 }
     JobResults represents the final aggregated results of a
     completed job. It contains extracted text, chunks with per-chunk
     embeddings/entities/inferences, a deduplicated entity map, document
-    metadata, and source classification. All fields except JobID, Status,
-    CreatedAt, and CompletedAt are optional, depending on which processing
-    stages were executed.
+    metadata, source classification, and the explicit media outputs
+    of image/audio jobs. All fields except JobID, Status, CreatedAt,
+    and CompletedAt are optional, depending on which processing stages were
+    executed.
 
 type JobStatus string
     JobStatus represents the current state of a job in the processing pipeline.
@@ -229,6 +264,10 @@ const (
 	StatusCompleted JobStatus = "completed"
 	// StatusFailed indicates the job encountered an error during processing.
 	StatusFailed JobStatus = "failed"
+	// StatusCancelled indicates the job was cancelled by the user via
+	// POST /v1/documents/:id/cancel. Workers check this state and stop
+	// processing; the job is not finalized.
+	StatusCancelled JobStatus = "cancelled"
 )
 type MicroInference struct {
 	Text       string   `json:"text"`

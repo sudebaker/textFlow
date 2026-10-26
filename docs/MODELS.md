@@ -15,15 +15,15 @@ sha256). Véase `deploy/docker/download_models_offline.py`.
 
 | # | Componente | Runtime / Servicio | Modelo | Fuente | Ruta local (host) | Ruta montada (contenedor) | Obligatorio | GPU |
 |---|------------|-------------------|--------|--------|-------------------|---------------------------|-------------|-----|
-| 1 | Embeddings | `embeddings-worker` (Python) | `BAAI/bge-m3` | Hugging Face `BAAI/bge-m3` | `models/huggingface_cache/hub/models--BAAI--bge-m3/snapshots/<rev>/` | `/models` (`HF_HOME=/models` + `local_files_only=True`) | Sí | opcional (`EMBEDDINGS_DEVICE=cpu\|cuda`) |
+| 1 | Embeddings | `embeddings-worker` (Python) | `BAAI/bge-m3` (remoto) | Backend OpenAI-compat `POST /v1/embeddings` | — (sin modelo local) | — | Sí (`EMBEDDINGS_BASE_URL`) | opcional en el backend |
 | 2 | NER | `entities-worker` (Python) | `urchade/gliner_small-v2.1` | Hugging Face `urchade/gliner_small-v2.1` | `models/huggingface_cache/hub/models--urchade--gliner_small-v2.1/snapshots/<rev>/` | `/models` (`HF_HUB_OFFLINE=1`) | Sí | opcional (`ENTITIES_DEVICE=cpu\|cuda`) |
 | 3 | NER backbone | `entities-worker` (GLiNER) | `microsoft/deberta-v3-small` | Hugging Face `microsoft/deberta-v3-small` | `models/huggingface_cache/hub/models--microsoft--deberta-v3-small/snapshots/<rev>/` | `/models` (`GLINER_BACKBONE_PATH=/models/...`) | Sí | opcional |
 | 4 | ASR | `whisper` (`deploy/docker/whisper`) | `large-v2` | Hugging Face `Systran/faster-whisper-large-v2` | `models/huggingface_cache/hub/models--Systran--faster-whisper-large-v2/snapshots/<rev>/` ; `models/whisper/large-v2/` (compat) | `/models` (`MODEL_PATH=/models`, `MODEL_SIZE=large-v2`) | solo si audio | opcional (`DEVICE=cpu\|cuda`, `COMPUTE_TYPE=int8\|float16`) |
 | 5 | PDF extraction | `docling-serve` | Docling artifacts (layout, table, OCR) | Docling `docling-tools models download` | `models/docling/` (volúmenes por artefacto) | `/opt/app-root/src/.cache/docling/models` (CPU) | si PDF | ver GPU |
 | 5b | Docling image | `docling` (Docker) | `quay.io/docling-project/docling-serve:cu128-0.12.0` | quay.io | `dist/images/docling-serve-cu128-0.12.0.tar.gz` | — | si PDF + GPU | CUDA 12.8 |
 | 5c | Docling image (CPU) | `docling` (Docker) | `quay.io/docling-project/docling-serve:latest` | quay.io | `dist/images/docling-serve-latest.tar.gz` + `models/docling/` mount | `/opt/app-root/src/.cache/docling/models:ro` | si PDF + CPU | — |
-| 6 | Image analysis | `image-analyzer` (`deploy/docker/image-analyzer`) | modelo vision del backend | `LLM_BASE_URL` + `LLM_MODEL` (OpenAI-compat) | `LLM_BASE_URL` (Ollama `http://host:8080` o vLLM) | — | solo si imagen | sí (vía backend) |
-| 7 | Inference (hechos) | `inference-worker` | modelo instruct del backend | `LLM_URL` + `LLM_MODEL` (OpenAI-compat) | `LLM_BASE_URL` (Ollama/vLLM) | — | opcional (`features=["inferences"]`) | sí (vía backend) |
+| 6 | Image analysis | `image-analyzer` (`deploy/docker/image-analyzer`) | modelo vision OCR + modelo descripción | `OCR_BASE_URL`/`OCR_MODEL` y `IMAGE_BASE_URL`/`IMAGE_MODEL` (OpenAI-compat) | — (externo) | — | solo si imagen | sí (vía backend) |
+| 7 | Inference (hechos) | `inference-worker` | modelo instruct del backend | `INFERENCE_BASE_URL` + `INFERENCE_MODEL` (OpenAI-compat) | — (externo) | — | opcional (`features=["inferences"]`) | sí (vía backend) |
 
 Notas:
 
@@ -42,17 +42,12 @@ Notas:
 
 ## Ficha por modelo
 
-### 1. BAAI/bge-m3
+### 1. BAAI/bge-m3 (remoto)
 
-- Repositorio: `https://huggingface.co/BAAI/bge-m3`.
-- Archivos mínimos: `config.json`, `tokenizer_config.json`, `modules.json`,
-  (`spm.model` ∨ `tokenizer.json` ∨ `vocab.txt`), (`model.safetensors` ∨ `pytorch_model.bin`).
-- Ruta: `models/huggingface_cache/hub/models--BAAI--bge-m3/snapshots/<rev>/`.
-- Formato: Hugging Face cache `snapshot_download` (`hub/` + `snapshots/<hash>/`).
-- Tamaño: ≈ 2.2 GB.
-- Descarga: `python deploy/docker/download_models_offline.py` (`snapshot_download("BAAI/bge-m3", cache_dir=models/huggingface_cache/hub)`).
-- Validación: `_is_snapshot_complete` (todos los grupos del `MODEL_REQUIRED_FILE_GROUPS` presentes) + `verify_cache_structure`; offline `local_files_only=True` en `SentenceTransformer`.
-- Consumidor: `cmd/embeddings-worker` (`SentenceTransformer("BAAI/bge-m3", cache_folder=...)`).
+- Ya **no** se monta en `embeddings-worker` ni en `completion-worker`.
+- Backend: servicio OpenAI-compatible `POST /v1/embeddings` en `EMBEDDINGS_BASE_URL` con `EMBEDDINGS_MODEL` (por defecto `BAAI/bge-m3`, 1024 dimensiones).
+- Air-gapped: empaquetar y desplegar el serving (vLLM/TEI) por separado; el bundle de textFlow solo contiene la configuración.
+- Validación: contract check de 1024 dimensiones contra el endpoint antes del despliegue.
 
 ### 2. urchade/gliner_small-v2.1
 
@@ -92,8 +87,8 @@ Notas:
 
 ### 6. Image-analyzer (vision LLM)
 
-- Servicio: `deploy/docker/image-analyzer` (FastAPI `POST /analyze` → vision LLM).
-- Env: `LLM_BASE_URL` (Ollama `http://host.docker.internal:11434` dev / vLLM prod), `LLM_MODEL` (`gemma4:e4b` por defecto), `MAX_IMAGE_DIM`, `CACHE_TTL_SECONDS`.
+- Servicio: `deploy/docker/image-analyzer` (FastAPI `POST /analyze` OCR + `POST /describe` descripción).
+- Env: `OCR_BASE_URL`/`OCR_MODEL` para OCR y `IMAGE_BASE_URL`/`IMAGE_MODEL` para descripción (si faltan, la descripción usa el backend OCR), `MAX_IMAGE_DIM`, `CACHE_TTL_SECONDS`.
 - Este LLM es **externo a `models/` de textFlow** (fase A decisión: *externo al bundle*).
 - Air-gapped: provisionar por separado:
   - **Ollama** (recomendado doc §18): en máquina online `ollama pull <model>`, exportar `ollama export` / copiar `~/.ollama/models` al bundle (configurar `OLLAMA_MODELS`), en target `ollama import` / copia. Documentar instalación Ollama, `pull`, `export/transfer`, `import`.
@@ -101,7 +96,7 @@ Notas:
 
 ### 7. Inference LLM (hechos)
 
-- Servicio: `cmd/inference-worker` consume runtime OpenAI-compatible (`LLM_URL=http://vllm:8000/v1`, `LLM_MODEL`, `LLM_TIMEOUT`, `INFERENCE_MAX_CONCURRENCY`, `INFERENCE_WORKER_REPLICAS`).
+- Servicio: `cmd/inference-worker` consume runtime OpenAI-compatible (`INFERENCE_BASE_URL`, `INFERENCE_MODEL`, `INFERENCE_LLM_TIMEOUT`, `INFERENCE_MAX_CONCURRENCY`, `INFERENCE_WORKER_REPLICAS`).
 - Air-gapped igual que (6): externo, no en `models/`. Documentar `vLLM` vs `Ollama` por separado (§19) y cómo provisionar cada uno offline. Fase A: *externo al bundle*.
 
 ### 8. openbmb/MiniCPM-V-4_5 (vision OCR)
@@ -123,7 +118,7 @@ Notas:
 # 0. Requisitos host: Docker, jq, bash, curl, espacio (~15 GB con large-v2 + docling)
 make setup-models
 # → deploy/docker/download_models_offline.py
-#   HF: gliner, deberta, bge-m3, whisper-large-v2
+#   HF: gliner, deberta, whisper-large-v2 (bge-m3 es remoto)
 #   Docling artifacts → models/docling/ (vía docker create/cp de la imagen cu128/self)
 #   Manifiesto: models/MANIFEST.txt (repo, revisión, sha256, tamaño por archivo)
 ```

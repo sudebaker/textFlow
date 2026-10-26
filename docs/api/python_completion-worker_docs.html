@@ -174,13 +174,13 @@ Attributes:
                 </div>
             
                 <div class="method">
-                    <h4>_get_embedding_service</h4>
-                    <p>Lazy loading of embedding service to avoid blocking startup.</p>
+                    <h4>_get_embeddings_client</h4>
+                    <p>Lazy remote embeddings client (no local model, no fallback).</p>
                 </div>
             
                 <div class="method">
                     <h4>_generate_inference_embeddings</h4>
-                    <p>Generate embeddings for inference texts.
+                    <p>Generate inference embeddings via the remote embeddings backend.
 
 Args:
     inferences_by_chunk: Dict mapping chunk_id to list of inference dicts
@@ -396,6 +396,11 @@ The event dict is already parsed by BasePubSubWorker._parse_pubsub_message().</p
         </div>
         
         <h2>Functions</h2>
+        <div class="function">
+            <h3>_load_optional_json</h3>
+            <p>Parse an optional JSON Redis value, returning None when absent/invalid.</p>
+        </div>
+        
         <div class="function">
             <h3>main</h3>
             <p>No documentation</p>

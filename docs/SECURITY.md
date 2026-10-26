@@ -3,7 +3,7 @@
 ## Superficie (readiness §24 / §29)
 
 - HTTP `POST /v1/documents` (file / `document_url` download), webhook `WEBHOOK_URL`.
-- RabbitMQ (`amqp://`), Redis (`redis://`), Docling HTTP (`DOCLING_URL`), LLM HTTP (`LLM_URL`, `MULTIMODAL_LLM_URLS`), Whisper HTTP.
+- RabbitMQ (`amqp://`), Redis (`redis://`), Docling HTTP (`DOCLING_URL`), LLM HTTP (`INFERENCE_BASE_URL`, `OCR_BASE_URL`/`IMAGE_BASE_URL`, `MULTIMODAL_LLM_URLS`), embeddings HTTP (`EMBEDDINGS_BASE_URL`), Whisper HTTP.
 - Volumenes: `MODELS_PATH`, `artifacts-data`.
 
 ## SSRF y descarga

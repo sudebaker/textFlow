@@ -81,6 +81,7 @@ curl http://localhost:8080/health
   "document_base64": "JVBERi0xLjQKJeLj...",  // Either this
   "document_url": "https://example.com/doc.pdf",  // Or this (mutually exclusive)
   "filename": "document.pdf",  // Optional
+  "profile": "full",  // Optional: rag | full (default: full)
   "features": ["inferences"],  // Optional: enable extra pipeline stages
   "webhook_url": "https://myapp.com/webhook",  // Optional
   "webhook_secret": "my-secret"  // Optional
@@ -91,6 +92,7 @@ curl http://localhost:8080/health
 - `document_base64` (string, conditional): Base64-encoded document. Required if `document_url` is not provided.
 - `document_url` (string, conditional): URL to the document. Required if `document_base64` is not provided. Must be a valid HTTP/HTTPS URL.
 - `filename` (string, optional): Original filename for metadata tracking.
+- `profile` (string, optional): Processing profile, `rag` or `full` (default `full`). See **§3b Processing Profiles**.
 - `features` (array, optional): Extra pipeline stages to enable. Supported: `"inferences"` (requires vLLM/inference-worker), `"inference_embeddings"` (generates vector embeddings for inferences, requires `"inferences"`). Rich EXIF/XMP metadata (author, title, page count, etc.) is extracted for every job by default — no feature needed.
 - `webhook_url` (string, optional): URL to notify when job completes.
 - `webhook_secret` (string, optional): Secret for `X-Signature-256` HMAC verification.
@@ -173,6 +175,7 @@ https://example.com/webhook
 
 **Parameters:**
 - `file` (file, required): The file to upload. See **Supported File Types** table above.
+- `profile` (string, optional): Processing profile, `rag` or `full` (default `full`). See **§3b Processing Profiles**.
 - `features` (string, optional): Comma-separated list of extra pipeline features. Supported:
    - `inferences` — Generate micro-inferences from extracted text (requires vLLM).
    - `inference_embeddings` — Generate vector embeddings for inferences (requires `inferences`).
@@ -332,6 +335,8 @@ All jobs follow the same pipeline stages regardless of file type (documents, aud
 | **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → entities → [inferences] → metadata → completed | Multimodal LLM extracts the TEXT visible in the image (via image-analyzer). No description is produced. Text is processed through embedding/entity stages. |
 | **Spreadsheets** (CSV, XLSX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Rows flattened into text blocks (max 2,000 rows), then standard pipeline |
 
+> **Profiles compose stages.** The table above describes `full` (default). With `profile=rag`, `entities` and `metadata` are skipped; the entry stage and `embeddings`/`inferences` still run. See **§3b Processing Profiles**.
+
 **Status Transitions:**
 ```
 pending → extracting → embedding → entities → [inferences] → metadata → completed
@@ -382,6 +387,26 @@ curl http://localhost:8080/v1/documents/job_xyz789abc
 
 ---
 
+### 3b. Processing Profiles (`rag` | `full`)
+
+Every job accepts an optional `profile`, either per file in `/v1/documents/{process,upload}` or per document in a batch. Omitted values default to `full`; a batch document without a profile inherits the batch-level profile.
+
+| Profile | Downstream stages |
+|---------|-------------------|
+| `rag` | entry stage + chunking + `embeddings` + `inferences`; no `entities`, no `metadata`, no image description |
+| `full` | `rag` + `entities` + `metadata`; image jobs also call `/describe` |
+
+The entry stage is selected by file type (`extraction` for documents/spreadsheets, `audio`, `image`); the profile composes the downstream stages and never overrides the type. Invalid values return `400 invalid_profile`; in a batch, an invalid per-document profile is reported in `rejected[]` and does not affect its siblings (all documents invalid → `400`).
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/v1/documents/process \
+  -H "Content-Type: application/json" \
+  -d '{"document_url": "https://example.com/doc.pdf", "profile": "rag"}'
+```
+
+---
+
 ### 4a. Features Parameter
 
 **Overview:** The `features` parameter enables optional processing stages beyond the standard pipeline. It is passed during job creation (in both `/v1/documents/upload` and `/v1/documents/process` endpoints) and causes the job to transition through additional stages before completion.
@@ -427,8 +452,8 @@ Generates vector embeddings for each micro-inference text using BGE-M3. This ena
 
 **Requirements:**
 - `inferences` feature must also be enabled (this feature has no effect without inferences)
-- BGE-M3 model mounted at `/models/bge-m3` in completion-worker container
-- completion-worker must have access to GPU or sufficient CPU resources
+- Remote embeddings backend reachable at `EMBEDDINGS_BASE_URL` (OpenAI-compatible `POST /v1/embeddings`, model `EMBEDDINGS_MODEL`)
+- No local model is loaded; a total backend failure fails the job (partial failure is reported as `embeddings_degraded: true`)
 
 **Pipeline Impact:**
 - Does NOT add a separate pipeline stage (embeddings are generated during job finalization)
@@ -547,9 +572,18 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 
 **Endpoint:** `GET /v1/documents/{job_id}/download`
 
-**Description:** Download the full processing results for a completed job. Returns JSON containing text, chunks, embeddings, entities, and metadata. Embeddings are compressed at the field level using gzip+base64 (see `embedding_compressed` field). **Only available when job status is `completed`.**
+**Description:** Download the full processing results for a completed job. Returns JSON containing text, chunks, embeddings, entities, metadata, and (for media jobs) the explicit media fields described below. Embeddings are compressed at the field level using gzip+base64 (see `embedding_compressed` field). **Only available when job status is `completed`.**
 
 > **Note:** This endpoint reads results from the filesystem. Always check job status via `GET /v1/documents/{job_id}` before calling this endpoint.
+
+**Media fields (image/audio jobs):**
+
+- `image_ocr_text` — text visible in the image (also the common `text` field).
+- `image_description` — semantic description; a string for `full`, `null` for `rag` (always present for image jobs, never chunked or embedded).
+- `metadata_image` — `{language, description}`.
+- `metadata_audio` — `{language, duration_seconds, has_diarization, segment_count}`.
+- `audio_segments` — timed transcript segments when available.
+- `embeddings_degraded` — `true` when the embeddings backend failed for part of the batch (successful vectors are kept).
 
 **Path Parameters:**
 - `job_id` (string, required): The job ID returned from job creation.
@@ -709,7 +743,7 @@ The orchestrator depends on external services for different processing stages. A
 | **Docling** | Document extraction | PDF, DOCX, PPTX, images | Extracted text, chunks, markdown | HTTP service; handles Documents category |
 | **Whisper** | Audio transcription | MP3, WAV, M4A, OGG, FLAC | Transcript text (VAD applied; diarization not implemented) | Runs as the `whisper` service in this repo; handles Audio category |
 | **image-analyzer** (Multimodal LLM) | Image text extraction | JPG, PNG, WEBP, BMP | Extracted text visible in the image (no description) | OpenAI-compatible vision LLM; runs as image-analyzer service; handles Images category |
-| **BAAI/bge-m3** | Text embedding generation | Text chunks | 384-dimensional vectors | Embedding model; runs in embeddings-worker; air-gapped compatible |
+| **BAAI/bge-m3** | Text embedding generation | Text chunks | 1024-dimensional vectors | Remote `POST /v1/embeddings` backend (`EMBEDDINGS_BASE_URL`); air-gapped compatible |
 | **GLiNER** | Named entity recognition | Text | Entity spans with labels and confidence | NER model; runs in entities-worker; air-gapped compatible; offline-critical |
 | **Regex Entity Extractor** | PII/Pattern extraction | Text | Regex-matched entities (EMAIL, PHONE, etc.) | HTTP service; runs in entities-worker; air-gapped compatible |
 | **vLLM** (optional) | Inference generation | Text | Micro-inferences/insights | Only used when `features: ["inferences"]` is set; requires inference-worker |

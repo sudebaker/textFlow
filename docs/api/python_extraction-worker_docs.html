@@ -251,6 +251,16 @@ Raises:
                 </div>
             
                 <div class="method">
+                    <h4>_is_cancelled</h4>
+                    <p>No documentation</p>
+                </div>
+            
+                <div class="method">
+                    <h4>_raise_if_cancelled</h4>
+                    <p>No documentation</p>
+                </div>
+            
+                <div class="method">
                     <h4>__del__</h4>
                     <p>Clean up temporary directory on worker deletion.</p>
                 </div>
@@ -258,6 +268,16 @@ Raises:
         </div>
         
         <h2>Functions</h2>
+        <div class="function">
+            <h3>_docling_page_count</h3>
+            <p>Page count from a docling response `document` (Fase A finding A.1).
+
+docling-serve latest does NOT populate `document.pages` without
+to_formats=json; with it, `document.json_content.pages` is a dict indexed
+by page_no. Prefers json_content.pages, falls back to legacy
+`document.pages` (list of page entries) for older responses.</p>
+        </div>
+        
         <div class="function">
             <h3>compute_file_hash</h3>
             <p>Compute SHA-256 hash digest of raw file bytes.
@@ -291,6 +311,7 @@ can continue.
 Args:
     file_path: Absolute path to document file on disk.
     filename: Filename for metadata record (may differ from file_path basename).
+    precomputed_bytes: Optional bytes already in memory (avoids second read).
 
 Returns:
     Dictionary with extracted metadata:

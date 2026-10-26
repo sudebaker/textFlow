@@ -9,7 +9,7 @@ Event-driven microservices system for extracting and processing documents. Orche
 - **Orchestrator** (Go, port 8080): REST API, job orchestration, Redis state management
 - **Resource Manager** (Go, port 9090): GPU memory monitoring
 - **Extraction Worker** (Python): Docling integration, text chunking, source classification
-- **Embeddings Worker** (Python): BAAI/bge-m3 embeddings
+- **Embeddings Worker** (Python): remote `/v1/embeddings` client (`EMBEDDINGS_*`)
 - **Entities Worker** (Python): GLiNER NER extraction
 - **Metadata Worker** (Python): Lightweight text analytics
 - **Inference Worker** (Python): Optional LLM-based fact extraction
@@ -37,7 +37,7 @@ graph TB
     ExtractionWorker -->|publish| Q_Meta["RabbitMQ<br/>metadata"]
     ExtractionWorker -->|publish?| Q_Inf["RabbitMQ<br/>inferences"]
     
-    Q_Embed --> EmbeddingsWorker["Embeddings Worker<br/>(BAAI/bge-m3)"]
+    Q_Embed --> EmbeddingsWorker["Embeddings Worker<br/>(remote /v1/embeddings)"]
     Q_Ent --> EntitiesWorker["Entities Worker<br/>(GLiNER)"]
     Q_Meta --> MetadataWorker["Metadata Worker<br/>(text analytics)"]
     Q_Inf --> InferenceWorker["Inference Worker<br/>(vLLM)"]
@@ -117,12 +117,14 @@ Key configuration variables:
 - `REDIS_URL`: Redis connection string (default: `redis://localhost:6379`)
 - `RABBITMQ_URL`: RabbitMQ AMQP URL (default: `amqp://localhost:5672/`)
 - `DOCLING_URL`: Docling service endpoint (default: `http://docling:5001`)
-- `LLM_URL`: OpenAI-compatible LLM endpoint for inferences (default: empty, inferences disabled)
+- `INFERENCE_BASE_URL` / `INFERENCE_MODEL`: OpenAI-compatible inference backend (required; the worker fails at startup if unset)
+- `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_MODEL`: OpenAI-compatible embeddings backend (required; no local fallback)
+- `OCR_BASE_URL` / `OCR_MODEL` and `IMAGE_BASE_URL` / `IMAGE_MODEL`: image-analyzer OCR and description backends
 - `INFERENCE_ADAPTIVE_ENABLED`: Enable adaptive LLM concurrency control (default: `false`)
 - `JOB_TIMEOUT`: Job processing timeout (default: `60m`)
 - `JOB_TTL`: Redis key expiration (default: `24h`)
 - `WEBHOOK_URL`: Optional client webhook for notifications
-- `HF_HUB_OFFLINE`: Set to `1` for air-gapped mode (embeddings/entities workers)
+- `HF_HUB_OFFLINE`: Set to `1` for air-gapped mode (entities worker)
 - `TRANSFORMERS_OFFLINE`: Set to `1` for air-gapped mode
 
 ## Error Handling & Resilience
@@ -193,11 +195,10 @@ make run-workers       # All workers
 ### Air-Gapped Production
 Mount model directories (no internet at build/runtime):
 ```bash
-docker run -v /models/bge-m3:/models/bge-m3 \
-           -v /models/gliner:/models/gliner \
+docker run -v /models/gliner:/models/gliner \
            -e HF_HUB_OFFLINE=1 \
            -e TRANSFORMERS_OFFLINE=1 \
-           embeddings-worker
+           entities-worker
 ```
 
 ### Kubernetes

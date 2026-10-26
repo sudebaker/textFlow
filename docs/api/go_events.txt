@@ -108,6 +108,21 @@ func (eb *EventBus) PublishJobProgress(ctx context.Context, jobID string, progre
 
     Returns an error if publishing fails.
 
+func (eb *EventBus) PublishStageEvent(ctx context.Context, jobID string, eventType EventType, stage string, metadata map[string]interface{}) error
+    PublishStageEvent broadcasts a stage-level event (spec 4.5) to both the
+    broadcast "job:events" channel and the job-specific "job:{jobID}:events"
+    channel. Stage events are stage.queued / stage.started / stage.completed /
+    stage.failed and carry the stage name in Metadata["stage"].
+
+    Parameters:
+      - jobID: The job identifier
+      - eventType: One of EventStageQueued/Started/Completed/Failed
+      - stage: The pipeline stage name (e.g. "extraction", "embeddings",
+        "image")
+      - metadata: Optional extra metadata merged into the event
+
+    Returns an error if publishing fails.
+
 func (eb *EventBus) Subscribe(ctx context.Context, channel string) *redis.PubSub
     Subscribe creates a Redis pub/sub subscription to the specified channel.
     The caller is responsible for reading messages from the returned PubSub
@@ -123,6 +138,11 @@ const (
 	EventJobProgress  EventType = "job_progress"
 	EventJobCompleted EventType = "job_completed"
 	EventJobFailed    EventType = "job_failed"
+	// Stage-level events (spec 4.5): emitted as a job moves through pipeline stages.
+	EventStageQueued    EventType = "stage.queued"
+	EventStageStarted   EventType = "stage.started"
+	EventStageCompleted EventType = "stage.completed"
+	EventStageFailed    EventType = "stage.failed"
 )
 type JobEvent struct {
 	EventType EventType              `json:"event_type"`

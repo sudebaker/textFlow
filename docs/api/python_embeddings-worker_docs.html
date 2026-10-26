@@ -120,13 +120,12 @@
         <h1>🐍 Embeddings Worker</h1>
         
         <h2>Module Documentation</h2>
-        <p class="docstring">Embeddings Worker for textFlow
-Consumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3
+        <p class="docstring">Embeddings Worker for textFlow.
 
-GPU Features:
-- Automatic GPU detection via torch.cuda
-- Adaptive batching (GPU=32, CPU=2)
-- FP16 optimization for GPU (in EmbeddingService)</p>
+Consumes messages from RabbitMQ and generates embeddings for each chunk via
+the remote OpenAI-compatible embeddings backend (``POST /v1/embeddings``,
+``EMBEDDINGS_BASE_URL``/``EMBEDDINGS_MODEL``). There is no local model load and
+no local fallback (remote-embeddings decision).</p>
         
         <h2>Classes</h2>
         <div class="class-section">
@@ -139,8 +138,8 @@ GPU Features:
                 </div>
             
                 <div class="method">
-                    <h4>load_model</h4>
-                    <p>No documentation</p>
+                    <h4>configure</h4>
+                    <p>Configure batching and connect the remote embeddings client.</p>
                 </div>
             
                 <div class="method">

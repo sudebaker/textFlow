@@ -37,7 +37,9 @@
 
 ## LLM (Ollama / vLLM)
 
-- **`LLM_URL` no disponible / `502`.** Verifica `curl http://<LLM_URL>/v1/models` y `LLM_MODEL` coincide con `vllm serve --model`. `ollama list` en host.
+- **`INFERENCE_BASE_URL` no disponible / `502`.** Verifica `curl http://<INFERENCE_BASE_URL>/v1/models` y que `INFERENCE_MODEL` coincide con `vllm serve --model`. `ollama list` en host. Sin estas variables el worker falla al arrancar (no hay fallback).
 - **`LLM call timed out` / saturación.** Sube `INFERENCE_LLM_TIMEOUT` / `INFERENCE_TIMEOUT_DECAY_FACTOR`, baja `INFERENCE_MAX_CONCURRENCY`, o escala `INFERENCE_WORKER_REPLICAS`. Métrica `inference_worker_in_flight`.
-- **Inference facts vacíos / calidad baja.** `LLM_MODEL` no es instruct (`qwen3-coder` vs `bge`): inference requiere VLM/instruct. Prueba prompt directo con `curl -X POST $LLM_URL/v1/chat/completions`.
+- **Inference facts vacíos / calidad baja.** `INFERENCE_MODEL` no es instruct (`qwen3-coder` vs `bge`): inference requiere un modelo instruct. Prueba prompt directo con `curl -X POST $INFERENCE_BASE_URL/v1/chat/completions`.
+- **Embeddings fallan / `EmbeddingsServiceError`.** Verifica `EMBEDDINGS_BASE_URL` (`POST /v1/embeddings`) y `EMBEDDINGS_MODEL`; no hay fallback local. Un fallo total tumba el job; uno parcial deja `embeddings_degraded: true`.
+- **`image_description` vacío.** Comprueba `IMAGE_BASE_URL`/`IMAGE_MODEL` en image-analyzer (si están vacíos usa el backend OCR) y el endpoint `POST /describe`.
 - **Modelo vision no devuelve OCR.** El endpoint `POST /analyze` (`deploy/docker/image-analyzer`) hace resize `MAX_IMAGE_DIM=1024` y cache `image:{sha}` + prompt+model (§1 p1 fix). Purga `redis-cli DEL "image:<digest>"`.

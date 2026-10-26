@@ -36,9 +36,10 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error
     DeleteJob removes all Redis keys associated with a job, including:
     - status, text, results, embeddings, entities, metadata, steps, error -
     created/completed timestamps, features, LLM configuration - supplementary
-    data: chunks, classifications, inferences, raw entities This is called
-    when cleaning up after job completion or on explicit deletion requests.
-    Returns error if any Redis operation fails (partial cleanup may occur).
+    data: chunks, classifications, inferences, raw entities - per-page visual
+    extraction provenance (extraction_provenance) This is called when cleaning
+    up after job completion or on explicit deletion requests. Returns error if
+    any Redis operation fails (partial cleanup may occur).
 
 func (c *RedisClient) ExpireStuckJobs(ctx context.Context, timeout time.Duration) error
     ExpireStuckJobs finds jobs that have been in "pending", "processing",
@@ -111,6 +112,12 @@ func (c *RedisClient) GetJobMetadata(ctx context.Context, jobID string) (map[str
     on success. Returns error with "job metadata not found" message if key does
     not exist (redis.Nil). Returns error if Redis operation or JSON unmarshaling
     fails.
+
+func (c *RedisClient) GetJobProfile(ctx context.Context, jobID string) (string, error)
+    GetJobProfile retrieves the processing profile for a job. Redis key:
+    {namespace}:job:{jobID}:profile Returns the profile string on success.
+    Returns empty string (not error) if no profile is stored (redis.Nil).
+    Returns error if the Redis operation fails.
 
 func (c *RedisClient) GetJobResults(ctx context.Context, jobID string) (*models.JobResults, error)
     GetJobResults retrieves the complete pipeline results. Redis key:
@@ -197,6 +204,11 @@ func (c *RedisClient) SetJobMetadata(ctx context.Context, jobID string, metadata
     initial write. Stores arbitrary map[string]interface{} including document
     properties and worker output. Returns error if marshaling or Redis operation
     fails.
+
+func (c *RedisClient) SetJobProfile(ctx context.Context, jobID string, profile string) error
+    SetJobProfile stores the processing profile (rag|full) for a job. Redis key:
+    {namespace}:job:{jobID}:profile TTL: jobTTL (typically 24 hours), set on
+    initial write. Returns error if the Redis operation fails.
 
 func (c *RedisClient) SetJobResults(ctx context.Context, jobID string, results *models.JobResults) error
     SetJobResults would store the complete pipeline results as JSON. Redis key:

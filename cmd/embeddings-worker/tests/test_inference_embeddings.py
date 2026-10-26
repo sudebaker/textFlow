@@ -19,6 +19,7 @@ import msgpack
 import pytest
 
 from pkg.worker_common.artifact_store import FSStore
+from pkg.worker_common.embeddings_client import EmbeddingsResult
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 
 
@@ -131,9 +132,12 @@ def worker_env(monkeypatch, tmp_path):
         worker_obj = worker.EmbeddingsWorker()
         worker_obj.batch_size = 32
 
+        client = MagicMock()
+        worker_obj.embeddings_client = client
+
         yield {
             "worker": worker_obj,
-            "service": MagicMock(),
+            "client": client,
             "redis_client": mock_redis,
             "event_bus": mock_event_bus,
             "store": store,
@@ -145,12 +149,11 @@ class TestProcessMessageInferenceEmbeddings:
 
     def test_generates_and_stores_inference_embeddings(self, worker_env):
         w = worker_env["worker"]
-        service = worker_env["service"]
-        service.generate_embeddings.side_effect = [
-            [[0.1, 0.2]],  # chunk c0 embeddings
-            [[0.7, 0.8]],  # inference_0 embeddings
+        client = worker_env["client"]
+        client.embed_batch.side_effect = [
+            EmbeddingsResult(vectors=[[0.1, 0.2]]),  # chunk c0 embeddings
+            EmbeddingsResult(vectors=[[0.7, 0.8]]),  # inference_0 embeddings
         ]
-        w.service = service
 
         redis = worker_env["redis_client"]
         redis.exists.return_value = 1
@@ -186,9 +189,8 @@ class TestProcessMessageInferenceEmbeddings:
 
     def test_no_micro_inferences_skips_inference_embeddings(self, worker_env):
         w = worker_env["worker"]
-        service = worker_env["service"]
-        service.generate_embeddings.side_effect = [[[0.1, 0.2]]]
-        w.service = service
+        client = worker_env["client"]
+        client.embed_batch.side_effect = [EmbeddingsResult(vectors=[[0.1, 0.2]])]
 
         redis = worker_env["redis_client"]
         redis.exists.return_value = 0
@@ -220,9 +222,8 @@ class TestBatchMetrics:
         import embeddings_worker as worker
 
         w = worker_env["worker"]
-        service = worker_env["service"]
-        service.generate_embeddings.return_value = [[0.1, 0.2]]
-        w.service = service
+        client = worker_env["client"]
+        client.embed_batch.return_value = EmbeddingsResult(vectors=[[0.1, 0.2]])
         worker_env["redis_client"].exists.return_value = 0
 
         before = worker.chunks_total.labels(status="success")._value.get()
@@ -233,3 +234,22 @@ class TestBatchMetrics:
 
         assert result["status"] == "success"
         assert after == before + 1
+
+
+class TestDegradedFlag:
+    def test_degraded_client_result_is_surfaced_for_completion(self, worker_env):
+        w = worker_env["worker"]
+        client = worker_env["client"]
+        client.embed_batch.return_value = EmbeddingsResult(
+            vectors=[[0.1, 0.2]], degraded=True
+        )
+        worker_env["redis_client"].exists.return_value = 0
+
+        result = w.process_message(
+            {"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello"}]}
+        )
+
+        assert result["status"] == "success"
+        worker_env["redis_client"].set.assert_any_call(
+            "orchestrator:job:j1:embeddings_degraded", "true"
+        )

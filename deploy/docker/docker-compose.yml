@@ -246,8 +246,6 @@ services:
     container_name: textflow-embeddings-worker
     <<: *gpu-devices
     volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
-      \ set it}:/models"
     - artifacts-data:/app/data/artifacts
     - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
     - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
@@ -258,15 +256,14 @@ services:
     - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
     - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
-    - HF_HUB_OFFLINE=1
-    - TRANSFORMERS_OFFLINE=1
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
     - LOG_LEVEL=debug
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=20
-    - EMBEDDINGS_DEVICE=${EMBEDDINGS_DEVICE:-cpu}
+    - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
+    - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
     - EMBEDDING_BATCH_SIZE_GPU=${EMBEDDING_BATCH_SIZE_GPU:-32}
     - EMBEDDING_BATCH_SIZE_CPU=${EMBEDDING_BATCH_SIZE_CPU:-2}
     depends_on:
@@ -304,8 +301,6 @@ services:
     container_name: textflow-entities-worker
     <<: *gpu-devices
     volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set — copy .env.example to .env and\
-      \ set it}:/models"
     - artifacts-data:/app/data/artifacts
     - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
     - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
@@ -501,7 +496,6 @@ services:
     - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
     volumes:
     - results-data:/app/data/results
-    - ${MODELS_PATH:?MODELS_PATH is not set}/bge-m3:/models/bge-m3:ro
     - artifacts-data:/app/data/artifacts
     depends_on:
       redis:

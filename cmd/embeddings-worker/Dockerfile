@@ -2,10 +2,6 @@
 # ⭐ Auto-detects CUDA and installs appropriate PyTorch version
 FROM python:3.11.12-slim-bookworm as base
 
-# ⭐ AIR-GAPPED MODE: Disable HuggingFace Hub online checks
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
-ENV HF_HOME=/models
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
@@ -47,14 +43,12 @@ COPY pkg/ ./pkg/
 COPY cmd/embeddings-worker/embeddings_worker.py .
 COPY cmd/embeddings-worker/app ./app
 
-# Create models directory
-RUN mkdir -p /models /app/data/artifacts && chown -R app:app /app /models
+RUN mkdir -p /app/data/artifacts && chown -R app:app /app
 
 # Switch to app user
 USER app
 
 # Environment variables
-ENV MODEL_PATH=/models/bge-m3
 ENV EMBEDDING_BATCH_SIZE_GPU=32
 ENV EMBEDDING_BATCH_SIZE_CPU=2
 

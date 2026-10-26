@@ -52,18 +52,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from app.config.settings import Settings
 from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
 from pkg.worker_common.entity_utils import deduplicate_entities
+from pkg.worker_common.embeddings_client import EmbeddingsClient
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.pubsub_base import BasePubSubWorker
-
-try:
-    from sentence_transformers import SentenceTransformer
-    import torch
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError as e:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    SentenceTransformer = None
-    torch = None
 
 _settings = Settings()
 
@@ -73,8 +65,6 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
 FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 
-EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
-EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
 
@@ -99,37 +89,21 @@ class CompletionWorker(BasePubSubWorker):
             metrics_port=METRICS_PORT,
         )
         self.pipeline = PipelineDefinition.load()
-        self._embedding_service = None
-        self._embedding_service_loaded = False
+        self._embeddings_client = None
 
-    def _get_embedding_service(self):
-        """Lazy loading of embedding service to avoid blocking startup."""
-        if self._embedding_service_loaded:
-            return self._embedding_service
-
-        if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            self.logger.warning("sentence-transformers not available, inference embeddings disabled")
-            self._embedding_service_loaded = True
-            return None
-
-        try:
-            device = EMBEDDINGS_DEVICE if torch.cuda.is_available() else "cpu"
-            self._embedding_service = SentenceTransformer(
-                EMBEDDINGS_MODEL_PATH,
-                device=device
+    def _get_embeddings_client(self) -> EmbeddingsClient:
+        """Lazy remote embeddings client (no local model, no fallback)."""
+        if self._embeddings_client is None:
+            self._embeddings_client = EmbeddingsClient(
+                redis_client=self.redis_client,
+                batch_size=EMBEDDING_BATCH_SIZE,
             )
-            self.logger.info(f"Embedding service loaded with device={device}")
-        except Exception as e:
-            self.logger.warning(f"Failed to load embedding service: {e}")
-            self._embedding_service = None
-
-        self._embedding_service_loaded = True
-        return self._embedding_service
+        return self._embeddings_client
 
     def _generate_inference_embeddings(
         self, inferences_by_chunk: Dict[str, List[Dict]]
     ) -> Dict[str, Dict[str, List[float]]]:
-        """Generate embeddings for inference texts.
+        """Generate inference embeddings via the remote embeddings backend.
 
         Args:
             inferences_by_chunk: Dict mapping chunk_id to list of inference dicts
@@ -137,37 +111,15 @@ class CompletionWorker(BasePubSubWorker):
         Returns:
             Dict mapping chunk_id to {inference_idx: embedding_vector}
         """
-        if not self._get_embedding_service() or not inferences_by_chunk:
+        if not inferences_by_chunk:
             return {}
 
-        inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
-
-        for chunk_id, inferences in inferences_by_chunk.items():
-            if not inferences:
-                continue
-
-            texts = [inf.get("text", "") or "" for inf in inferences]
-            if not any(texts):
-                continue
-
-            try:
-                embeddings = self._get_embedding_service().encode(
-                    texts,
-                    batch_size=EMBEDDING_BATCH_SIZE,
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
-                )
-
-                chunk_embeddings: Dict[str, List[float]] = {}
-                for idx, embedding in enumerate(embeddings):
-                    chunk_embeddings[f"inference_{idx}"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
-
-                inference_embeddings[chunk_id] = chunk_embeddings
-                self.logger.debug(f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
-
-        return inference_embeddings
+        client = self._get_embeddings_client()
+        return generate_inference_embeddings(
+            inferences_by_chunk=inferences_by_chunk,
+            embed_fn=lambda texts: client.embed(texts).vectors,
+            logger=self.logger,
+        )
 
     def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
         """Save finalized job results to JSON file.

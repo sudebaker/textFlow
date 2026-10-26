@@ -150,10 +150,10 @@ else
     check_warn "entities-worker: local_files_only not enforced"
 fi
 
-if grep -q "HF_HUB_OFFLINE" cmd/embeddings-worker/embeddings_worker.py; then
-    check_ok "embeddings-worker: Offline mode set"
+if grep -q "EmbeddingsClient" cmd/embeddings-worker/embeddings_worker.py; then
+    check_ok "embeddings-worker: remote embeddings client"
 else
-    check_warn "embeddings-worker: Offline mode check"
+    check_warn "embeddings-worker: remote client not found"
 fi
 
 ***REMOVED***================

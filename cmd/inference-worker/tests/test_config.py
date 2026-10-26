@@ -62,3 +62,29 @@ class TestInferenceEnvContract:
     def test_new_constants_exist(self):
         assert hasattr(inference_worker, "INFERENCE_BASE_URL")
         assert hasattr(inference_worker, "INFERENCE_MODEL")
+
+
+class TestStartupWiring:
+    def test_main_fails_fast_without_env(self, monkeypatch):
+        monkeypatch.delenv("INFERENCE_BASE_URL", raising=False)
+        monkeypatch.delenv("INFERENCE_MODEL", raising=False)
+
+        def _no_worker():
+            raise AssertionError("InferenceWorker constructed before env validation")
+
+        monkeypatch.setattr(inference_worker, "InferenceWorker", _no_worker)
+        with pytest.raises(RuntimeError):
+            inference_worker.main()
+
+    def test_main_ignores_legacy_env(self, monkeypatch):
+        monkeypatch.delenv("INFERENCE_BASE_URL", raising=False)
+        monkeypatch.delenv("INFERENCE_MODEL", raising=False)
+        monkeypatch.setenv("LLM_URL", "http://legacy:8000")
+        monkeypatch.setenv("LLM_MODEL", "legacy-model")
+
+        def _no_worker():
+            raise AssertionError("InferenceWorker constructed before env validation")
+
+        monkeypatch.setattr(inference_worker, "InferenceWorker", _no_worker)
+        with pytest.raises(RuntimeError):
+            inference_worker.main()

@@ -425,10 +425,13 @@ REQUEST_TIMEOUT=30s
 # Docling
 DOCLING_URL=http://docling:5001
 
-# LLM (optional)
-LLM_URL=
-LLM_MODEL=gpt-3.5-turbo
-LLM_MAX_TOKENS=1024
+# Inference LLM (required when inferences are enabled)
+INFERENCE_BASE_URL=http://vllm:8000
+INFERENCE_MODEL=gpt-3.5-turbo
+
+# Remote embeddings (required; no local fallback)
+EMBEDDINGS_BASE_URL=http://embeddings:8000
+EMBEDDINGS_MODEL=BAAI/bge-m3
 
 # Circuit Breaker
 CIRCUIT_BREAKER_THRESHOLD=0.6

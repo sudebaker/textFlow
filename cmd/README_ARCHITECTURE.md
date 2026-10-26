@@ -81,25 +81,23 @@ graph TB
 **Output**: Redis `embeddings` key (artifact store ref `sha256:`) + signal completion
 
 **Process**:
-1. Load BAAI/bge-m3 model (1024-dim, 48 attention heads)
-2. Receive text chunks
-3. Embed each chunk → float32 vector
-4. Average vectors (if multiple chunks) → single 1024-dim vector
-5. Store embeddings ref in Redis
-6. Update step status → "completed"
-7. ACK message
+1. Read chunks from the artifact store
+2. Send them to the remote embeddings backend `POST {EMBEDDINGS_BASE_URL}/v1/embeddings` (`EMBEDDINGS_MODEL`, default `BAAI/bge-m3`, 1024-dim)
+3. Cache each vector in Redis by `emb:{sha256(model+text)}` (7d TTL)
+4. Store the embeddings map as an artifact-store ref
+5. Update step status → "completed"
+6. ACK message
 
-**Model Details**:
-- **Model**: BAAI/bge-m3 (multilingual, 568M params)
-- **Dimension**: 1024
+**Backend Details**:
+- **Model**: `EMBEDDINGS_MODEL`, served by an external OpenAI-compatible endpoint
+- **Dimension**: 1024 (validated per vector)
 - **Batch size**: 32 (configurable)
-- **Max sequence length**: 8192
-- **Offline mode**: `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` + local model files
+- **No local model**: no bge-m3 mount, no `sentence-transformers`
 
 **Error Handling**:
-- OOM (out of memory) → Reduce batch size, NACK without requeue
-- Model loading → Retry, fail fast if weights missing
-- CUDA unavailable → Fall back to CPU (slower but works)
+- Remote backend errors → retries with backoff
+- Partial failure → successful vectors kept, `embeddings_degraded=true`
+- Total failure → the job fails (no local fallback)
 
 **Metrics**:
 - `embeddings_worker_jobs_total{status="success|oom|cuda_error"}`
@@ -202,7 +200,7 @@ graph TB
 **Dependencies**:
 - vLLM service running (port 8000 default)
 - LLM model loaded (e.g., Mistral, Llama2, or quantized variant)
-- vLLM endpoint configured via `LLM_URL` env var
+- vLLM endpoint configured via `INFERENCE_BASE_URL` + `INFERENCE_MODEL` (required; no fallback)
 
 **Error Handling**:
 - vLLM unavailable → Circuit breaker + timeout (30s)
@@ -309,11 +307,8 @@ Dead-letter queues (dlx):
 For offline operation, download and mount model directories **before** building Docker images:
 
 ```bash
-# Local model cache
+# Local model cache (embeddings are remote: no bge-m3 mount)
 mkdir -p /models
-
-# Embeddings model
-huggingface-cli download BAAI/bge-m3 --local-dir /models/bge-m3
 
 # Entities models (backbone + extractor)
 huggingface-cli download microsoft/deberta-v3-small --local-dir /models/deberta-v3-small
@@ -327,11 +322,9 @@ huggingface-cli download DeploymentDuck/modern-gliner --local-dir /models/modern
 ```yaml
 embeddings-worker:
   image: embeddings-worker:latest
-  volumes:
-    - /models/bge-m3:/models/bge-m3:ro
   environment:
-    HF_HUB_OFFLINE: 1
-    TRANSFORMERS_OFFLINE: 1
+    EMBEDDINGS_BASE_URL: http://embeddings-backend:8000
+    EMBEDDINGS_MODEL: BAAI/bge-m3
 
 entities-worker:
   image: entities-worker:latest
@@ -345,16 +338,9 @@ entities-worker:
 
 **Build without internet**:
 ```dockerfile
-# Pre-download during build stage (on internet-connected machine)
-FROM python:3.11 as download
-RUN pip install huggingface_hub
-RUN huggingface-cli download BAAI/bge-m3
-
-# Runtime stage (air-gapped)
+# Runtime stage (air-gapped): embeddings are a remote HTTP backend
 FROM python:3.11
-COPY --from=download /root/.cache/huggingface /models
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
+ENV EMBEDDINGS_MODEL=BAAI/bge-m3
 COPY embeddings_worker.py /app/
 CMD ["python", "embeddings_worker.py"]
 ```
@@ -362,11 +348,7 @@ CMD ["python", "embeddings_worker.py"]
 **Verification (air-gapped)**:
 ```bash
 docker run --network=none \
-  -v /models/bge-m3:/models/bge-m3:ro \
   -v /models/gliner:/models/gliner:ro \
-  embeddings-worker python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('/models/bge-m3')"
-
-docker run --network=none \
   -v /models/gliner:/models/gliner:ro \
   entities-worker python -c "from gliner import GLiNER; model = GLiNER.from_pretrained('/models/gliner')"
 ```

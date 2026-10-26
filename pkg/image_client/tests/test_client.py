@@ -115,7 +115,7 @@ class TestMultimodalLLMClientPool:
         with patch.dict(
             "os.environ",
             {
-                "OCR_BASE_URL": "http://llm-1:8000,http://llm-2:8000",
+                "MULTIMODAL_LLM_URLS": "http://llm-1:8000,http://llm-2:8000",
                 "MULTIMODAL_LLM_MAX_RETRIES": "2",
             },
             clear=False,
@@ -136,7 +136,7 @@ class TestMultimodalLLMClientPool:
 
         with patch.dict(
             "os.environ",
-            {"OCR_BASE_URL": "http://llm-1:8000", "MULTIMODAL_LLM_MAX_RETRIES": "1"},
+            {"MULTIMODAL_LLM_URLS": "http://llm-1:8000", "MULTIMODAL_LLM_MAX_RETRIES": "1"},
             clear=False,
         ):
             client = MultimodalLLMClientPool()
@@ -250,3 +250,30 @@ class TestDescribe:
 
         client = MultimodalLLMClientPool()
         assert client.describe(image_bytes=b"image", filename="cat.jpg") == ""
+
+
+    def test_describe_failover(self, mocker):
+        """describe() fails over to the next service URL like analyze()."""
+        mock_500 = MagicMock()
+        mock_500.status_code = 500
+
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+        mock_success.json.return_value = {"description": "Second URL"}
+
+        post = mocker.patch("requests.post", side_effect=[mock_500, mock_success])
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MULTIMODAL_LLM_URLS": "http://llm-1:8000,http://llm-2:8000",
+                "MULTIMODAL_LLM_MAX_RETRIES": "2",
+            },
+            clear=False,
+        ):
+            client = MultimodalLLMClientPool()
+            description = client.describe(image_bytes=b"image", filename="cat.jpg")
+
+        assert description == "Second URL"
+        urls = [call.args[0] for call in post.call_args_list]
+        assert urls == ["http://llm-1:8000/describe", "http://llm-2:8000/describe"]

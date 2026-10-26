@@ -30,11 +30,29 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="textFlow Image Analyzer", version="1.0.0")
 
 # --- Configuration (all env-driven, OpenAI-compatible defaults) ---
-# OCR and description are separate LLM backends (image-ocr-description).
-OCR_BASE_URL = os.getenv("OCR_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
-OCR_MODEL = os.getenv("OCR_MODEL", "gemma4:e4b")
-IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", OCR_BASE_URL).rstrip("/")
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", OCR_MODEL)
+def _env_value(environ, name: str, default: str) -> str:
+    """Return a trimmed env value, treating blank as unset."""
+    value = (environ.get(name) or "").strip()
+    return value or default
+
+
+def _resolve_backends(environ) -> tuple[str, str, str, str]:
+    """Resolve OCR and description LLM backends (image-ocr-description).
+
+    Description defaults to the OCR backend when its own env is absent, so a
+    single-backend deployment keeps working. Compose must not inject a
+    non-empty IMAGE_* default or that fallback never applies.
+    """
+    ocr_url = _env_value(
+        environ, "OCR_BASE_URL", "http://host.docker.internal:11434"
+    ).rstrip("/")
+    ocr_model = _env_value(environ, "OCR_MODEL", "gemma4:e4b")
+    image_url = _env_value(environ, "IMAGE_BASE_URL", ocr_url).rstrip("/")
+    image_model = _env_value(environ, "IMAGE_MODEL", ocr_model)
+    return ocr_url, ocr_model, image_url, image_model
+
+
+OCR_BASE_URL, OCR_MODEL, IMAGE_BASE_URL, IMAGE_MODEL = _resolve_backends(os.environ)
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "180"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 MAX_IMAGE_DIM = int(os.getenv("MAX_IMAGE_DIM", "1024"))  # spec 5.1 resize

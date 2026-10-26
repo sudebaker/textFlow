@@ -531,3 +531,33 @@ class TestDescriptionSingleField:
             assert stored["description"] is None
         finally:
             os.unlink(path)
+
+
+class TestDescriptionFailure:
+    @pytest.mark.asyncio
+    async def test_describe_failure_fails_the_job(self, mock_deps):
+        """A `full` job cannot claim a non-null description on describe failure."""
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            analyze_result = MagicMock()
+            analyze_result.extracted_text = "OCR text"
+            analyze_result.description = None
+            analyze_result.language = "es"
+            with patch.object(w.llm_pool, "analyze", return_value=analyze_result), \
+                 patch.object(
+                     w.llm_pool,
+                     "describe",
+                     side_effect=RuntimeError("describe down"),
+                 ):
+                with pytest.raises(RuntimeError, match="describe down"):
+                    await w.process_message(_make_msg(profile="full", path=path))
+            mock_deps["redis_client"].hset.assert_any_call(
+                "orchestrator:job:j1:status", "status", "failed"
+            )
+        finally:
+            os.unlink(path)

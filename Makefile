@@ -114,7 +114,7 @@ test-python: ## Run all Python tests (per-dir pytest loop, see comment)
 	# visible per-dir failures; the loop REPORTS ALL dirs (tally) and exits
 	# nonzero at the end if any dir failed (loud, complete, no masking).
 	@red=0; \
-	for d in cmd/*/tests deploy/docker/vision-ocr/tests; do \
+	for d in cmd/*/tests pkg/*/tests deploy/docker/vision-ocr/tests deploy/docker/image-analyzer/tests; do \
 		echo -e "${YELLOW}--- $$d ---${NC}"; \
 		pytest -v $$d || { red=1; red_dirs="$$red_dirs $$d"; }; \
 	done; \

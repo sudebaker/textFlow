@@ -626,8 +626,8 @@ services:
     environment:
     - OCR_BASE_URL=${OCR_BASE_URL:-http://host.docker.internal:11434}
     - OCR_MODEL=${OCR_MODEL:-gemma4:e4b}
-    - IMAGE_BASE_URL=${IMAGE_BASE_URL:-http://host.docker.internal:11434}
-    - IMAGE_MODEL=${IMAGE_MODEL:-gemma4:e4b}
+    - IMAGE_BASE_URL=${IMAGE_BASE_URL:-}
+    - IMAGE_MODEL=${IMAGE_MODEL:-}
     - LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-180}
     - LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
     - MAX_IMAGE_DIM=${MAX_IMAGE_DIM:-1024}

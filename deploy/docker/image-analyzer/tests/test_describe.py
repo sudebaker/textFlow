@@ -89,3 +89,29 @@ def test_describe_is_cached(monkeypatch):
         assert response.status_code == 200
 
     assert record["calls"] == 1
+
+
+def test_image_backend_defaults_to_ocr_backend():
+    from app.main import _resolve_backends
+
+    ocr_url, ocr_model, image_url, image_model = _resolve_backends(
+        {"OCR_BASE_URL": "http://ocr:8000/", "OCR_MODEL": "ocr-model"}
+    )
+
+    assert (ocr_url, ocr_model) == ("http://ocr:8000", "ocr-model")
+    assert (image_url, image_model) == ("http://ocr:8000", "ocr-model")
+
+
+def test_blank_image_backend_falls_back_to_ocr_backend():
+    from app.main import _resolve_backends
+
+    _, _, image_url, image_model = _resolve_backends(
+        {
+            "OCR_BASE_URL": "http://ocr:8000",
+            "OCR_MODEL": "ocr-model",
+            "IMAGE_BASE_URL": "   ",
+            "IMAGE_MODEL": "",
+        }
+    )
+
+    assert (image_url, image_model) == ("http://ocr:8000", "ocr-model")

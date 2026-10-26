@@ -11,38 +11,35 @@ from pkg.image_client.models import ImageAnalysisResult
 class TestMultimodalLLMClientPool:
     """Tests for MultimodalLLMClientPool."""
 
-    def test_default_urls(self):
-        """Each capability falls back to its own default endpoint."""
+    def test_default_url(self):
+        """Test default URL is used when env var not set."""
         with patch.dict("os.environ", {}, clear=False):
             client = MultimodalLLMClientPool()
-            assert client._ocr_urls == ["http://multimodal-llm:8000"]
-            assert client._image_urls == ["http://multimodal-llm:8000"]
+            assert "http://multimodal-llm:8000" in client._urls
 
     def test_custom_urls(self):
-        """OCR and description endpoints are configured independently."""
+        """Test custom URLs from env var."""
         with patch.dict(
             "os.environ",
-            {
-                "OCR_BASE_URL": "http://llm-1:8000,http://llm-2:8000",
-                "IMAGE_BASE_URL": "http://desc-1:8000",
-            },
+            {"MULTIMODAL_LLM_URLS": "http://llm-1:8000,http://llm-2:8000"},
             clear=False,
         ):
             client = MultimodalLLMClientPool()
-            assert client._ocr_urls == ["http://llm-1:8000", "http://llm-2:8000"]
-            assert client._image_urls == ["http://desc-1:8000"]
+            assert len(client._urls) == 2
+            assert client._urls[0] == "http://llm-1:8000"
+            assert client._urls[1] == "http://llm-2:8000"
 
     def test_round_robin_selection(self):
         """Test round-robin URL selection advances index."""
         with patch.dict(
             "os.environ",
-            {"OCR_BASE_URL": "http://llm-1:8000,http://llm-2:8000"},
+            {"MULTIMODAL_LLM_URLS": "http://llm-1:8000,http://llm-2:8000"},
             clear=False,
         ):
             client = MultimodalLLMClientPool()
             urls = []
             for _ in range(4):
-                urls.append(client._next_url("ocr", client._ocr_urls))
+                urls.append(client._next_url())
             assert urls[0] == "http://llm-1:8000"
             assert urls[1] == "http://llm-2:8000"
             assert urls[2] == "http://llm-1:8000"
@@ -52,7 +49,7 @@ class TestMultimodalLLMClientPool:
         """Test thread-safe index access."""
         with patch.dict(
             "os.environ",
-            {"OCR_BASE_URL": "http://llm-1:8000,http://llm-2:8000"},
+            {"MULTIMODAL_LLM_URLS": "http://llm-1:8000,http://llm-2:8000"},
             clear=False,
         ):
             client = MultimodalLLMClientPool()
@@ -61,7 +58,7 @@ class TestMultimodalLLMClientPool:
             def access_url():
                 try:
                     for _ in range(100):
-                        client._next_url("ocr", client._ocr_urls)
+                        client._next_url()
                 except Exception as e:
                     errors.append(e)
 
@@ -207,7 +204,7 @@ class TestMultimodalLLMClientPool:
 class TestDescribe:
     """OCR (/analyze) and description (/describe) use distinct endpoints."""
 
-    def test_describe_uses_image_endpoint_and_timeout(self, mocker):
+    def test_describe_uses_describe_endpoint_and_timeout(self, mocker):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"description": "A cat on a sofa"}
@@ -216,8 +213,7 @@ class TestDescribe:
         with patch.dict(
             "os.environ",
             {
-                "OCR_BASE_URL": "http://ocr:8000",
-                "IMAGE_BASE_URL": "http://desc:9000",
+                "MULTIMODAL_LLM_URLS": "http://analyzer:8080",
                 "MULTIMODAL_LLM_TIMEOUT": "42",
             },
             clear=False,
@@ -226,10 +222,10 @@ class TestDescribe:
             description = client.describe(image_bytes=b"image", filename="cat.jpg")
 
         assert description == "A cat on a sofa"
-        assert post.call_args.args[0] == "http://desc:9000/describe"
+        assert post.call_args.args[0] == "http://analyzer:8080/describe"
         assert post.call_args.kwargs["timeout"] == 42
 
-    def test_analyze_uses_ocr_endpoint(self, mocker):
+    def test_analyze_uses_analyze_endpoint(self, mocker):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"extracted_text": "visible text"}
@@ -237,17 +233,14 @@ class TestDescribe:
 
         with patch.dict(
             "os.environ",
-            {
-                "OCR_BASE_URL": "http://ocr:8000",
-                "IMAGE_BASE_URL": "http://desc:9000",
-            },
+            {"MULTIMODAL_LLM_URLS": "http://analyzer:8080"},
             clear=False,
         ):
             client = MultimodalLLMClientPool()
             result = client.analyze(image_bytes=b"image", filename="doc.jpg")
 
         assert result.extracted_text == "visible text"
-        assert post.call_args.args[0] == "http://ocr:8000/analyze"
+        assert post.call_args.args[0] == "http://analyzer:8080/analyze"
 
     def test_describe_without_description_returns_empty_string(self, mocker):
         mock_response = MagicMock()

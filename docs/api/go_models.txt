@@ -229,6 +229,10 @@ type JobResults struct {
 	MetadataImage    *ImageMetadata `json:"metadata_image,omitempty"`
 	MetadataAudio    *AudioMetadata `json:"metadata_audio,omitempty"`
 	AudioSegments    []AudioSegment `json:"audio_segments,omitempty"`
+
+	// EmbeddingsDegraded is true when the remote embeddings backend failed for
+	// part of the request and only some vectors were produced.
+	EmbeddingsDegraded bool `json:"embeddings_degraded,omitempty"`
 }
     JobResults represents the final aggregated results of a
     completed job. It contains extracted text, chunks with per-chunk

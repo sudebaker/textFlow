@@ -82,13 +82,18 @@ type JobResults struct {
 	Status               string                   `json:"status"`
 	CreatedAt            string                   `json:"created_at"`
 	CompletedAt          string                   `json:"completed_at"`
-	SchemaVersion        string                   `json:"schema_version,omitempty"`
 	Text                 string                   `json:"text"`
 	Chunks               []Chunk                  `json:"chunks,omitempty"`
 	Entities             map[string]EntityMinimal `json:"entities,omitempty"`
 	DocumentMetadata     map[string]interface{}   `json:"document_metadata,omitempty"`
 	TextMetadata         map[string]interface{}   `json:"text_metadata,omitempty"`
 	SourceClassification *SourceClassification    `json:"source_classification,omitempty"`
+	ImageOcrText         string                   `json:"image_ocr_text,omitempty"`
+	ImageDescription     *string                  `json:"image_description"`
+	MetadataImage        map[string]interface{}   `json:"metadata_image,omitempty"`
+	MetadataAudio        map[string]interface{}   `json:"metadata_audio,omitempty"`
+	AudioSegments        []interface{}            `json:"audio_segments,omitempty"`
+	EmbeddingsDegraded   bool                     `json:"embeddings_degraded,omitempty"`
 }
 
 // SourceClassification mirrors internal/models.SourceClassificationResult.
@@ -323,6 +328,7 @@ func main() {
 	if profile == "" {
 		profile = "full"
 	}
+	profile = strings.ToLower(profile)
 	if profile != "rag" && profile != "full" {
 		fmt.Printf("Error: invalid profile %q (valid: rag|full)\n", profile)
 		printUsage()
@@ -1309,11 +1315,12 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 		return err
 	}
 
-	// Validate that we have at least one of: text or chunks
-	// The 'text' field is optional (only present if it was extracted).
-	// Results with chunks but no full text are valid (e.g., document with separate chunks).
-	if len(result.Chunks) == 0 && result.Text == "" {
-		return fmt.Errorf("no results found for job %s: no chunks or text extracted", jobID)
+	hasDescription := result.ImageDescription != nil && *result.ImageDescription != ""
+	if len(result.Chunks) == 0 && result.Text == "" &&
+		result.ImageOcrText == "" && !hasDescription &&
+		len(result.MetadataImage) == 0 && len(result.MetadataAudio) == 0 &&
+		len(result.AudioSegments) == 0 {
+		return fmt.Errorf("no results found for job %s", jobID)
 	}
 
 	for i, chunk := range result.Chunks {

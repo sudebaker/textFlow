@@ -332,7 +332,7 @@ All jobs follow the same pipeline stages regardless of file type (documents, aud
 |-----------|-----------------|-------|
 | **Documents** (PDF, DOCX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Docling extracts text, then standard NLP pipeline |
 | **Audio** (MP3, WAV, etc.) | extracting (transcription) → embedding → entities → [inferences] → metadata → completed | Whisper transcribes audio (VAD applied). Diarization is NOT implemented (see §4b). |
-| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → entities → [inferences] → metadata → completed | Multimodal LLM extracts the TEXT visible in the image (via image-analyzer). No description is produced. Text is processed through embedding/entity stages. |
+| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → [entities] → [inferences] → [metadata] → completed | image-analyzer extracts the visible TEXT (`/analyze`); `full` also requests a semantic description (`/describe`, single field, never embedded). Text is processed through the downstream stages. |
 | **Spreadsheets** (CSV, XLSX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Rows flattened into text blocks (max 2,000 rows), then standard pipeline |
 
 > **Profiles compose stages.** The table above describes `full` (default). With `profile=rag`, `entities` and `metadata` are skipped; the entry stage and `embeddings`/`inferences` still run. See **§3b Processing Profiles**.
@@ -581,7 +581,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 - `image_ocr_text` — text visible in the image (also the common `text` field).
 - `image_description` — semantic description; a string for `full`, `null` for `rag` (always present for image jobs, never chunked or embedded).
 - `metadata_image` — `{language, description}`.
-- `metadata_audio` — `{language, duration_seconds, has_diarization, segment_count}`.
+- `metadata_audio` — `{language, duration_seconds, has_diarization, segment_count}` (`has_diarization` is always `false`: diarization is not implemented).
 - `audio_segments` — timed transcript segments when available.
 - `embeddings_degraded` — `true` when the embeddings backend failed for part of the batch (successful vectors are kept).
 
@@ -742,7 +742,7 @@ The orchestrator depends on external services for different processing stages. A
 |---------|---------|-------|--------|-------|
 | **Docling** | Document extraction | PDF, DOCX, PPTX, images | Extracted text, chunks, markdown | HTTP service; handles Documents category |
 | **Whisper** | Audio transcription | MP3, WAV, M4A, OGG, FLAC | Transcript text (VAD applied; diarization not implemented) | Runs as the `whisper` service in this repo; handles Audio category |
-| **image-analyzer** (Multimodal LLM) | Image text extraction | JPG, PNG, WEBP, BMP | Extracted text visible in the image (no description) | OpenAI-compatible vision LLM; runs as image-analyzer service; handles Images category |
+| **image-analyzer** (Multimodal LLM) | Image OCR + optional description | JPG, PNG, WEBP, BMP | OCR text (`/analyze`); semantic description (`/describe`, `full` only) | OpenAI-compatible vision LLM; runs as image-analyzer service; handles Images category |
 | **BAAI/bge-m3** | Text embedding generation | Text chunks | 1024-dimensional vectors | Remote `POST /v1/embeddings` backend (`EMBEDDINGS_BASE_URL`); air-gapped compatible |
 | **GLiNER** | Named entity recognition | Text | Entity spans with labels and confidence | NER model; runs in entities-worker; air-gapped compatible; offline-critical |
 | **Regex Entity Extractor** | PII/Pattern extraction | Text | Regex-matched entities (EMAIL, PHONE, etc.) | HTTP service; runs in entities-worker; air-gapped compatible |
@@ -1166,6 +1166,7 @@ Common metrics:
       "metadata": {"author": "user2"}
     }
   ],
+  "profile": "full",
   "max_concurrency": 10,
   "webhook_url": "https://example.com/webhook",
   "webhook_secret": "my-secret"
@@ -1177,6 +1178,8 @@ Common metrics:
 - `documents[].text` (string, required): Text content of the document
 - `documents[].filename` (string, optional): Original filename
 - `documents[].metadata` (object, optional): Custom metadata
+- `documents[].profile` (string, optional): Per-document `rag|full`; inherits the batch profile when omitted
+- `profile` (string, optional): Batch-level default `rag|full` (default `full`)
 - `max_concurrency` (int, optional): Max parallel jobs (1-50, default: 10)
 - `webhook_url` (string, optional): Webhook URL for batch completion
 - `webhook_secret` (string, optional): Secret for webhook signature

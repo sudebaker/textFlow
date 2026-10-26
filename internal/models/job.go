@@ -121,6 +121,10 @@ type JobResults struct {
 	MetadataImage    *ImageMetadata `json:"metadata_image,omitempty"`
 	MetadataAudio    *AudioMetadata `json:"metadata_audio,omitempty"`
 	AudioSegments    []AudioSegment `json:"audio_segments,omitempty"`
+
+	// EmbeddingsDegraded is true when the remote embeddings backend failed for
+	// part of the request and only some vectors were produced.
+	EmbeddingsDegraded bool `json:"embeddings_degraded,omitempty"`
 }
 
 // Chunk represents a segment of extracted text with token metadata, per-chunk embeddings,

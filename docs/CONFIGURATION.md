@@ -79,6 +79,7 @@
 | `OCR_BASE_URL / OCR_MODEL` | `http://host.docker.internal:11434 / gemma4:e4b` | image-analyzer | backend LLM para OCR (`/analyze`) |
 | `IMAGE_BASE_URL / IMAGE_MODEL` | fallback a `OCR_*` | image-analyzer | backend LLM para descripción (`/describe`); vacío = usar el de OCR |
 | `MAX_IMAGE_DIM / CACHE_TTL_SECONDS` | `1024 / 86400` | image-analyzer | resize y caché por hash |
+| `IMAGE_QUEUE / AUDIO_QUEUE` | `image / audio` | image/audio-worker | reemplazadas por `image_replaces_extraction` / `audio_replaces_extraction` |
 
 ## Embeddings (remotos)
 
@@ -89,7 +90,6 @@
 | `EMBEDDINGS_TIMEOUT / MAX_RETRIES / BATCH_SIZE` | `30 / 3 / 32` | cliente | reintentos con backoff |
 | `EMBEDDINGS_CACHE_TTL_SECONDS` | `604800` (7d) | cliente | caché `emb:{sha256(model+text)}` |
 | `EMBEDDINGS_DIMENSION` | `1024` | cliente | validación de vectores |
-| `IMAGE_QUEUE / AUDIO_QUEUE` | `image / audio` | image/audio-worker | reemplazadas por `image_replaces_extraction` / `audio_replaces_extraction` |
 
 ## RabbitMQ / Recursos
 

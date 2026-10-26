@@ -107,7 +107,9 @@ class AudioWorker(BaseAsyncWorker):
             audio_metadata = {
                 "language": result.language,
                 "duration_seconds": result.duration_seconds,
-                "has_diarization": bool(result.segments),
+                # Diarization is not implemented by the whisper service; never
+                # claim speaker labels that do not exist.
+                "has_diarization": False,
                 "segment_count": len(result.segments) if result.segments else 0,
             }
             set_job_key(

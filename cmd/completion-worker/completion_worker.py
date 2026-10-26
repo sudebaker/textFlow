@@ -722,17 +722,17 @@ class CompletionWorker(BasePubSubWorker):
 
             # --- Media fields (image-ocr-description / job-result-format) ---
             image_metadata = _load_optional_json(image_metadata_raw)
-            if image_metadata is not None:
+            if isinstance(image_metadata, dict):
                 results["image_ocr_text"] = text
                 results["image_description"] = image_metadata.get("description")
                 results["metadata_image"] = image_metadata
 
             audio_metadata = _load_optional_json(audio_metadata_raw)
-            if audio_metadata is not None:
+            if isinstance(audio_metadata, dict):
                 results["metadata_audio"] = audio_metadata
 
             audio_segments = _load_optional_json(audio_segments_raw)
-            if audio_segments is not None:
+            if isinstance(audio_segments, list):
                 results["audio_segments"] = audio_segments
 
             # Log completion stats

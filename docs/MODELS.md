@@ -118,7 +118,7 @@ Notas:
 # 0. Requisitos host: Docker, jq, bash, curl, espacio (~15 GB con large-v2 + docling)
 make setup-models
 # → deploy/docker/download_models_offline.py
-#   HF: gliner, deberta, whisper-large-v2 (bge-m3 es remoto)
+#   HF: gliner, deberta, whisper-large-v2 (bge-m3 opcional solo si self-hosteas el backend de embeddings)
 #   Docling artifacts → models/docling/ (vía docker create/cp de la imagen cu128/self)
 #   Manifiesto: models/MANIFEST.txt (repo, revisión, sha256, tamaño por archivo)
 ```

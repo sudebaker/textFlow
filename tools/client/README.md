@@ -38,6 +38,7 @@ go build -o client .
 | `-i, --input <file>` | Archivo local o URL (requerido para modo simple) |
 | `-o, --output <file>` | Ruta para guardar resultados JSON (requerido) |
 | `-u, --url <url>` | URL base de la API (default: `http://localhost:8080`) |
+| `-p, --profile <rag\|full>` | Perfil de procesamiento (default: `full`); `rag` omite entities/metadata |
 | `-f, --inferences` | Habilitar generación de inferencias (requiere vLLM) |
 | `--inference-embeddings` | Generar embeddings vectoriales para inferencias (requiere `-f`) |
 | `-w, --webhook <url>` | URL de webhook para notificación de completado |
@@ -52,10 +53,12 @@ El archivo JSON para modo batch debe contener:
 
 ```json
 {
+  "profile": "full",
   "documents": [
     {
       "text": "Texto del primer documento",
       "filename": "doc1.txt",
+      "profile": "rag",
       "metadata": {"author": "user1"}
     },
     {

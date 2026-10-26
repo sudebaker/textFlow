@@ -296,7 +296,7 @@ Routing por extensión en el orchestrator (`cmd/orchestrator/main.go`): `.mp3/.w
 | Worker | Servicio externo | Endpoint |
 |--------|------------------|----------|
 | `audio-worker` | `whisper` (deploy/docker/whisper) | `POST /transcribe` (multipart `audio`+`language`) |
-| `image-worker` | `image-analyzer` (deploy/docker/image-analyzer) | `POST /analyze` (multipart `file`+`prompt`) |
+| `image-worker` | `image-analyzer` (deploy/docker/image-analyzer) | `POST /analyze` (OCR) + `POST /describe` (`full` only) |
 
 **image-analyzer** (micro-servicio propio, `deploy/docker/image-analyzer/app/main.py`): FastAPI con dos capacidades separadas: `POST /analyze` (OCR del texto visible) y `POST /describe` (descripción semántica, solo para `profile=full`). Hace resize con Pillow (spec 5.1, `MAX_IMAGE_DIM`) y cachea por SHA256 en Redis (clave `image:{hash}` / `image:describe:{hash}`, TTL `CACHE_TTL_SECONDS`). Los backends LLM son **OpenAI-compatible** (`/v1/chat/completions`): `OCR_BASE_URL`/`OCR_MODEL` para OCR y `IMAGE_BASE_URL`/`IMAGE_MODEL` para descripción (si están vacíos, usa el backend OCR). Requiere la red `docker_default` para alcanzar `host.docker.internal` (las redes `internal: true` no tienen salida al host).
 

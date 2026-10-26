@@ -1417,35 +1417,7 @@ func downloadHandler(c *gin.Context) {
 			chunks[i] = chunkData
 		}
 
-		// Return full results with compressed embeddings
-		response := gin.H{
-			"job_id":      jobID,
-			"status":      results.Status,
-			"created_at":  results.CreatedAt,
-			"compression": "gzip",
-			"chunks":      chunks,
-		}
-
-		// Add optional fields if present
-		if results.CompletedAt != "" {
-			response["completed_at"] = results.CompletedAt
-		}
-		if results.Text != "" {
-			response["text"] = results.Text
-		}
-		if len(results.Entities) > 0 {
-			response["entities"] = results.Entities
-		}
-		if len(results.DocumentMetadata) > 0 {
-			response["document_metadata"] = results.DocumentMetadata
-		}
-		if len(results.TextMetadata) > 0 {
-			response["text_metadata"] = results.TextMetadata
-		}
-		if results.SourceClassification != nil {
-			response["source_classification"] = results.SourceClassification
-		}
-
+		response := buildCompressedResults(&results, chunks)
 		c.JSON(http.StatusOK, response)
 		return
 	}
@@ -1510,4 +1482,56 @@ func validateFeatures(featuresStr string) []string {
 	}
 
 	return validatedFeatures
+}
+
+// buildCompressedResults assembles the default /download payload (gzip
+// embeddings) without dropping media or degradation fields.
+func buildCompressedResults(results *models.JobResults, chunks []map[string]interface{}) gin.H {
+	response := gin.H{
+		"job_id":      results.JobID,
+		"status":      results.Status,
+		"created_at":  results.CreatedAt,
+		"compression": "gzip",
+		"chunks":      chunks,
+	}
+
+	if results.CompletedAt != "" {
+		response["completed_at"] = results.CompletedAt
+	}
+	if results.Text != "" {
+		response["text"] = results.Text
+	}
+	if len(results.Entities) > 0 {
+		response["entities"] = results.Entities
+	}
+	if len(results.DocumentMetadata) > 0 {
+		response["document_metadata"] = results.DocumentMetadata
+	}
+	if len(results.TextMetadata) > 0 {
+		response["text_metadata"] = results.TextMetadata
+	}
+	if results.SourceClassification != nil {
+		response["source_classification"] = results.SourceClassification
+	}
+
+	// Media fields: image_description is always present for image jobs (null
+	// when the profile did not request it), never omitted.
+	if results.MetadataImage != nil || results.ImageOcrText != "" {
+		response["image_ocr_text"] = results.ImageOcrText
+		response["image_description"] = results.ImageDescription
+	}
+	if results.MetadataImage != nil {
+		response["metadata_image"] = results.MetadataImage
+	}
+	if results.MetadataAudio != nil {
+		response["metadata_audio"] = results.MetadataAudio
+	}
+	if len(results.AudioSegments) > 0 {
+		response["audio_segments"] = results.AudioSegments
+	}
+	if results.EmbeddingsDegraded {
+		response["embeddings_degraded"] = true
+	}
+
+	return response
 }

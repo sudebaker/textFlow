@@ -44,7 +44,7 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url,omitempty"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"`
-	Profile        string   `json:"profile,omitempty"` // fast|balanced|full
+	Profile        string   `json:"profile,omitempty"` // rag|full
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }
@@ -142,12 +142,14 @@ type ChunkInferences struct {
 type BatchDocument struct {
 	Text     string                 `json:"text"`
 	Filename string                 `json:"filename,omitempty"`
+	Profile  string                 `json:"profile,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type BatchRequest struct {
 	Documents      []BatchDocument `json:"documents"`
 	Features       []string        `json:"features,omitempty"`
+	Profile        string          `json:"profile,omitempty"`
 	MaxConcurrency int             `json:"max_concurrency,omitempty"`
 	WebhookURL     string          `json:"webhook_url,omitempty"`
 	WebhookSecret  string          `json:"webhook_secret,omitempty"`
@@ -215,6 +217,7 @@ func main() {
 		resumeJobID                string
 		diarizeEnabled             bool
 		profile                    string
+		profileSet                 bool
 	)
 
 	args := os.Args[1:]
@@ -290,16 +293,17 @@ func main() {
 			}
 			resumeJobID = args[i+1]
 			i++
-		case "--diarize":
-			diarizeEnabled = true
-		case "--profile":
+		case "-p", "--profile":
 			if i+1 >= len(args) {
-				fmt.Println("Error: --profile requires a value")
+				fmt.Println("Error: -p/--profile requires a value (rag|full)")
 				printUsage()
 				os.Exit(1)
 			}
 			profile = args[i+1]
+			profileSet = true
 			i++
+		case "--diarize":
+			diarizeEnabled = true
 		default:
 			fmt.Printf("Unknown argument: %s\n", args[i])
 			printUsage()
@@ -316,23 +320,20 @@ func main() {
 		apiURL = defaultAPIURL
 	}
 
+	if profile == "" {
+		profile = "full"
+	}
+	if profile != "rag" && profile != "full" {
+		fmt.Printf("Error: invalid profile %q (valid: rag|full)\n", profile)
+		printUsage()
+		os.Exit(1)
+	}
+
 	// Validate inference-embeddings requires inferences
 	if inferenceEmbeddingsEnabled && !inferencesEnabled {
 		fmt.Println("Error: --inference-embeddings requires -f/--inferences flag")
 		printUsage()
 		os.Exit(1)
-	}
-
-	// Validate processing profile (fast|balanced|full)
-	if profile != "" {
-		switch strings.ToLower(strings.TrimSpace(profile)) {
-		case "fast", "balanced", "full":
-			profile = strings.ToLower(strings.TrimSpace(profile))
-		default:
-			fmt.Printf("Error: invalid profile '%s' (valid: fast, balanced, full)\n", profile)
-			printUsage()
-			os.Exit(1)
-		}
 	}
 
 	// Validate required arguments based on mode
@@ -390,7 +391,7 @@ func main() {
 	start := time.Now()
 
 	if useBatch {
-		err := runBatchMode(ctx, apiURL, batchFile, outputFile, webhookURL, webhookSecret)
+		err := runBatchMode(ctx, apiURL, batchFile, outputFile, webhookURL, webhookSecret, profile, profileSet)
 		if err != nil {
 			fmt.Printf("Error in batch mode: %v\n", err)
 			os.Exit(1)
@@ -478,8 +479,8 @@ func printUsage() {
 	fmt.Println("  --inference-embeddings      Generate vector embeddings for inferences (requires -f)")
 	fmt.Println("  -w, --webhook <url>         Webhook URL for job completion notification")
 	fmt.Println("  --webhook-secret <secret>   Secret for webhook signature verification")
+	fmt.Println("  -p, --profile <rag|full>   Processing profile (default: full)")
 	fmt.Println("  --diarize                  Enable speaker diarization for audio files (Whisper)")
-	fmt.Println("  --profile <name>           Processing profile: fast, balanced, full (default: balanced)")
 	fmt.Println("  --sse                      Use SSE streaming instead of polling")
 	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 1h)")
 	fmt.Println("  -b, --batch [file]         Batch processing mode (reads JSON file with documents)")
@@ -492,13 +493,13 @@ func printUsage() {
 	fmt.Println("  client -i /path/to/file.pdf -o output.json --sse")
 	fmt.Println("  client -i /path/to/large.pdf -o output.json --timeout 1h")
 	fmt.Println("")
+	fmt.Println("Profiles:")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json -p rag    # embeddings + inferences only")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json -p full   # default: all stages")
+	fmt.Println("")
 	fmt.Println("Inference Mode:")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json -f")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json -f --inference-embeddings")
-	fmt.Println("")
-	fmt.Println("Processing Profiles:")
-	fmt.Println("  client -i /path/to/file.pdf -o output.json --profile fast")
-	fmt.Println("  client -i /path/to/file.pdf -o output.json --profile full")
 	fmt.Println("")
 	fmt.Println("Audio Files (MP3, WAV, M4A, OGG):")
 	fmt.Println("  client -i /path/to/audio.mp3 -o output.json")
@@ -556,9 +557,9 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 	reqBody := CreateJobRequest{
 		DocumentBase64: documentBase64,
 		Filename:       filename,
+		Profile:        profile,
 		WebhookURL:     webhookURL,
 		WebhookSecret:  webhookSecret,
-		Profile:        profile,
 	}
 	if inferencesEnabled {
 		if inferenceEmbeddingsEnabled {
@@ -698,6 +699,10 @@ func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ex
 		return "", fmt.Errorf("failed to copy file data: %w", err)
 	}
 
+	if err := writer.WriteField("profile", profile); err != nil {
+		return "", fmt.Errorf("failed to write profile field: %w", err)
+	}
+
 	if audioExtensions[ext] && diarizeEnabled {
 		if err := writer.WriteField("diarize", "true"); err != nil {
 			return "", fmt.Errorf("failed to write diarize field: %w", err)
@@ -717,12 +722,6 @@ func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ex
 		}
 		if err := writer.WriteField("features", featuresValue); err != nil {
 			return "", fmt.Errorf("failed to write features field: %w", err)
-		}
-	}
-
-	if profile != "" {
-		if err := writer.WriteField("profile", profile); err != nil {
-			return "", fmt.Errorf("failed to write profile field: %w", err)
 		}
 	}
 
@@ -902,7 +901,7 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 	}
 }
 
-func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL, webhookSecret string) error {
+func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL, webhookSecret, profile string, profileSet bool) error {
 	fmt.Println("Reading batch file...")
 
 	data, err := os.ReadFile(batchFile)
@@ -922,6 +921,9 @@ func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL
 	if webhookURL != "" {
 		batchReq.WebhookURL = webhookURL
 		batchReq.WebhookSecret = webhookSecret
+	}
+	if profileSet || batchReq.Profile == "" {
+		batchReq.Profile = profile
 	}
 
 	fmt.Printf("Creating batch with %d documents...\n", len(batchReq.Documents))

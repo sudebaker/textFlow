@@ -68,6 +68,16 @@ FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
 
+def _load_optional_json(raw):
+    """Parse an optional JSON Redis value, returning None when absent/invalid."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class CompletionWorker(BasePubSubWorker):
     """Aggregates job results and finalizes document processing.
 
@@ -406,6 +416,16 @@ class CompletionWorker(BasePubSubWorker):
             is_image = "image" in completed_steps
             entry = "audio" if is_audio else "image" if is_image else "extraction"
 
+            image_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:image"
+            )
+            audio_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:audio"
+            )
+            audio_segments_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:audio_segments"
+            )
+
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
             if features_json:
@@ -611,6 +631,16 @@ class CompletionWorker(BasePubSubWorker):
 
             # --- Generate inference embeddings ONLY if feature is enabled ---
             # Read features from Redis to check if inference_embeddings is enabled
+            image_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:image"
+            )
+            audio_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:audio"
+            )
+            audio_segments_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:audio_segments"
+            )
+
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
             if features_json:
@@ -689,6 +719,21 @@ class CompletionWorker(BasePubSubWorker):
                 == "true"
             ):
                 results["embeddings_degraded"] = True
+
+            # --- Media fields (image-ocr-description / job-result-format) ---
+            image_metadata = _load_optional_json(image_metadata_raw)
+            if image_metadata is not None:
+                results["image_ocr_text"] = text
+                results["image_description"] = image_metadata.get("description")
+                results["metadata_image"] = image_metadata
+
+            audio_metadata = _load_optional_json(audio_metadata_raw)
+            if audio_metadata is not None:
+                results["metadata_audio"] = audio_metadata
+
+            audio_segments = _load_optional_json(audio_segments_raw)
+            if audio_segments is not None:
+                results["audio_segments"] = audio_segments
 
             # Log completion stats
             total_inferences = sum(len(c.get("inferences", [])) for c in enriched_chunks)

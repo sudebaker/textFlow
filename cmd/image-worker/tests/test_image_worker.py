@@ -389,3 +389,49 @@ class TestMetadata:
             assert len(chunks_call) > 0
         finally:
             os.unlink(path)
+
+
+# --- Profile-driven image calls (image-ocr-description) ---
+
+class TestProfileDrivenImageCalls:
+    @pytest.mark.asyncio
+    async def test_full_profile_calls_analyze_and_describe(self, mock_deps):
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            analyze_result = MagicMock()
+            analyze_result.extracted_text = "OCR text"
+            analyze_result.description = None
+            analyze_result.language = "es"
+            describe = MagicMock(return_value="A cat on a sofa")
+            with patch.object(w.llm_pool, "analyze", return_value=analyze_result), \
+                 patch.object(w.llm_pool, "describe", describe, create=True):
+                await w.process_message(_make_msg(profile="full", path=path))
+            describe.assert_called_once()
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_rag_profile_calls_analyze_only(self, mock_deps):
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            analyze_result = MagicMock()
+            analyze_result.extracted_text = "OCR text"
+            analyze_result.description = None
+            analyze_result.language = "es"
+            describe = MagicMock(return_value="must not be used")
+            with patch.object(w.llm_pool, "analyze", return_value=analyze_result), \
+                 patch.object(w.llm_pool, "describe", describe, create=True):
+                await w.process_message(_make_msg(profile="rag", path=path))
+            describe.assert_not_called()
+        finally:
+            os.unlink(path)

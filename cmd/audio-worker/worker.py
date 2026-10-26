@@ -16,6 +16,7 @@ from pkg.worker_common.inference_dispatch import (
     inference_counter_key,
     skip_empty_inference_stage,
 )
+from pkg.worker_common.job_keys import set_job_key
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
 from segment_chunker import SegmentChunker
@@ -109,14 +110,18 @@ class AudioWorker(BaseAsyncWorker):
                 "has_diarization": bool(result.segments),
                 "segment_count": len(result.segments) if result.segments else 0,
             }
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:metadata:audio",
+            set_job_key(
+                self.redis_client,
+                job_id,
+                "metadata:audio",
                 json.dumps(audio_metadata),
             )
 
             if result.segments:
-                self.redis_client.set(
-                    f"orchestrator:job:{job_id}:audio_segments",
+                set_job_key(
+                    self.redis_client,
+                    job_id,
+                    "audio_segments",
                     json.dumps([s.__dict__ for s in result.segments]),
                 )
 

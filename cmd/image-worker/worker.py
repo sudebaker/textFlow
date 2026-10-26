@@ -16,6 +16,7 @@ from pkg.worker_common.inference_dispatch import (
     inference_counter_key,
     skip_empty_inference_stage,
 )
+from pkg.worker_common.job_keys import set_job_key
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
 
@@ -110,8 +111,10 @@ class ImageWorker(BaseAsyncWorker):
                 "language": result.language,
                 "description": description,
             }
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:metadata:image",
+            set_job_key(
+                self.redis_client,
+                job_id,
+                "metadata:image",
                 json.dumps(image_metadata),
             )
 

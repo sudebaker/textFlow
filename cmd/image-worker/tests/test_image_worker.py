@@ -375,7 +375,13 @@ class TestMetadata:
             with patch.object(w.llm_pool, "analyze", return_value=mock_result), \
                  patch.object(w.llm_pool, "describe", return_value="A cat photo"):
                 await w.process_message(_make_msg(path=path))
-            stored = json.loads(mock_deps["redis_client"].set.call_args_list[-1][0][1])
+            metadata_calls = [
+                c
+                for c in mock_deps["redis_client"].setex.call_args_list
+                if "metadata:image" in c.args[0]
+            ]
+            assert metadata_calls[0].args[1] == 86400
+            stored = json.loads(metadata_calls[0].args[2])
             assert stored["language"] == "en"
             assert stored["description"] == "A cat photo"
         finally:
@@ -479,11 +485,12 @@ class TestDescriptionSingleField:
 
             metadata_calls = [
                 c
-                for c in mock_deps["redis_client"].set.call_args_list
+                for c in mock_deps["redis_client"].setex.call_args_list
                 if "metadata:image" in c.args[0]
             ]
             assert len(metadata_calls) == 1
-            stored = json.loads(metadata_calls[0].args[1])
+            assert metadata_calls[0].args[1] == 86400
+            stored = json.loads(metadata_calls[0].args[2])
             assert stored["description"] == "Semantic summary"
 
             chunks_calls = [
@@ -516,10 +523,11 @@ class TestDescriptionSingleField:
 
             metadata_calls = [
                 c
-                for c in mock_deps["redis_client"].set.call_args_list
+                for c in mock_deps["redis_client"].setex.call_args_list
                 if "metadata:image" in c.args[0]
             ]
-            stored = json.loads(metadata_calls[0].args[1])
+            assert metadata_calls[0].args[1] == 86400
+            stored = json.loads(metadata_calls[0].args[2])
             assert stored["description"] is None
         finally:
             os.unlink(path)

@@ -10,11 +10,16 @@
 |---|---|---|---|---|---|---|
 | `HF_HUB_OFFLINE` | `1` | bool | `1` air-gapped | todos | `huggingface_hub` no toca internet | **no cambiar** en prod |
 | `TRANSFORMERS_OFFLINE` | `1` | bool | `1` | todos | transformers sólo local | **no cambiar** |
-| `MODELS_PATH` | `../../models` | path | host path | compose | bind-mount `huggingface_cache`, `whisper`, `docling/models` | prod: `../models` (ver `install.sh`) |
+| `MODELS_PATH` | `../../models` | path | host path | `models-sync` | staging que `make models-sync` copia al volumen `models-data` (los servicios ya no lo montan) | prod: `../models` |
 | `RABBITMQ_URL` | `amqp://…@rabbitmq:5672/` | url | `amqp://` | todos | broker | nunca `guest:guest` en prod |
 | `REDIS_URL` | `redis://redis:6379` | url | `redis://` | todos | estado + pub/sub + artifact refs | sin ACL abierta |
 | `HTTP_PORT` | `8080` | int | 1024+ | orchestrator | API + `/metrics` | detrás de reverse-proxy |
 | `LOG_LEVEL` | `info` | enum | `debug/info/warn/error` | todos | verbosidad | prod `info` |
+
+Los modelos se montan desde el volumen compartido `models-data`
+(`make models-sync`); `entities-worker` usa `HF_HOME=/models/huggingface_cache`,
+`whisper` `MODEL_PATH=/models/whisper` y `docling`
+`DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`.
 
 ## Docling / Extraction
 
@@ -71,7 +76,7 @@
 
 | Variable | Default | Servicio | Notas |
 |---|---|---|---|
-| `WHISPER_MODEL` | `large-v2` | whisper | `tiny…large-v3` → `Systran/faster-whisper-*` ; `MODEL_PATH=/models` |
+| `WHISPER_MODEL` | `large-v2` | whisper | `tiny…large-v3` → `Systran/faster-whisper-*` ; `MODEL_PATH=/models/whisper` |
 | `WHISPER_DEVICE / COMPUTE_TYPE` | `cpu / int8` | whisper | GPU: `cuda / float16` |
 | `WHISPER_URLS`, `TIMEOUT`, `MAX_RETRIES` | `http://whisper:8080`, `300`, `3` | audio-worker | |
 | `AUDIO_CHUNK_MAX_CHARS` / `MAX_AUDIO_SIZE_MB` | `1500 / 500` | audio-worker | |

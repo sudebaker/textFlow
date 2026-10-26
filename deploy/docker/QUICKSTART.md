@@ -10,7 +10,8 @@ Antes de comenzar, asegúrate de tener:
    docker compose version
    ```
 
-2. **Modelos pre-descargados** en la carpeta `models/`:
+2. **Modelos pre-descargados** en la carpeta `models/` y sincronizados al volumen
+   compartido con `make models-sync`:
    ```
    models/
    ├── deberta-v3-small/          # Tokenizer GLiNER

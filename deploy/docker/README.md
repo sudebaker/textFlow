@@ -18,7 +18,7 @@ This system is **NOT** designed for cloud deployment. All model files must be pr
 ### ❌ What's NOT Included
 - Internet access (not needed, not allowed)
 - HuggingFace model downloads (blocked by design)
-- Model files (must be pre-downloaded to `./models/`)
+- Model files (pre-downloaded to `./models/`, then loaded into the `models-data` volume with `make models-sync`)
 
 ## 📋 Prerequisites
 
@@ -252,7 +252,7 @@ docker compose rm
 ### Air-Gapped Compliance
 - ✅ No internet downloads at build time
 - ✅ No internet downloads at runtime
-- ✅ All models loaded from local `/models/` directory
+- ✅ All models loaded from the shared `models-data` volume (`make models-sync`)
 - ✅ Environment variables block HuggingFace Hub access
 
 ### Network Isolation

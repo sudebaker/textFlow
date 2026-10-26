@@ -19,7 +19,7 @@
 - **`HF_HUB_OFFLINE=1` pero intenta acceder a Hugging Face.** Algún env quedó en `false` o `local_files_only=False` en el loader. Busca el modelo faltante en `docker compose logs entities-worker | grep -i "http\|hub"`.
 - **`Tokenizer incorrecto / modelo corrupto`.** Valida `MODEL_REQUIRED_FILE_GROUPS` en `download_models_offline.py:_is_snapshot_complete`. Re-descarga: `rm -rf models/huggingface_cache && make setup-models`.
 - **`No such file: /models/whisper/large-v2/model.bin`.** `WHISPER_MODEL` no coincide con el repo descargado (`Systran/faster-whisper-large-v2`). Alinea `WHISPER_MODEL` ↔ `models/whisper/<size>` o re-descarga.
-- **Ruta incorrecta.** `MODELS_PATH` resuelto relativo a `deploy/docker` (`../../models` dev) ≠ `../models` en target (`install.sh` lo corrige). Verifica el mount: `docker inspect textflow-docling | grep -A2 Mounts`.
+- **Volumen sin modelos.** Ejecuta `make models-sync` (copia el staging `MODELS_PATH` al volumen `models-data`) y verifica con `make models-verify` / `docker inspect textflow-docling | grep -A2 Mounts`.
 
 ## Docling
 

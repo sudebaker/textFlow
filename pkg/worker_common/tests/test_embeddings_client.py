@@ -73,7 +73,7 @@ class TestCacheByContentHash:
     def test_request_contract(self):
         client = _client()
 
-        with patch("requests.post", return_value=_response([[0.3] * 1024])) as post:
+        with patch("requests.post", return_value=_response([[0.3] * 1024, [0.4] * 1024])) as post:
             client.embed_batch(["a", "b"])
 
         assert post.call_args.args[0] == "http://emb:8000/v1/embeddings"

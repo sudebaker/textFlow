@@ -9,7 +9,7 @@ import sys
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HOME"] = "/home/app/.cache/huggingface"
+os.environ.setdefault("HF_HOME", "/home/app/.cache/huggingface")
 os.environ["TRANSFORMERS_CACHE"] = "/home/app/.cache/huggingface"
 os.environ["HF_DATASETS_CACHE"] = "/home/app/.cache/huggingface"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"

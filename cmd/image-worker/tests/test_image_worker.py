@@ -310,7 +310,10 @@ class TestRouting:
             mock_result.language = "en"
             with patch.object(w.llm_pool, "analyze", return_value=mock_result):
                 await w.process_message(_make_msg(path=path))
-            assert w._channel.default_exchange.publish.call_count == 3
+            envelope_queues = [
+                q for q in _routing_keys(w._channel) if q != "inferences"
+            ]
+            assert envelope_queues == ["embeddings", "entities", "metadata"]
         finally:
             os.unlink(path)
 
@@ -332,6 +335,10 @@ class TestRouting:
             for call in w._channel.default_exchange.publish.call_args_list:
                 msg = call.args[0]
                 body = json.loads(msg.body)
+                if "chunk_id" in body:
+                    # Inference chunk messages are published by the entry
+                    # stage fan-out (D3) and are not job envelopes.
+                    continue
                 assert "chunks" not in body
                 assert body["job_id"] == "j1"
                 assert "document_metadata" in body

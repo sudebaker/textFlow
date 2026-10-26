@@ -621,11 +621,13 @@ services:
     - docker_default
     extra_hosts:
     # Docker alias so the container can reach the LLM on the HOST
-    # (e.g. local Ollama at LLM_BASE_URL=http://host.docker.internal:11434).
+    # (e.g. local Ollama at OCR_BASE_URL=http://host.docker.internal:11434).
     - "host.docker.internal:host-gateway"
     environment:
-    - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434}
-    - LLM_MODEL=${MULTIMODAL_LLM_MODEL:-gemma4:e4b}
+    - OCR_BASE_URL=${OCR_BASE_URL:-http://host.docker.internal:11434}
+    - OCR_MODEL=${OCR_MODEL:-gemma4:e4b}
+    - IMAGE_BASE_URL=${IMAGE_BASE_URL:-http://host.docker.internal:11434}
+    - IMAGE_MODEL=${IMAGE_MODEL:-gemma4:e4b}
     - LLM_TIMEOUT=${MULTIMODAL_LLM_TIMEOUT:-180}
     - LLM_MAX_RETRIES=${MULTIMODAL_LLM_MAX_RETRIES:-3}
     - MAX_IMAGE_DIM=${MAX_IMAGE_DIM:-1024}

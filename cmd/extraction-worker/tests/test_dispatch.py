@@ -306,6 +306,10 @@ def test_publishes_one_message_per_non_empty_chunk(monkeypatch):
         assert message["entities"] == []
         chunk_ids.add(message["chunk_id"])
     assert len(chunk_ids) == len(messages)
+    assert INFERENCES_QUEUE not in _job_envelope_queues(recorder.events), (
+        "the job envelope must not be published to the inferences queue: "
+        "chunk messages are dispatched separately"
+    )
 
 
 def test_rag_profile_dispatches_without_entities_step(monkeypatch):

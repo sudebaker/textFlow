@@ -141,6 +141,36 @@ def _docling_page_count(doc: dict):
     return legacy and len(legacy)
 
 
+PLAIN_TEXT_SUFFIXES = {".txt"}
+
+
+def _is_plain_text_filename(filename: str) -> bool:
+    """Whether the document is plain text and must bypass Docling.
+
+    `.txt` is an admitted extension but docling-serve returns empty text for
+    it; batch ingestion encodes text documents as `.txt`, so this path is
+    required for both single `.txt` uploads and text batches.
+    """
+    return Path(filename or "").suffix.lower() in PLAIN_TEXT_SUFFIXES
+
+
+def _decode_plain_text(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _plain_text_result(document_bytes: bytes) -> Dict[str, Any]:
+    return {
+        "text": _decode_plain_text(document_bytes),
+        "metadata": {"docling_pages": None, "extraction_method": "plain_text"},
+        "docling_document": {},
+    }
+
+
 def compute_file_hash(file_bytes: bytes) -> str:
     """Compute SHA-256 hash digest of raw file bytes.
 
@@ -832,6 +862,10 @@ class ExtractionWorker:
             document_bytes = base64.b64decode(document_base64)
             logger.info(f"Decoded {len(document_bytes)} bytes, filename: {filename}")
 
+            if _is_plain_text_filename(filename):
+                logger.info(f"Plain-text document detected: {filename}")
+                return _plain_text_result(document_bytes)
+
             # Detect PDF by magic bytes
             if document_bytes[:4] == b"%PDF":
                 if not filename.lower().endswith(".pdf"):
@@ -886,6 +920,10 @@ class ExtractionWorker:
             with open(file_path, "rb") as f:
                 document_bytes = f.read()
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
+
+            if _is_plain_text_filename(filename):
+                logger.info(f"Plain-text document detected: {filename}")
+                return _plain_text_result(document_bytes)
 
             result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
@@ -974,6 +1012,10 @@ class ExtractionWorker:
                 filename = document_url.split("/")[-1]
                 if "." not in filename:
                     filename = "document.pdf"
+
+            if _is_plain_text_filename(filename):
+                logger.info(f"Plain-text document detected: {filename}")
+                return _plain_text_result(document_bytes)
 
             result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
@@ -1263,6 +1305,13 @@ class ExtractionWorker:
                             target_queues, self.redis_client, job_id
                         )
 
+                # Chunk messages already went to `inferences`; never publish the
+                # job envelope there (it lacks chunk_id/chunk_text and the
+                # inference consumer rejects it).
+                envelope_queues = [
+                    queue for queue in target_queues if queue != INFERENCES_QUEUE
+                ]
+
                 # stage.queued contract: emit per-stage before the RabbitMQ publish (best-effort)
                 for qs in target_queues:
                     try:
@@ -1271,7 +1320,7 @@ class ExtractionWorker:
                         pass
 
                 job_message_json = json.dumps(job_message).encode()
-                for queue_name in target_queues:
+                for queue_name in envelope_queues:
                     await channel.default_exchange.publish(
                         aio_pika.Message(
                             body=job_message_json,

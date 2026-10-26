@@ -279,7 +279,14 @@ def test_golden_capture_plumbing_sanity(monkeypatch):
     published_keys = {p["routing_key"] for p in result["published"]}
     assert published_keys == {"embeddings", "entities", "metadata", "inferences"}
     envelopes = [p for p in result["published"] if "queued_at" in p["body"]]
-    assert len(envelopes) == 4
+    # The inferences queue only receives chunk messages (the job envelope is
+    # never published there; the inference consumer rejects it).
+    assert {p["routing_key"] for p in envelopes} == {
+        "embeddings",
+        "entities",
+        "metadata",
+    }
+    assert len(envelopes) == 3
     for p in envelopes:
         assert isinstance(p["body"], dict)
         assert p["body"].get("queued_at") == "<ts>"

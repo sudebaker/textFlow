@@ -116,35 +116,6 @@
         "delivery_mode": "PERSISTENT"
       },
       "routing_key": "metadata"
-    },
-    {
-      "body": {
-        "document_metadata": {
-          "author": null,
-          "creation_date": null,
-          "creator": null,
-          "encrypted": false,
-          "exif_data": {},
-          "file_size_bytes": 868,
-          "filename": "document.pdf",
-          "mime_type": "application/pdf",
-          "modification_date": null,
-          "page_count": 2,
-          "producer": null,
-          "sha256": "0976f87b27750ef5c3a2204a921aa06fe7c3fb56a927d6a24bf3e36ae81ef114",
-          "subject": null,
-          "title": null
-        },
-        "job_id": "golden",
-        "pipeline_version": "v1",
-        "profile": "full",
-        "queued_at": "<ts>"
-      },
-      "kwargs": {
-        "content_type": "application/json",
-        "delivery_mode": "PERSISTENT"
-      },
-      "routing_key": "inferences"
     }
   ],
   "writes": [

@@ -815,7 +815,7 @@ services:
   # One-shot loader: copies the staged models directory into the shared
   # models-data volume. Usage: `make models-sync` (compose profile "models").
   models-sync:
-    image: python:3.12-slim
+    image: redis:7-alpine
     profiles: ["models"]
     volumes:
     - "${MODELS_PATH:?MODELS_PATH is not set}:/src:ro"

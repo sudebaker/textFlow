@@ -383,4 +383,8 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 | W2 | PR 2 | ✅ Complete 2.1–2.6 + 2.7 unit acceptance (`rag` dispatch test + single `INFERENCE_*` source) |
 | W3 | PR 3 | ✅ Complete 3.1–3.6 (profile-driven OCR/describe, single-field description, media TTL) |
 | W4 | PR 4 | ✅ 4.1–4.5 done (remote client, cache, degraded, cutover) — 4.6 contract check pending dev endpoint |
-| W5 | PR 5 | ✅ 5.1–5.5 done (media fields, client profile, docs, parity) — 5.6 E2E pending infra |
+| W5 | PR 5 | ✅ 5.1–5.5 done (media fields, client profile, docs, parity) + review fix `2cf6030` (media/degraded end-to-end en `/download` y cliente, docs) — 5.6 E2E pending infra |
+
+**Verificación del fix de review `2cf6030`** (2026-10-26): `make test` (Go, exit 0, 7 pkgs ok),
+`pytest cmd/completion-worker/tests/` (43 passed), `pytest cmd/audio-worker/tests/` (5 passed),
+`pytest pkg/worker_common/tests/test_queue_declaration_sites.py` (9 passed), `tools/client` build OK.

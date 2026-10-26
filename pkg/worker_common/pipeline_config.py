@@ -112,6 +112,10 @@ class PipelineDefinition:
         spec = self.types.get(type_name, {})
         return capability in spec.get("capabilities", [])
 
+    def wants_image_description(self, profile: str = DEFAULT_PROFILE) -> bool:
+        """Whether the profile requests the image description capability."""
+        return bool(self._profile(profile).get("image_description", False))
+
     def _validate_entry(self, entry: str) -> None:
         if self.entries and entry not in self.entries:
             raise ValueError(

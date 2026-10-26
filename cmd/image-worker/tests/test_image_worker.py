@@ -9,6 +9,16 @@ import pytest
 from pkg.worker_common.async_base import BaseAsyncWorker
 
 
+@pytest.fixture(autouse=True)
+def _stub_describe():
+    """Default: no description requested (tests opt in explicitly)."""
+    with patch(
+        "pkg.image_client.client.MultimodalLLMClientPool.describe",
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_deps():
     mock_redis_client = MagicMock()
@@ -362,7 +372,8 @@ class TestMetadata:
             mock_result.extracted_text = "text"
             mock_result.description = "A cat photo"
             mock_result.language = "en"
-            with patch.object(w.llm_pool, "analyze", return_value=mock_result):
+            with patch.object(w.llm_pool, "analyze", return_value=mock_result), \
+                 patch.object(w.llm_pool, "describe", return_value="A cat photo"):
                 await w.process_message(_make_msg(path=path))
             stored = json.loads(mock_deps["redis_client"].set.call_args_list[-1][0][1])
             assert stored["language"] == "en"
@@ -433,5 +444,82 @@ class TestProfileDrivenImageCalls:
                  patch.object(w.llm_pool, "describe", describe, create=True):
                 await w.process_message(_make_msg(profile="rag", path=path))
             describe.assert_not_called()
+        finally:
+            os.unlink(path)
+
+
+class TestDescriptionSingleField:
+    @pytest.mark.asyncio
+    async def test_description_stored_once_and_never_embedded(
+        self, mock_deps, monkeypatch, tmp_path
+    ):
+        import worker as image_worker
+        from pkg.worker_common.artifact_store import FSStore
+
+        store = FSStore(str(tmp_path))
+        monkeypatch.setattr(image_worker, "STORE", store)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = image_worker.ImageWorker()
+            w._channel = AsyncMock()
+            analyze_result = MagicMock()
+            analyze_result.extracted_text = "OCR only"
+            analyze_result.description = None
+            analyze_result.language = "es"
+            with patch.object(w.llm_pool, "analyze", return_value=analyze_result), \
+                 patch.object(w.llm_pool, "describe", return_value="Semantic summary"):
+                await w.process_message(_make_msg(profile="full", path=path))
+
+            ref = store.put(b"OCR only")
+            mock_deps["redis_client"].set.assert_any_call(
+                "orchestrator:job:j1:text", ref
+            )
+
+            metadata_calls = [
+                c
+                for c in mock_deps["redis_client"].set.call_args_list
+                if "metadata:image" in c.args[0]
+            ]
+            assert len(metadata_calls) == 1
+            stored = json.loads(metadata_calls[0].args[1])
+            assert stored["description"] == "Semantic summary"
+
+            chunks_calls = [
+                c
+                for c in mock_deps["redis_client"].set.call_args_list
+                if c.args[0].endswith(":chunks")
+            ]
+            chunks = json.loads(store.get(chunks_calls[0].args[1]).decode())
+            embedded = " ".join(chunk["text"] for chunk in chunks)
+            assert "Semantic summary" not in embedded
+            assert embedded == "OCR only"
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_rag_profile_stores_null_description(self, mock_deps):
+        from worker import ImageWorker
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            path = f.name
+        try:
+            w = ImageWorker()
+            w._channel = AsyncMock()
+            analyze_result = MagicMock()
+            analyze_result.extracted_text = "OCR text"
+            analyze_result.description = None
+            analyze_result.language = "es"
+            with patch.object(w.llm_pool, "analyze", return_value=analyze_result):
+                await w.process_message(_make_msg(profile="rag", path=path))
+
+            metadata_calls = [
+                c
+                for c in mock_deps["redis_client"].set.call_args_list
+                if "metadata:image" in c.args[0]
+            ]
+            stored = json.loads(metadata_calls[0].args[1])
+            assert stored["description"] is None
         finally:
             os.unlink(path)

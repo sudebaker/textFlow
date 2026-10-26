@@ -74,6 +74,9 @@ class ImageWorker(BaseAsyncWorker):
 
             self._raise_if_cancelled(job_id)
 
+            profile = message.get("profile", "full")
+            want_description = self.pipeline.wants_image_description(profile)
+
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -83,9 +86,18 @@ class ImageWorker(BaseAsyncWorker):
                 ),
             )
 
+            # OCR text is the RAG field. The description is a single semantic
+            # field for `full` jobs, never appended to text or embedded (D5).
             text = result.extracted_text
-            if result.description:
-                text = f"{text}\n\n{result.description}"
+            description = None
+            if want_description:
+                description = await loop.run_in_executor(
+                    None,
+                    lambda: self.llm_pool.describe(
+                        image_bytes=image_bytes,
+                        filename=message.get("filename", "image"),
+                    ),
+                )
 
             chunks = chunk_text(text)
 
@@ -96,7 +108,7 @@ class ImageWorker(BaseAsyncWorker):
 
             image_metadata = {
                 "language": result.language,
-                "description": result.description,
+                "description": description,
             }
             self.redis_client.set(
                 f"orchestrator:job:{job_id}:metadata:image",
@@ -123,7 +135,6 @@ class ImageWorker(BaseAsyncWorker):
             if features:
                 job_message["features"] = features
 
-            profile = message.get("profile", "full")
             self._raise_if_cancelled(job_id)
             target_queues = self.pipeline.queues_for(
                 entry="image", features=features, profile=profile

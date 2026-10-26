@@ -140,3 +140,9 @@ def test_repository_config_is_v2():
     assert pd.steps_for(entry="image", features=[], profile="full") == {
         "image", "embeddings", "entities", "metadata", "inferences",
     }
+
+
+def test_image_description_only_for_full(pd):
+    """Description is a `full` capability; `rag` is OCR-only."""
+    assert pd.wants_image_description("full") is True
+    assert pd.wants_image_description("rag") is False

@@ -339,13 +339,15 @@ returns a non-null description; `rag` returns null; media-key TTL asserts pass.
 - **Spec**: Cross-cutting — Docs and test client
 
 ### Task 5.4 — GREEN: docs update
-- **Description:** Update `docs/API.md`, `docs/CONFIGURATION.md`, `docs/MODELS.md`: `rag|full` profiles, breaking rename (`fast`/`balanced` removed), `INFERENCE_BASE_URL`/`INFERENCE_MODEL`, `EMBEDDINGS_BASE_URL`/`EMBEDDINGS_MODEL`, `OCR_*`/`IMAGE_*`, media fields.
+- **Description:** Update `docs/API.md`, `docs/CONFIGURATION.md`, `docs/MODELS.md`: `rag|full` profiles, breaking rename (`fast`/`balanced` removed), `INFERENCE_BASE_URL`/`INFERENCE_MODEL`, `EMBEDDINGS_BASE_URL`/`EMBEDDINGS_MODEL`, `OCR_*`/`IMAGE_*`, media fields. Also update every living doc that still documents the old inference env: `docs/TROUBLESHOOTING.md`, `docs/README_ARCHITECTURE.md`, `docs/internal/README_ARCHITECTURE.md`, `internal/README_ARCHITECTURE.md`, `cmd/README_ARCHITECTURE.md`, `docs/SECURITY.md`, and regenerate `docs/api/*` (generated artifacts).
 - **Acceptance criteria:**
   - [ ] Docs describe profiles, per-file profile, media fields and all new env vars.
+  - [ ] No living doc (outside archived plans/specs) references `LLM_URL`/`LLM_MODEL` for inference-worker.
 - **Verification:**
   - [ ] Manual check: each env var appears in `CONFIGURATION.md`; no stale `LLM_URL`/`fast`/`balanced` references
+  - [ ] `rg -n "LLM_URL|LLM_MODEL" docs/ cmd/ internal/` only matches image/multimodal envs, archived plans/specs, or the removal assertions in `cmd/inference-worker/tests/test_config.py`
 - **Dependencies:** 5.2
-- **Files likely touched:** `docs/API.md`, `docs/CONFIGURATION.md`, `docs/MODELS.md`
+- **Files likely touched:** `docs/API.md`, `docs/CONFIGURATION.md`, `docs/MODELS.md`, `docs/TROUBLESHOOTING.md`, `docs/README_ARCHITECTURE.md`, `docs/internal/README_ARCHITECTURE.md`, `internal/README_ARCHITECTURE.md`, `cmd/README_ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/api/*`
 - **Spec**: Cross-cutting — Docs and test client
 
 ### Task 5.5 — Verify queue parity

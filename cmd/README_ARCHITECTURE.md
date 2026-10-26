@@ -128,14 +128,14 @@ graph TB
 - **Backbone**: DeBERTa-v3-small (config.json, pytorch_model.bin, spm.model)
 - **Batch size**: 16 (configurable)
 - **Confidence threshold**: 0.5 (configurable)
-- **Offline mode**: `HF_HUB_OFFLINE=1` + mount `/models/gliner` and `/models/deberta-v3-small`
+- **Offline mode**: `HF_HUB_OFFLINE=1` + `models-data` volume (`HF_HOME=/models/huggingface_cache`; `GLINER_MODEL_PATH=/models/gliner-small-v2.1`)
 
 **Error Handling**:
 - Model missing → Log error, fail
 - GPU OOM → Fall back to CPU (very slow)
 - Empty text → Return empty entity list
 
-**Critical Note**: This worker runs offline (no internet access required). All models must be pre-downloaded and mounted.
+**Critical Note**: This worker runs offline (no internet access required). All models are loaded from the shared `models-data` volume (`make models-sync`).
 
 **Metrics**:
 - `entities_worker_jobs_total{status="success|model_error"}`
@@ -304,53 +304,30 @@ Dead-letter queues (dlx):
 
 ## Model Files (Air-Gapped Deployment)
 
-For offline operation, download and mount model directories **before** building Docker images:
+Models are staged on an online machine with `make setup-models` and loaded into the
+shared `models-data` Docker volume with `make models-sync` (see `docs/MODELS.md`).
+Workers mount `models-data:/models:ro`; `entities-worker` sets
+`HF_HOME=/models/huggingface_cache` so GLiNER resolves its DeBERTa tokenizer offline
+(the `gliner_config.json` artifact keeps its upstream `microsoft/deberta-v3-small`
+name; the HF cache supplies it).
 
-```bash
-# Local model cache (embeddings are remote: no bge-m3 mount)
-mkdir -p /models
-
-# Entities models (backbone + extractor)
-huggingface-cli download microsoft/deberta-v3-small --local-dir /models/deberta-v3-small
-huggingface-cli download urchade/gliner-small-v2.1 --local-dir /models/gliner-small-v2.1
-
-# Alternative: modern-gliner (if using)
-huggingface-cli download DeploymentDuck/modern-gliner --local-dir /models/modern-gliner
-```
-
-**Docker Compose**:
+**Docker Compose** (already wired in `deploy/docker/docker-compose.yml`):
 ```yaml
-embeddings-worker:
-  image: embeddings-worker:latest
-  environment:
-    EMBEDDINGS_BASE_URL: http://embeddings-backend:8000
-    EMBEDDINGS_MODEL: BAAI/bge-m3
-
 entities-worker:
-  image: entities-worker:latest
   volumes:
-    - /models/deberta-v3-small:/models/deberta-v3-small:ro
-    - /models/gliner-small-v2.1:/models/gliner-small-v2.1:ro
+    - models-data:/models:ro
   environment:
     HF_HUB_OFFLINE: 1
     TRANSFORMERS_OFFLINE: 1
-```
-
-**Build without internet**:
-```dockerfile
-# Runtime stage (air-gapped): embeddings are a remote HTTP backend
-FROM python:3.11
-ENV EMBEDDINGS_MODEL=BAAI/bge-m3
-COPY embeddings_worker.py /app/
-CMD ["python", "embeddings_worker.py"]
+    HF_HOME: /models/huggingface_cache
 ```
 
 **Verification (air-gapped)**:
 ```bash
-docker run --network=none \
-  -v /models/gliner:/models/gliner:ro \
-  -v /models/gliner:/models/gliner:ro \
-  entities-worker python -c "from gliner import GLiNER; model = GLiNER.from_pretrained('/models/gliner')"
+docker run --rm --network=none \
+  -v <project>_models-data:/models:ro \
+  -e HF_HOME=/models/huggingface_cache \
+  entities-worker python -c "from gliner import GLiNER; GLiNER.from_pretrained('/models/gliner-small-v2.1', local_files_only=True)"
 ```
 
 ## Error Handling Strategy

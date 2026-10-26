@@ -193,9 +193,11 @@ make run-workers       # All workers
 ```
 
 ### Air-Gapped Production
-Mount model directories (no internet at build/runtime):
+Models live in the shared `models-data` volume (populated with `make models-sync`,
+see `docs/MODELS.md`); no internet at build/runtime:
 ```bash
-docker run -v /models/gliner:/models/gliner \
+docker run -v <project>_models-data:/models:ro \
+           -e HF_HOME=/models/huggingface_cache \
            -e HF_HUB_OFFLINE=1 \
            -e TRANSFORMERS_OFFLINE=1 \
            entities-worker

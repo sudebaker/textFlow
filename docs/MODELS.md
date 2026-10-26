@@ -140,6 +140,10 @@ make setup-models
 #   HF: gliner, deberta, whisper-large-v2 (bge-m3 opcional solo si self-hosteas el backend de embeddings)
 #   Docling artifacts → models/docling/ (vía docker create/cp de la imagen cu128/self)
 #   Manifiesto: models/MANIFEST.txt (repo, revisión, sha256, tamaño por archivo)
+
+# Host de despliegue: cargar el staging en el volumen compartido
+make models-sync
+make models-verify
 ```
 
 ### Verificación offline (§16)

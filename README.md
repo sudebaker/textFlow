@@ -17,13 +17,16 @@ cp .env.example .env
 # 2. Descargar modelos ML (~3.6 GB, primera vez)
 make setup-models
 
-# 3. Iniciar infraestructura (RabbitMQ, Redis, Docling)
+# 3. Cargar los modelos en el volumen compartido models-data
+make models-sync
+
+# 4. Iniciar infraestructura (RabbitMQ, Redis, Docling)
 make infra-up
 
-# 4. Iniciar todos los servicios
+# 5. Iniciar todos los servicios
 make docker-up
 
-# 5. Verificar salud
+# 6. Verificar salud
 curl http://localhost:8080/health
 ```
 

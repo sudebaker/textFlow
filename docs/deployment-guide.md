@@ -31,7 +31,7 @@ This guide covers the complete deployment of the IA Text Orchestrator to a singl
 - Docker 20.10+ with Compose v2 (`docker compose`)
 - NVIDIA Container Toolkit (to build GPU-enabled images)
 - `rsync` installed
-- `models/` directory populated with required model files (see [What Gets Packaged](#what-gets-packaged))
+- `models/` directory populated with required model files (see [What Gets Packaged](#what-gets-packaged)) and loaded into the `models-data` volume by `install.sh`
 - ~50 GB free disk space for `dist/` output
 
 ### Target Machine
@@ -138,11 +138,12 @@ make install-remote HOST=user@10.0.0.5
 
 1. Checks prerequisites (Docker, nvidia-smi, disk space)
 2. Loads all Docker images from `images/*.tar.gz`
-3. Extracts `models.tar.gz`
+3. Extracts `models.tar.gz` to the bundle directory
 4. Creates `.env` from `config/.env.example` and enforces air-gapped variables
-5. Creates Docker named volumes (`redis-data`, `rabbitmq-data`) and bind-mount directories
-6. Starts the stack: `docker compose -f config/docker-compose.yml -f config/docker-compose.gpu.yml up -d`
-7. Polls `http://localhost:9080/health` for up to 60 seconds
+5. Prepares Docker named volumes (`models-data`, `redis-data`, `rabbitmq-data`) and bind-mount directories
+6. Loads the extracted models into the `models-data` volume (`models-sync` service)
+7. Starts the stack: `docker compose -f config/docker-compose.yml -f config/docker-compose.gpu.yml up -d`
+8. Polls `http://localhost:9080/health` for up to 60 seconds
 
 Expected output at the end of a successful install:
 
@@ -188,22 +189,23 @@ The Docker Compose project name is `docker` (because compose files live under `d
 
 #### Model Files
 
-The `models/` directory must contain:
+On the build machine, `make setup-models` populates `models/` (inventory in
+[MODELS.md](MODELS.md)) and writes `models/MANIFEST.txt`. On the target,
+`install.sh` extracts `models.tar.gz` and loads it into the shared Docker volume
+`models-data` (one-shot `models-sync` service). Services mount
+`models-data:/models:ro` and select their subdirectory by env:
 
-```
-models/
-├── bge-m3/                  # embeddings-worker: BAAI/bge-m3
-├── gliner-small-v2.1/       # entities-worker: GLiNER extractor
-│   ├── gliner_config.json
-│   └── pytorch_model.bin
-├── deberta-v3-small/        # entities-worker: GLiNER backbone
-│   ├── config.json
-│   ├── pytorch_model.bin
-│   ├── spm.model
-│   └── tokenizer_config.json
-├── modern-gliner/           # embeddings-worker: GLiNER variant
-└── docling/                 # docling-serve: document conversion artifacts
-```
+| Consumer | Env | Subdirectory |
+|---|---|---|
+| entities-worker | `HF_HOME` / `GLINER_MODEL_PATH` | `huggingface_cache/`, `gliner-small-v2.1/` |
+| whisper | `MODEL_PATH` | `whisper/` |
+| docling (CPU) | `DOCLING_SERVE_ARTIFACTS_PATH` | `docling/` |
+| vllm-minicpm (GPU) | `vllm serve` path | `minicpm-v-4.5/` |
+
+`MODELS_PATH` is only used by `models-sync` (staging -> volume); it is no longer
+mounted wholesale into the services. `make models-verify` (or
+`docker compose --env-file .env -f config/docker-compose.yml --profile models run --rm models-sync sh -c 'du -sh /dst/*'`)
+lists the volume contents.
 
 ### Offline Mode
 
@@ -296,8 +298,9 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
 # Check available VRAM (workers require several GB)
 nvidia-smi
 
-# Confirm models were extracted
-ls ~/ia-text-deployment/models/
+# Confirm the models volume is populated
+docker compose --env-file .env -f config/docker-compose.yml --profile models \
+  run --rm models-sync sh -c 'du -sh /dst/*'
 ```
 
 If models were not extracted (e.g., disk ran out mid-extraction):

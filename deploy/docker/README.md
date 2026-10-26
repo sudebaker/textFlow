@@ -203,7 +203,7 @@ docker compose logs service-name
 ```
 
 Common issues:
-- Missing model files → Download to `./models/`
+- Missing model files → `make setup-models` then `make models-sync` (loads the `models-data` volume)
 - Port already in use → Change ports in `.env`
 - Out of memory → Increase Docker memory limits
 

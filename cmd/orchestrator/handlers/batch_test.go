@@ -1,6 +1,11 @@
 package handlers
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+
+	"textflow/internal/models"
+)
 
 func TestPlanBatchProfiles_DefaultsToFull(t *testing.T) {
 	req := &BatchRequest{Documents: []BatchDocument{{Filename: "a.txt"}, {Filename: "b.txt"}}}
@@ -119,5 +124,37 @@ func TestPlanBatchProfiles_InvalidBatchProfileFailsRequest(t *testing.T) {
 
 	if _, err := planBatchProfiles(req); err == nil {
 		t.Fatal("invalid batch profile must fail the request")
+	}
+}
+
+func TestBuildBatchJobMessageEncodesTextAsPlainText(t *testing.T) {
+	msg := buildBatchJobMessage(
+		"job-1",
+		BatchDocument{Filename: "notes.md", Text: "hola mundo"},
+		[]string{"inferences"},
+		"rag",
+	)
+
+	if msg.Filename != "notes.md.txt" {
+		t.Fatalf("filename = %q, want notes.md.txt", msg.Filename)
+	}
+	if msg.MIMEType != "text/plain" {
+		t.Fatalf("mime_type = %q, want text/plain", msg.MIMEType)
+	}
+	if msg.ContentType != models.ContentTypeDocument {
+		t.Fatalf("content_type = %q, want document", msg.ContentType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(msg.DocumentBase64)
+	if err != nil {
+		t.Fatalf("invalid base64: %v", err)
+	}
+	if string(decoded) != "hola mundo" {
+		t.Fatalf("document_base64 decodes to %q", string(decoded))
+	}
+	if len(msg.Features) != 1 || msg.Features[0] != "inferences" {
+		t.Fatalf("features = %v", msg.Features)
+	}
+	if msg.Profile != "rag" {
+		t.Fatalf("profile = %q", msg.Profile)
 	}
 }

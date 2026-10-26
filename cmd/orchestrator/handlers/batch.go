@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"textflow/internal/models"
 	redisclient "textflow/internal/redis"
 )
@@ -239,15 +241,12 @@ func CreateBatchHandler(c *gin.Context) {
 				redisInst.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret)
 			}
 
-			jobMsg := &models.JobMessage{
-				JobID:           jobID,
-				Filename:        doc.Filename,
-				Features:        validatedFeatures,
-				Profile:         profile,
-				PipelineVersion: "v1",
+			jobMsg := buildBatchJobMessage(jobID, doc, validatedFeatures, profile)
+			if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
+				log.Error().Err(err).Str("job_id", jobID).Msg("Failed to publish batch job")
+				_ = redisInst.SetJobError(ctx, jobID, err.Error())
+				_ = redisInst.SetJobStatus(ctx, jobID, models.StatusFailed)
 			}
-
-			mqBroker.PublishJobMessage(ctx, jobMsg)
 
 			mu.Lock()
 			jobs = append(jobs, BatchJobRef{
@@ -273,6 +272,30 @@ func CreateBatchHandler(c *gin.Context) {
 		StatusURL: fmt.Sprintf("/v1/batches/%s/status", batchID),
 		CreatedAt: now,
 	})
+}
+
+// buildBatchJobMessage turns a text batch document into a JobMessage the
+// extraction queue can consume. Batch documents carry plain text, not files,
+// so the text is base64-encoded as a `.txt` payload; without this the broker
+// rejects the message ("no document provided") and the job stays pending.
+func buildBatchJobMessage(jobID string, doc BatchDocument, features []string, profile string) *models.JobMessage {
+	filename := strings.TrimSpace(doc.Filename)
+	if filename == "" {
+		filename = "document.txt"
+	} else if !strings.HasSuffix(strings.ToLower(filename), ".txt") {
+		filename += ".txt"
+	}
+
+	return &models.JobMessage{
+		JobID:           jobID,
+		DocumentBase64:  base64.StdEncoding.EncodeToString([]byte(doc.Text)),
+		Filename:        filename,
+		MIMEType:        "text/plain",
+		ContentType:     models.ContentTypeDocument,
+		Features:        features,
+		Profile:         profile,
+		PipelineVersion: "v1",
+	}
 }
 
 func GetBatchStatusHandler(c *gin.Context) {

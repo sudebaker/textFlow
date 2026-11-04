@@ -241,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-network", action="store_true",
                     help="no sondear backends desde la red del stack")
     ap.add_argument("--skip-volume", action="store_true")
+    ap.add_argument("--skip-staging", action="store_true",
+                    help="sin checks de models/ (bootstrap lo baja después)")
     ap.add_argument("--env", default=str(DEFAULT_ENV))
     args = ap.parse_args(argv)
 
@@ -260,9 +262,10 @@ def main(argv: list[str] | None = None) -> int:
     urls_ok, urls_msg = check_url_sanity(env)
     record("urls", urls_ok, urls_msg)
 
-    staging = PROJECT_ROOT / "models"
-    for cid, ok, detail in _staging_rows(check_staging(staging)):
-        record(cid, ok, detail)
+    if not args.skip_staging:
+        staging = PROJECT_ROOT / "models"
+        for cid, ok, detail in _staging_rows(check_staging(staging)):
+            record(cid, ok, detail)
 
     if not args.skip_volume and RESULTS and RESULTS[1][1]:  # compose disponible
         check_volume()

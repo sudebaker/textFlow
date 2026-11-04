@@ -221,6 +221,45 @@ models-list: ## Show the staging model catalog (local vs endpoint-resolved)
 doctor: ## Preflight: valida env, staging de modelos y backends (fail fast)
 	@python3 deploy/scripts/doctor.py
 
+# MODELS: staging a instalar en bootstrap (default = lo mínimo para E2E;
+# añade whisper para audio con MODELS="gliner docling whisper")
+MODELS ?= gliner docling
+
+bootstrap: ## Clone→verde: doctor → staging modelos → sync → build → up → doctor completo → smoke
+	@echo -e "$(YELLOW)═══ textflow bootstrap ═══$(NC)"
+	@echo -e "$(YELLOW)── 1/7 doctor pre ($(SKIP_MODELS:+skip modelo)$(SKIP_BUILD:+skip build))$(NC)"
+	python3 deploy/scripts/doctor.py --skip-network --skip-volume
+ifneq ($(SKIP_MODELS),1)
+	@echo -e "$(YELLOW)── 2/7 setup-models ($(MODELS)) + 3/7 models-sync$(NC)"
+	$(MAKE) setup-models MODELS="$(MODELS)"
+	$(MAKE) models-sync
+else
+	@echo "$(YELLOW)── 2-3/7 modelos saltados (SKIP_MODELS=1)$(NC)"
+endif
+ifneq ($(SKIP_BUILD),1)
+	@echo -e "$(YELLOW)── 4/7 docker build (cacheado si ya existe)$(NC)"
+	$(MAKE) docker-build
+else
+	@echo "$(YELLOW)── 4/7 build saltado (SKIP_BUILD=1)$(NC)"
+endif
+	@echo -e "$(YELLOW)── 5/7 docker up$(NC)"
+	$(MAKE) docker-up
+	@echo -e "$(YELLOW)── 6/7 esperando healthy (≤240s)…$(NC)"
+	@n=0; while [ $$n -lt 48 ]; do \
+	  bad=$$(docker compose --env-file .env -f $(COMPOSE_FILE) ps --format '{{.Name}} {{.Health}}' \
+	    | grep -cv 'healthy\|^$$' || true); \
+	  n=$$((n+1)); \
+	  [ "$$bad" -le 3 ] && break; \
+	  sleep 5; \
+	done; \
+	docker compose --env-file .env -f $(COMPOSE_FILE) ps --format '{{.Name}}\t{{.Status}}' | sort
+	@echo -e "$(YELLOW)── 7/7 doctor completo + smoke$(NC)"
+	python3 deploy/scripts/doctor.py
+	@$(MAKE) smoke-test
+
+smoke-test: ## E2E de humo: PDF mínimo → upload → asserts (client)
+	@python3 deploy/scripts/smoke_test.py
+
 models-sync: ## Copy staged models (MODELS_PATH) into the shared models-data volume
 	@echo -e "${YELLOW}Syncing models into the shared volume...${NC}"
 	$(COMPOSE) -f $(COMPOSE_FILE) --profile models run --rm models-sync

@@ -1,6 +1,6 @@
 # Makefile for textFlow
 
-.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models models-sync models-verify docker-build-offline docker-build-models package package-skip-build deploy install-remote
+.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models models-list doctor models-sync models-verify docker-build-offline docker-build-models package package-skip-build deploy install-remote smoke-test bootstrap
 
 # Variables
 GO_VERSION?=1.22
@@ -217,6 +217,9 @@ setup-models: ## Download staging models — choose interactively or MODELS="gli
 
 models-list: ## Show the staging model catalog (local vs endpoint-resolved)
 	@python3 deploy/docker/download_models.py --list
+
+doctor: ## Preflight: valida env, staging de modelos y backends (fail fast)
+	@python3 deploy/scripts/doctor.py
 
 models-sync: ## Copy staged models (MODELS_PATH) into the shared models-data volume
 	@echo -e "${YELLOW}Syncing models into the shared volume...${NC}"

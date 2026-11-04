@@ -228,7 +228,7 @@ MODELS ?= gliner docling
 bootstrap: ## Clone→verde: doctor → staging modelos → sync → build → up → doctor completo → smoke
 	@echo -e "$(YELLOW)═══ textflow bootstrap ═══$(NC)"
 	@echo -e "$(YELLOW)── 1/7 doctor pre ($(SKIP_MODELS:+skip modelo)$(SKIP_BUILD:+skip build))$(NC)"
-	python3 deploy/scripts/doctor.py --skip-network --skip-volume
+	python3 deploy/scripts/doctor.py --skip-network --skip-volume --skip-staging
 ifneq ($(SKIP_MODELS),1)
 	@echo -e "$(YELLOW)── 2/7 setup-models ($(MODELS)) + 3/7 models-sync$(NC)"
 	$(MAKE) setup-models MODELS="$(MODELS)"

@@ -112,7 +112,7 @@ Notas:
   (`spm.model` ∨ `tokenizer.json`), (`model.safetensors` ∨ `pytorch_model.bin`).
 - Ruta: `models/huggingface_cache/hub/models--microsoft--deberta-v3-small/...`.
 - Env: `GLINER_BACKBONE_PATH` / `DEBERTA_MODEL_PATH` → `/models/...` (contenedor). Mapear a la snapshot real o usar `hf_transfer` del `HF_HOME`.
-- Descarga/validación: `download_models_offline.py` (no `download-models.py` — éste no descarga DeBERTa).
+- Descarga: catálogo `gliner` del `make setup-models` (`deploy/docker/download_models.py`).
 - Consumidor: `entities-worker` (GLiNER backbone); no documentar `models/deberta-v3-small/` como layout independiente si se usa el cache hub.
 
 ### 4. Systran/faster-whisper-large-v2
@@ -122,13 +122,13 @@ Notas:
 - Ruta host: `models/huggingface_cache/hub/models--Systran--faster-whisper-large-v2/...` (+ compat `models/whisper/large-v2/` si se copia).
 - Montaje Compose `deploy/docker/docker-compose.yml:whisper`: `models-data:/models:ro` con `MODEL_PATH=/models/whisper`, `MODEL_SIZE=large-v2`.
 - Env: `WHISPER_MODEL` (`tiny…large-v3`), `WHISPER_DEVICE=cpu|cuda`, `WHISPER_COMPUTE_TYPE=int8|float16`.
-- Descarga: `download_models_offline.py` (repo `Systran/faster-whisper-large-v2`).
+- Descarga: catálogo `whisper` del `make setup-models` (repo `Systran/faster-whisper-large-v2`).
 - Validación: `WhisperModel("models/whisper/large-v2", local_files_only=True)` offline; `curl -f http://localhost:8080/health`.
 
 ### 5. Docling artifacts + imágenes
 
 - Fuente: Docling official `docling-tools models download` o imagen CUDA bundled.
-- CPU path: `deploy/docker/download_models_offline.py:download_docling_models` hace `docker create` + `docker cp ...:/opt/app-root/src/.cache/docling/models → models/docling/` (snapshot del contenido de la imagen de referencia). `docker-compose.yml:docling` monta `models-data:/models:ro` y fija `DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`.
+- CPU path: `deploy/scripts/extract_docling.sh` (catálogo `docling`) hace `docker create` + `docker cp ...:/opt/app-root/src/.cache/docling/models → models/docling/` (snapshot del contenido de la imagen de referencia). `docker-compose.yml:docling` monta `models-data:/models:ro` y fija `DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`.
 - GPU path: `docker-compose.gpu.yml:docling` fija `image: quay.io/docling-project/docling-serve:cu128-0.12.0` (`runtime: nvidia`, `DOCLING_DEVICE=cuda`). No requiere `models/docling/`.
 - Validación: `curl -f http://localhost:5001/openapi.json` + E2E `bin/client -i file.pdf -o out.json` (CPU y GPU deben producir mismo `text`, distinto `pages/sec`).
 - No documentar `models/docling/` si la instalação es GPU-only (§10). La documentación debe coincidir exactamente con el Compose usado.
@@ -153,7 +153,7 @@ Notas:
 - Ruta host / montaje: `models/minicpm-v-4.5/` dentro de `models-data` → `vllm-minicpm` monta `models-data:/models:ro` y sirve `/models/minicpm-v-4.5` (`deploy/docker/docker-compose.gpu.yml`).
 - Formato: snapshot HF plano (no cache hub): `config.json`, `tokenizer.json`, `tokenizer_config.json`, `preprocessor_config.json`, `model.safetensors.index.json`, shards `model-00001..00004-of-00004.safetensors` (4 shards, ~17.4 GB, BF16 ≈ 8.7B params, verificado en el repo HF). Existen variantes AWQ cuantizadas de la comunidad como alternativa con menos VRAM; el bundle usa la BF16 original.
 - Descarga: `hf download openbmb/MiniCPM-V-4_5 --local-dir models/minicpm-v-4.5/` (o `huggingface-cli download` en máquinas sin `hf`), desde la máquina online de preparación.
-- `deploy/docker/download_models_offline.py` lista la entrada (`critical: False`) para descarga/validación con snapshot_download.
+- MiniCPM es endpoint-resolved (VISION_LLM backend) y NO está en el catálogo de staging; para el overlay GPU se baja aparte con `hf download openbmb/MiniCPM-V-4_5 --local-dir models/minicpm-v-4.5/`.
 - Serving **prod (GPU)**: `vllm/vllm-openai:0.10.2` (pin validado en §21, soporte MiniCPMV >= v0.10.2) vía `docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.gpu.yml up -d vllm-minicpm`; el backend OpenAI-compatible queda en `http://vllm-minicpm:8000/v1`.
 - Serving **dev/benchmark (sin GPU)**: Ollama del mac-mini `192.168.88.12:11434`, modelo `minicpm-v4.5:latest` (`ollama pull minicpm-v4.5`); en `.env`: `VISION_LLM_BASE_URL=http://192.168.88.12:11434`, `VISION_LLM_MODEL=minicpm-v4.5:latest`.
 - Consumidor: `vision-ocr` (`deploy/docker/vision-ocr`, `POST /transcribe`) vía `VISION_LLM_BASE_URL`/`VISION_LLM_MODEL`. `critical: False` hasta validar VRAM/latencia en serving real (Fase D/D.3) — en dev el modelo vive fuera del bundle (passthrough Ollama).
@@ -163,12 +163,13 @@ Notas:
 ### Online prep machine
 
 ```bash
-# 0. Requisitos host: Docker, jq, bash, curl, espacio (~15 GB con large-v2 + docling)
+# 0. Requisitos host: Docker, bash, curl, python3, espacio (~12GB esenciales)
 make setup-models
-# → deploy/docker/download_models_offline.py
-#   HF: gliner, deberta, whisper-large-v2 (bge-m3 opcional solo si self-hosteas el backend de embeddings)
-#   Docling artifacts → models/docling/ (vía docker create/cp de la imagen cu128/self)
-#   Manifiesto: models/MANIFEST.txt (repo, revisión, sha256, tamaño por archivo)
+# → deploy/docker/download_models.py (catálogo elegible: gliner, whisper, docling)
+#   descargas HF en contenedor python:3.10-slim (host no necesita pip)
+#   gliner arma dirs planos con assets vendidos; whisper seed con shards CAS
+#   Manifiesto: models/MANIFEST.txt (ruta relativa + sha256)
+#   Los endpoint-resolved NO se descargan (el usuario los provee vía .env)
 
 # Host de despliegue: cargar el staging en el volumen compartido
 make models-sync
@@ -190,5 +191,5 @@ curl -f http://localhost:5001/model/list  # Docling artifacts
 ## Referencias
 
 - Docling GPU/deployment: https://docling-project.github.io/docling/usage/gpu/ y `/usage/api_server/deployment/`
-- Docling model prefetch / offline: `docling-tools models download` (ver `deploy/docker/download_models_offline.py`)
+- Docling model prefetch / offline: el catálogo `docling` de `make setup-models` (extrae desde la imagen via `deploy/scripts/extract_docling.sh`)
 - Faster-Whisper offline: `WhisperModel(path, local_files_only=True)` + `MODEL_PATH=/models/whisper`

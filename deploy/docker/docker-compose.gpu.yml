@@ -3,21 +3,68 @@
 #
 # Adds NVIDIA GPU support to workers that benefit from CUDA.
 # The base docker-compose.yml defaults to CPU-only.
+#
+# Device bypass: nvidia-container-toolkit en este host mapea nvidia-uvm con
+# major 511 (nvswitch) y el kernel espera 510 → --gpus/CDI cascan con
+# "CUDA unknown error". Se tapan bind-mounting los device nodes + libs de
+# /usr/lib directamente. Las libs DEBEN ir dentro de las volumes de cada
+# servicio: un merge key `<<` se ensomberece si el servicio ya define
+# `volumes:` (drop silencioso de libcuda.so.1).
+x-gpu-devices: &gpu-devices
+  devices:
+  - /dev/nvidia0:/dev/nvidia0
+  - /dev/nvidiactl:/dev/nvidiactl
+  - /dev/nvidia-modeset:/dev/nvidia-modeset
+  - /dev/nvidia-uvm:/dev/nvidia-uvm
+  - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
 
 services:
+  resource-manager:
+    <<: *gpu-devices
+    volumes:
+    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
+    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
+    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
+    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
+    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
+    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
+
   embeddings-worker:
+    <<: *gpu-devices
     runtime: nvidia
     environment:
       - EMBEDDINGS_DEVICE=cuda
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
+    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
+    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
+    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
+    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
+    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
 
   entities-worker:
+    <<: *gpu-devices
     runtime: nvidia
     environment:
       - ENTITIES_DEVICE=cuda
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
+    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
+    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
+    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
+    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
+    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
+    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
 
   completion-worker:
     runtime: nvidia

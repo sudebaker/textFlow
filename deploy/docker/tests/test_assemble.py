@@ -44,6 +44,34 @@ def make_fake_cache(tmp: Path) -> Path:
     return cache
 
 
+def test_staging_dir_env_override(tmp_path, monkeypatch):
+    """MODELS_STAGING_DIR apunta el assembler a un staging alternativo."""
+    hub = make_fake_cache(tmp_path)             # tmp/huggingface_cache/hub
+    stage = tmp_path / "staging-alt"
+    stage.mkdir()
+    monkeypatch.setenv("MODELS_STAGING_DIR", str(stage))
+    import download_models as dm
+    dm.STAGING_DIR = stage
+    dm.HF_CACHE_DIR = hub.parent                # tmp/huggingface_cache
+    dm.seed_whisper()
+    assert (stage / "whisper" / "models--Systran--faster-whisper-large-v2").is_dir()
+
+
+def test_write_manifest_lists_staging_files(tmp_path, monkeypatch):
+    """debe generar models/MANIFEST.txt relativo (fuente para verify-bundle)."""
+    import download_models as dm
+    stage = tmp_path / "staging"
+    (stage / "gliner-small-v2.1").mkdir(parents=True)
+    (stage / "gliner-small-v2.1" / "pytorch_model.bin").write_bytes(b"W" * 16)
+    dm.STAGING_DIR = stage
+    dm.write_manifest()
+    mf = stage / "MANIFEST.txt"
+    assert mf.is_file()
+    txt = mf.read_text()
+    assert "gliner-small-v2.1/pytorch_model.bin" in txt
+    assert "sha256" in txt and "absolute" not in txt
+
+
 @pytest.fixture()
 def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr("download_models.STAGING_DIR", tmp_path)

@@ -25,7 +25,7 @@ make bootstrap
 # Solo validación: make doctor && make smoke-test
 ```
 
-Si `make doctor` falla, te dice exactamente qué arreglar (`.env`, modelos que faltan, URL con `/v1` de más...). Investigión: `MODELS=all` añade MiniCPM (~16GB, solo para el overlay GPU de vision).
+Si `make doctor` falla, te dice exactamente qué arreglar (`.env`, modelos que faltan, URL con `/v1` de más...). MiniCPM/vision y el modelo de embeddings son endpoint-resolved: NO se descargan aquí.
 
 ---
 
@@ -48,7 +48,7 @@ Document ──▶ [Orchestrator] ───────▶ │  extract_text que
            ┌────────────┐ ┌───────────┐ ┌──────────┐
            │ embeddings │ │  entities │ │ metadata │
            │  -worker   │ │  -worker  │ │  -worker  │
-           │ bge-m3     │ │  GLiNER   │ │           │
+           │ backend    │ │  GLiNER   │ │           │
            └────────────┘ └───────────┘ └───────────┘
                     │             │             │
                     └─────────────┼─────────────┘
@@ -70,7 +70,7 @@ Document ──▶ [Orchestrator] ───────▶ │  extract_text que
 | `orchestrator` | Go/Gin | 8080 | REST API, orquestación, SSRF validation | No |
 | `resource-manager` | Go | 9090 | Monitoreo de memoria GPU | No |
 | `extraction-worker` | Python | — | Extracción Docling (PDF, DOCX, PPTX) | Opcional |
-| `embeddings-worker` | Python | — | Embeddings BAAI/bge-m3 (1024 dims) | Opcional |
+| `embeddings-worker` | Python | — | Cliente de embeddings del backend que proveas (`EMBEDDINGS_BASE_URL`) | No |
 | `entities-worker` | Python | — | NER con GLiNER + Regex patterns | Opcional |
 | `metadata-worker` | Python | — | Analytics de texto | No |
 | `inference-worker` | Python | — | Micro-inferencias con vLLM | Sí |
@@ -112,7 +112,7 @@ textflow/
 │   ├── orchestrator/             # API REST Go (puerto 8080)
 │   ├── resource-manager/         # Monitoreo GPU Go (puerto 9090)
 │   ├── extraction-worker/        # Python - Docling
-│   ├── embeddings-worker/        # Python - BAAI/bge-m3
+│   ├── embeddings-worker/        # Python - cliente backend embeddings
 │   ├── entities-worker/          # Python - GLiNER NER
 │   ├── metadata-worker/          # Python - Analytics
 │   ├── inference-worker/         # Python - vLLM (opcional)
@@ -282,18 +282,19 @@ make deploy HOST=10.0.0.5   # Requiere rsync
 
 ```bash
 make install-remote HOST=10.0.0.5
-ssh 10.0.0.5 "bash ~/textflow-deployment/install.sh"
+ssh 10.0.0.5 "bash ~/ia-text-deployment/install.sh"
 ```
 
-### Modelos requeridos (~3.6 GB)
+### Modelos requeridos (staging ~12 GB esenciales)
 
 ```
 models/
-├── bge-m3/                    # Embeddings (~1 GB)
-├── gliner-small-v2.1/         # NER (~800 MB)
-├── deberta-v3-small/          # Tokenizer backbone (~300 MB)
-├── modern-gliner/             # GLiNER variante (~1.5 GB)
-└── docling/                   # Artefactos Docling
+├── gliner-small-v2.1/         # NER (pesos ~583 MB + assets vendidos)
+├── deberta-v3-small/          # Tokenizer backbone (~274 MB)
+├── whisper/                   # Audio faster-whisper-large-v2 (~3 GB)
+├── docling/                   # Artefactos Docling (~900 MB)
+├── huggingface_cache/         # hub cache HF (CAS compartido)
+└── MANIFEST.txt               # ruta+sha256 relativas
 ```
 
 ---

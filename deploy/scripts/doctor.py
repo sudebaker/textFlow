@@ -75,7 +75,11 @@ HINTS = {
 
 
 def parse_env(text: str) -> dict[str, str]:
-    """dotenv mínimo: KEY=VALUE, sin export, con comentarios y comillas."""
+    """dotenv mínimo: KEY=VALUE (con o sin export), comentarios y comillas.
+
+    Alinea con compose-go: acepta `export KEY=...` y trunca en ` #` (los
+    comentarios inline de los propios .env.example del repo).
+    """
     env: dict[str, str] = {}
     for ln in text.splitlines():
         ln = ln.strip()
@@ -85,7 +89,10 @@ def parse_env(text: str) -> dict[str, str]:
             continue
         k, _, v = ln.partition("=")
         k = k.strip()
-        v = v.strip().strip('"').strip("'")
+        if k.startswith("export "):
+            k = k[len("export "):].strip()
+        # comentario inline (compone igual que compose-go)
+        v = v.split(" #", 1)[0].strip().strip('"').strip("'")
         if k:
             env[k] = v
     return env
@@ -101,7 +108,9 @@ def check_url_sanity(env: dict[str, str]) -> tuple[bool, str]:
         url = (env.get(key) or "").strip()
         if not url:
             continue
-        if "/v1" in url.split("//", 1)[1]:
+        # sin scheme: solo marcar /v1 en el PATCH (tras //), no en el host
+        rest = url.split("//", 1)[1] if "//" in url else url
+        if "/v1" in rest:
             return False, f"{key} lleva /v1 → los clientes lo añaden ellos: quita el sufijo"
     return True, "URLs sin sufijo /v1"
 
@@ -238,7 +247,10 @@ def check_host_gateway_declared() -> None:
            else f"solo {n}/3 workers con host-gateway (embeddings, completion, inference)")
 
 
-def check_reachability(env: dict[str, str], network: str = "docker_default") -> bool:
+def check_reachability(env: dict[str, str], network: str | None = None) -> bool:
+    # dev: docker_default (compose autocrea external missing); bundle:
+    # COMPOSE_PROJECT_NAME=<proyecto> → <proy>_default (install.sh pasa --network)
+    network = network or os.environ.get("DOCTOR_NETWORK", "docker_default")
     probe_backend("reach_embeddings", env["EMBEDDINGS_BASE_URL"].strip(),
                   env.get("EMBEDDINGS_MODEL", "").strip(),
                   env["EMBEDDINGS_DIMENSION"].strip(), network)
@@ -256,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="no sondear backends desde la red del stack")
     ap.add_argument("--skip-volume", action="store_true")
     ap.add_argument("--volume-name", default=DEFAULT_VOLUME)
+    ap.add_argument("--network", default=None,
+                    help="red docker para probes reach (bundle: <proyecto>_default)")
     ap.add_argument("--skip-staging", action="store_true",
                     help="sin checks de models/ (bootstrap lo baja después)")
     ap.add_argument("--env", default=str(DEFAULT_ENV))
@@ -288,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     network_ok = backends_ok and urls_ok
     if not args.skip_network and network_ok:
         check_host_gateway_declared()
-        check_reachability(env)
+        check_reachability(env, args.network)
     elif not args.skip_network:
         record("reach", False, "saltado: completa backends/urls y re-corre")
 

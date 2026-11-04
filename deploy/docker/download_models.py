@@ -309,6 +309,22 @@ def seed_whisper() -> None:
     print(f"✓ whisper/: seed listo ({dst.parent})")
 
 
+def write_manifest() -> None:
+    """models/MANIFEST.txt con ruta+sha256 relativas al staging."""
+    import hashlib
+
+    lines = [
+        "textFlow staging manifest (make setup-models)",
+    ]
+    for f in sorted(STAGING_DIR.rglob("*")):
+        if not f.is_file() or f.name == "MANIFEST.txt":
+            continue
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        lines.append(f"  {f.relative_to(STAGING_DIR)}  sha256:{digest}")
+    (STAGING_DIR / "MANIFEST.txt").write_text("\n".join(lines) + "\n")
+    print(f"✓ MANIFEST ({len(lines) - 1} ficheros): {STAGING_DIR / 'MANIFEST.txt'}")
+
+
 def run_assemblers(jobs: list[str]) -> None:
     """Ensambla los dirs planos exigidos por los workers (host, stdlib)."""
     if "gliner" in jobs:
@@ -375,6 +391,9 @@ def main(argv: list[str]) -> int:
 
     if "docling" in jobs:
         ok &= run_docling()
+
+    if ok:
+        write_manifest()
 
     print("\nResumen:", "✓ todo preparado" if ok else "✗ hubo fallos — revisa la salida")
     return 0 if ok else 1

@@ -13,7 +13,7 @@ COMPOSE_FILE="deploy/docker/docker-compose.yml"
 echo "📦 Checking models..."
 if [ ! -d "models/huggingface_cache/hub/models--microsoft--deberta-v3-small" ]; then
     echo "❌ ERROR: DeBERTa model not found in cache"
-    echo "   Run: python3 deploy/docker/download_models_offline.py"
+    echo "   Run: make setup-models (elige 'gliner' en el picker; MODELS=\"gliner\" para no-interactivo)"
     exit 1
 fi
 

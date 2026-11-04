@@ -112,6 +112,19 @@ extract_models() {
 }
 
 # ---------------------------------------------------------------------------
+# 3b. validate_env (doctor pre-up: fail-fast ANTES de levantar nada)
+# ---------------------------------------------------------------------------
+validate_env() {
+  if [[ ! -f "config/scripts/doctor.py" ]]; then
+    warn "config/scripts/doctor.py missing — preflight stepped down (verificación manual)"
+    return 0
+  fi
+  python3 config/scripts/doctor.py --skip-network --skip-staging \
+    || die "doctor pre-up reportó fallos de env/backends — corrige el .env (bloque BACKENDS) y re-ejecuta"
+  log "✓ env validada (doctor pre-up)"
+}
+
+# ---------------------------------------------------------------------------
 # 4. configure_env
 # ---------------------------------------------------------------------------
 configure_env() {
@@ -234,15 +247,15 @@ validate_deployment() {
     warn "config/scripts/doctor.py missing — validation stepped down (verificación manual)"
     return 0
   fi
+  rc=0
   log "Running doctor (env, staging, backends) ..."
-  if ! python3 config/scripts/doctor.py --volume-name ia_text_models-data; then
-    warn "doctor reportó fallos — el stack sigue arriba; revisa lo marcado con ❌"
-    return 0
-  fi
+  python3 config/scripts/doctor.py --volume-name ia_text_models-data \
+    --network ia_text_default || rc=1
   log "Running smoke E2E (PDF mínimo → pipeline completo) ..."
-  if ! python3 config/scripts/smoke_test.py --timeout 300; then
-    warn "smoke FAIL — pipeline incompleto; ve 'docker compose -f config/docker-compose.yml ps/logs'"
-    return 0
+  python3 config/scripts/smoke_test.py --timeout 300 || rc=1
+  if [[ $rc -ne 0 ]]; then
+    warn "validación con fallos — el stack puede seguir arriba; revisa lo marcado con ❌"
+    return $rc
   fi
   log "✓ Validación E2E en verde (doctor + smoke)"
 }
@@ -283,12 +296,15 @@ main() {
   load_images
   extract_models
   configure_env
+  validate_env
   setup_volumes
   sync_models
   start_services
   wait_for_health
-  validate_deployment
+  local vrc=0
+  validate_deployment || vrc=$?
   print_status
+  exit $vrc
 }
 
 main "$@"

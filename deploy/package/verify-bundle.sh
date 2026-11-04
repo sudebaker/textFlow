@@ -67,7 +67,7 @@ if [[ -f "$DIST/models.tar.gz" && -f "$DIST/MANIFEST.txt" ]]; then
   fi
 fi
 
-# models/MANIFEST.txt (produced by download_models_offline.py) should match
+# models/MANIFEST.txt (producido por download_models.py) should match
 if [[ -f "models/MANIFEST.txt" ]]; then
   # basic sanity: contains Successful/Files lines
   grep -q "Successful" "models/MANIFEST.txt" && check "models/MANIFEST.txt present and sane" 0 || check "models/MANIFEST.txt sane" 1
@@ -75,9 +75,9 @@ else
   warn "  - models/MANIFEST.txt not found (run: make setup-models)"
 fi
 
-# compose file valid
+# compose file valid (MODELS_PATH es obligatorio por el guard del models-sync)
 if command -v docker >/dev/null 2>&1; then
-  docker compose -f "$DIST/config/docker-compose.yml" config >/dev/null 2>&1 \
+  MODELS_PATH="$(dirname "$DIST")/models" docker compose -f "$DIST/config/docker-compose.yml" config >/dev/null 2>&1 \
     && check "docker compose config valid" 0 \
     || check "docker compose config valid (docker compose -f dist/config/docker-compose.yml config failed)" 1
 else

@@ -27,6 +27,18 @@ def test_parse_env_skips_comments_and_quotes():
     assert env == {"A": "1", "B": "hola mundo", "C": "3", "D": "h"}
 
 
+def test_parse_env_supports_export_prefix():
+    env = parse_env('export EMBEDDINGS_DIMENSION=768\nexport X=1 # nota')
+    assert env.get("EMBEDDINGS_DIMENSION") == "768"
+    assert env.get("X") == "1"
+
+
+def test_parse_env_strips_inline_comments():
+    env = parse_env('EMBEDDINGS_DIMENSION=768  # dims del backend\nA=v # x')
+    assert env.get("EMBEDDINGS_DIMENSION") == "768"
+    assert env.get("A") == "v"
+
+
 def test_check_required_vars_fail_fast_names_missing():
     ok, missing = check_required_vars({"EMBEDDINGS_BASE_URL": "http://x"})
     assert not ok and set(missing) == {
@@ -40,17 +52,22 @@ def test_check_required_vars_empty_string_counts_as_missing():
     assert not ok and len(missing) == 5
 
 
-def test_url_sanity_rejects_v1_suffix():
+def test_check_url_sanity_rejects_v1_suffix():
     ok, msg = check_url_sanity({"EMBEDDINGS_BASE_URL": "http://h:11434/v1"})
     assert not ok and "/v1" in msg
 
 
-def test_url_sanity_accepts_plain_base():
+def test_check_url_sanity_accepts_plain_base():
     ok, msg = check_url_sanity({
         "EMBEDDINGS_BASE_URL": "http://host.docker.internal:11434",
         "INFERENCE_BASE_URL": "http://vllm:8000",
     })
     assert ok
+
+
+def test_check_url_sanity_urlless_scheme_no_crash():
+    ok, msg = check_url_sanity({"EMBEDDINGS_BASE_URL": "localhost:11434"})
+    assert ok  # sin sufijo /v1 — válido
 
 
 def test_staging_requires_gliner_and_deberta(tmp_path):

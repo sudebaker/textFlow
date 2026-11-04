@@ -1,20 +1,10 @@
 version: '3.8'
 
-# NVIDIA GPU passthrough for workers. The nvidia-container-toolkit on this host
-# maps nvidia-uvm to the wrong char-device major (511 = nvswitch) so --gpus/CDI
-# fails with "CUDA unknown error" (kernel expects major 510). Bypass the toolkit
-# entirely: bind-mount the host device nodes (which carry the correct major) and
-# the driver libraries from /usr/lib.
-# NOTE: the driver-library volumes MUST be listed inside each service's own
-# `volumes:` list — a YAML merge key (`<<`) is shadowed when the service already
-# defines `volumes:`, which silently drops libcuda.so.1.
-x-gpu-devices: &gpu-devices
-  devices:
-  - /dev/nvidia0:/dev/nvidia0
-  - /dev/nvidiactl:/dev/nvidiactl
-  - /dev/nvidia-modeset:/dev/nvidia-modeset
-  - /dev/nvidia-uvm:/dev/nvidia-uvm
-  - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+# NOTA GPU: el compose base es CPU-only. Los device mounts de NVIDIA
+# (/dev/nvidia*I libcuda/libnvidia) viven en docker-compose.gpu.yml — en un
+# host sin NVIDIA los mounts de base romperían `docker compose up`.
+# (El porqué del device-bypass de nvidia-container-toolkit está documentado
+# en el propio fichero GPU.)
 
 services:
   rabbitmq:
@@ -140,19 +130,8 @@ services:
       context: ../../
       dockerfile: cmd/resource-manager/Dockerfile
     container_name: textflow-resource-manager
-    <<: *gpu-devices
     ports:
     - 9090:9090
-    volumes:
-    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
-    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
-    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
-    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
-    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
-    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
-    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
-    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
     - LOG_LEVEL=debug
     - HTTP_PORT=9090
@@ -244,17 +223,8 @@ services:
       context: ../../
       dockerfile: cmd/embeddings-worker/Dockerfile
     container_name: textflow-embeddings-worker
-    <<: *gpu-devices
     volumes:
     - artifacts-data:/app/data/artifacts
-    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
-    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
-    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
-    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
-    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
-    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
-    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
-    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
     - REDIS_URL=redis://redis:6379
     - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
@@ -262,9 +232,9 @@ services:
     - QUEUE_NAME=embeddings
     - METRICS_PORT=8001
     - PREFETCH_COUNT=20
-    - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
-    - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
-    - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:-1024}
+    - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL:?bloque BACKENDS del .env}
+    - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:?bloque BACKENDS del .env}
+    - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:?bloque BACKENDS del .env}
     - EMBEDDING_BATCH_SIZE_GPU=${EMBEDDING_BATCH_SIZE_GPU:-32}
     - EMBEDDING_BATCH_SIZE_CPU=${EMBEDDING_BATCH_SIZE_CPU:-2}
     extra_hosts:
@@ -305,18 +275,9 @@ services:
       context: ../../
       dockerfile: cmd/entities-worker/Dockerfile
     container_name: textflow-entities-worker
-    <<: *gpu-devices
     volumes:
     - models-data:/models:ro
     - artifacts-data:/app/data/artifacts
-    - /usr/lib/libcuda.so.1:/usr/lib/libcuda.so.1:ro
-    - /usr/lib/libcuda.so:/usr/lib/libcuda.so:ro
-    - /usr/lib/libnvidia-ml.so.1:/usr/lib/libnvidia-ml.so.1:ro
-    - /usr/lib/libnvidia-ml.so:/usr/lib/libnvidia-ml.so:ro
-    - /usr/lib/libnvidia-ptxjitcompiler.so.1:/usr/lib/libnvidia-ptxjitcompiler.so.1:ro
-    - /usr/lib/libnvidia-ptxjitcompiler.so:/usr/lib/libnvidia-ptxjitcompiler.so:ro
-    - /usr/lib/libnvidia-nvvm.so.4:/usr/lib/libnvidia-nvvm.so.4:ro
-    - /usr/lib/libnvidia-nvvm.so:/usr/lib/libnvidia-nvvm.so:ro
     environment:
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
@@ -501,9 +462,9 @@ services:
     - METRICS_PORT=8005
     - RESULTS_PATH=/app/data/results
     - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
-    - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
-    - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
-    - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:-1024}
+    - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL:?bloque BACKENDS del .env}
+    - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:?bloque BACKENDS del .env}
+    - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:?bloque BACKENDS del .env}
     - WEBHOOK_URL=${WEBHOOK_URL:-}
     - API_BASE_URL=${API_BASE_URL:-http://localhost:8080}
     - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-32}

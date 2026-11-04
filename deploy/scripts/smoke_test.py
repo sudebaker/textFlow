@@ -37,13 +37,12 @@ class SmokerFailure(Exception):
 
 
 def _read_env(name: str) -> str:
+    """Lee un var del .env raíz con el parser compartido del doctor."""
     env_file = PROJECT_ROOT / ".env"
     if not env_file.is_file():
         return ""
-    for ln in env_file.read_text().splitlines():
-        if ln.startswith(f"{name}="):
-            return ln.split("=", 1)[1].strip().strip('"')
-    return ""
+    from doctor import parse_env
+    return parse_env(env_file.read_text()).get(name, "")
 
 
 # ----------------------------- PDF / HTTP -----------------------------------

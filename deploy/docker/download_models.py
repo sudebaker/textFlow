@@ -28,6 +28,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STAGING_DIR = PROJECT_ROOT / "models"
+# staging alternativo (tests, segunda copia): MODELS_STAGING_DIR override
+if os.environ.get("MODELS_STAGING_DIR"):
+    STAGING_DIR = Path(os.environ["MODELS_STAGING_DIR"])
 HF_CACHE_DIR = STAGING_DIR / "huggingface_cache"
 ASSETS_DIR = PROJECT_ROOT / "deploy" / "models-assets"
 
@@ -159,7 +162,7 @@ def hf_download(job: str, repo: str, required: list[str]) -> bool:
                 return True
 
     try:
-        snap = Path(snapshot_download(repo, cache_dir=HF_CACHE_DIR))
+        snap = Path(snapshot_download(repo, cache_dir=HF_CACHE_DIR / "hub"))
     except Exception as exc:
         print(f"✗ {repo}: descarga falló: {exc}")
         return False
@@ -179,15 +182,30 @@ def run_hf_jobs(jobs: list[str]) -> bool:
 
 
 def dispatch_hf_in_container(jobs: list[str]) -> bool:
-    """Reinvoca este script dentro de python:3.10-slim con deps pineadas."""
+    """Reinvoca este script dentro de python:3.10-slim con deps pineadas.
+
+    Monta     el staging ACTIVO (respetando MODELS_STAGING_DIR) para que las
+    descargas y los checks de snapshot recaigan en el staging correcto.
+    """
+    # crea el punto de montaje como usuario: docker lo créería root:root y
+    # el ensamblador del host no podría escribir después
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
     cmd = [
         "docker", "run", "--rm",
+        # NO root: los ficheros descargados quedarían 0600 root:root y el
+        # ensamblador del host no podría leerlos (bloqueante de 1ª install)
+        "-u", f"{os.getuid()}:{os.getgid()}",
+        "-e", "HOME=/tmp",       # pip --user escrituras de site-packages
         "-v", f"{PROJECT_ROOT}:/work",
+        "-v", f"{STAGING_DIR}:/models-staging",
         "-w", "/work",
-        "-e", f"HF_HOME={HF_CACHE_DIR}",
+        # HF_HOME define el nivel hub/ del cache (X/hub/models--*) — sin él
+        # snapshot_download escribe models--* directamente en cache_dir
+        "-e", "HF_HOME=/models-staging/huggingface_cache",
+        "-e", "MODELS_STAGING_DIR=/models-staging",
         DOWNLOAD_IMAGE,
         "sh", "-c",
-        f"pip install --quiet --no-cache-dir {HF_HUB_PIN} && "
+        f"pip install --user --quiet --no-cache-dir {HF_HUB_PIN} && "
         f"python deploy/docker/download_models.py --only {','.join(jobs)}",
     ]
     return subprocess.call(cmd) == 0
@@ -212,6 +230,8 @@ def _latest_complete_snapshot(repo: str, required: list[str]) -> Path:
 
 def _copy(src: Path, dst: Path, follow: bool = True) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()  # blobs HF quedan r--r--r--: sobreescribir fallaría
     shutil.copy(_resolve(src) if follow else src, dst)
 
 
@@ -226,7 +246,7 @@ def assemble_gliner() -> None:
     flat = STAGING_DIR / "gliner-small-v2.1"
     flat.mkdir(parents=True, exist_ok=True)
     for f in (ASSETS_DIR / "gliner-small-v2.1").iterdir():
-        shutil.copy(f, flat / f.name)
+        _copy(f, flat / f.name)
     _copy(snap / "pytorch_model.bin", flat / "pytorch_model.bin")
     print(f"✓ gliner-small-v2.1/: dir plano listo ({flat})")
 
@@ -241,8 +261,8 @@ def assemble_deberta() -> None:
     flat.mkdir(parents=True, exist_ok=True)
     for f in ("config.json", "spm.model", "tokenizer_config.json", "pytorch_model.bin"):
         _copy(snap / f, flat / f)
-    shutil.copy(ASSETS_DIR / "deberta-v3-small" / "special_tokens_map.json",
-                flat / "special_tokens_map.json")
+    _copy(ASSETS_DIR / "deberta-v3-small" / "special_tokens_map.json",
+          flat / "special_tokens_map.json")
     print(f"✓ deberta-v3-small/: dir plano listo ({flat})")
 
 

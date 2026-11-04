@@ -197,6 +197,16 @@ else
   die ".env.example not found at repo root — bundle would be incomplete without it"
 fi
 
+# Validation scripts (doctor preflight + smoke E2E) run on the target
+if [[ -f "deploy/scripts/doctor.py" && -f "deploy/scripts/smoke_test.py" ]]; then
+  mkdir -p "$DIST_DIR/config/scripts"
+  cp "deploy/scripts/doctor.py" "$DIST_DIR/config/scripts/doctor.py"
+  cp "deploy/scripts/smoke_test.py" "$DIST_DIR/config/scripts/smoke_test.py"
+  log "Included validation scripts (doctor, smoke_test) in config/scripts/"
+else
+  warn "deploy/scripts/{doctor,smoke_test}.py missing — validation stepped down"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 6: Copy install.sh
 # ---------------------------------------------------------------------------

@@ -495,7 +495,6 @@ services:
       context: ../../
       dockerfile: cmd/completion-worker/Dockerfile
     container_name: textflow-completion-worker
-    env_file: ../../.env
     environment:
     - REDIS_URL=redis://redis:6379
     - LOG_LEVEL=debug
@@ -505,6 +504,9 @@ services:
     - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
     - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
     - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:-1024}
+    - WEBHOOK_URL=${WEBHOOK_URL:-}
+    - API_BASE_URL=${API_BASE_URL:-http://localhost:8080}
+    - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-32}
     extra_hosts:
     # Reach embedding backends on the host (e.g. local Ollama at
     # EMBEDDINGS_BASE_URL=http://host.docker.internal:11434/v1).

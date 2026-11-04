@@ -7,6 +7,10 @@
 # Must be run from inside the deployment directory (where images/, models.tar.gz,
 # config/, and install.sh all live).
 
+# Proyecto compose estable: prefix de volúmenes determinista, asociando los
+# volúmenes "ia_text_*" creados en setUp volumes.
+export COMPOSE_PROJECT_NAME=ia_text
+
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -151,12 +155,13 @@ setup_volumes() {
   log "Setting up volumes and directories ..."
 
   # Named Docker volumes — treat "already exists" as success, die on real errors
-  docker volume create redis-data 2>/dev/null || \
-    docker volume inspect redis-data > /dev/null 2>&1 || \
-    die "Failed to create or verify redis-data volume"
-  docker volume create rabbitmq-data 2>/dev/null || \
-    docker volume inspect rabbitmq-data > /dev/null 2>&1 || \
-    die "Failed to create or verify rabbitmq-data volume"
+  # (COMPOSE_PROJECT_NAME=ia_text fixes the volume prefix deterministically)
+  docker volume create ia_text_redis-data 2>/dev/null || \
+    docker volume inspect ia_text_redis-data > /dev/null 2>&1 || \
+    die "Failed to create or verify ia_text_redis-data volume"
+  docker volume create ia_text_rabbitmq-data 2>/dev/null || \
+    docker volume inspect ia_text_rabbitmq-data > /dev/null 2>&1 || \
+    die "Failed to create or verify ia_text_rabbitmq-data volume"
 
   # Bind-mount directories
   mkdir -p uploads-data results-data data entities-cache
@@ -186,6 +191,7 @@ start_services() {
   log "Starting services with Docker Compose ..."
 
   docker compose \
+    --env-file .env \
     -f config/docker-compose.yml \
     -f config/docker-compose.gpu.yml \
     up -d
@@ -218,6 +224,27 @@ wait_for_health() {
   warn "Orchestrator did not respond healthy within $(( max_attempts * interval ))s"
   warn "The stack may still be starting up. Check with:"
   warn "  docker compose -f config/docker-compose.yml logs orchestrator"
+}
+
+# ---------------------------------------------------------------------------
+# 7b. validate_deployment (doctor fail-fast + smoke E2E, self-contained)
+# ---------------------------------------------------------------------------
+validate_deployment() {
+  if [[ ! -f "config/scripts/doctor.py" ]]; then
+    warn "config/scripts/doctor.py missing — validation stepped down (verificación manual)"
+    return 0
+  fi
+  log "Running doctor (env, staging, backends) ..."
+  if ! python3 config/scripts/doctor.py --volume-name ia_text_models-data; then
+    warn "doctor reportó fallos — el stack sigue arriba; revisa lo marcado con ❌"
+    return 0
+  fi
+  log "Running smoke E2E (PDF mínimo → pipeline completo) ..."
+  if ! python3 config/scripts/smoke_test.py --timeout 300; then
+    warn "smoke FAIL — pipeline incompleto; ve 'docker compose -f config/docker-compose.yml ps/logs'"
+    return 0
+  fi
+  log "✓ Validación E2E en verde (doctor + smoke)"
 }
 
 # ---------------------------------------------------------------------------
@@ -260,6 +287,7 @@ main() {
   sync_models
   start_services
   wait_for_health
+  validate_deployment
   print_status
 }
 

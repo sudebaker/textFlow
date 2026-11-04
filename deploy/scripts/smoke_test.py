@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""Smoke test E2E de textFlow: PDF mínimo → bin/client → aserciones.
+"""Smoke test E2E de textFlow (stdlib, self-contained: dev y bundle air-gapped).
 
-El transporte lo hace ./bin/client (la forma canónica del consumidor:
-descodifica embedding_compressed y fusiona features); este script orquesta
-y aserta sobre su salida.
+Flujo: PDF mínimo → POST /v1/documents/upload → poll → descarga resultados →
+aserciones (status/steps del perfil, dims == EMBEDDINGS_DIMENSION, metadata,
+texto). Consume la forma raw del /download (embedding_compressed = gzip+base64).
 
 Uso: python3 deploy/scripts/smoke_test.py [--url http://localhost:8080]
         [--timeout 300] [--profile full|rag] [--job-id <uuid>]
-Exit 0 = pipeline funcionando; 1 = fallo (dice qué comprobar).
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import json
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CLIENT_BIN = PROJECT_ROOT / "bin" / "client"
 
 PROFILE_STEPS = {
     "full": ("extraction", "metadata", "embeddings", "entities", "inferences"),
@@ -46,7 +46,7 @@ def _read_env(name: str) -> str:
     return ""
 
 
-# ----------------------------- PDF mínimo ----------------------------------
+# ----------------------------- PDF / HTTP -----------------------------------
 
 
 def build_pdf(text: str) -> bytes:
@@ -78,6 +78,31 @@ def build_pdf(text: str) -> bytes:
     return buf.encode("latin-1", "replace")
 
 
+def build_multipart(filename: str, data: bytes, mime: str) -> tuple[bytes, str]:
+    boundary = "----smoke" + uuid.uuid4().hex[:12]
+    head = (f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n").encode()
+    body = head + data + f"\r\n--{boundary}--\r\n".encode()
+    return body, boundary
+
+
+def decode_embedding(raw) -> list[float]:
+    """Forma raw: embedding_compressed = base64(gzip(float32 LE crudo)).
+
+    Espejo exacto de decompressEmbeddings() en tools/client/main.go.
+    Si ya es una lista (compresión desactivada) la devuelve tal cual.
+    """
+    if isinstance(raw, list):
+        return raw
+    blob = gzip.decompress(base64.b64decode(raw))
+    count = len(blob) // 4
+    if count * 4 != len(blob):
+        raise SmokerFailure(f"embedding_compressed no múltiplo de 4 bytes ({len(blob)})")
+    import struct
+    return list(struct.unpack(f"<{count}f", blob))
+
+
 # ------------------------------ assertions ----------------------------------
 
 
@@ -95,17 +120,19 @@ def assert_results(results: dict, expected_dims: int | None,
                 f"step '{step}' != completed ({steps.get(step)}) — "
                 f"docker logs textflow-{step}-worker")
     if not (results.get("text") or "").strip():
-        raise SmokerFailure("texto extraído vacío — docker logs textflow-extraction-worker")
+        raise SmokerFailure("texto extraído vacío — extraction-worker")
     if "document_metadata" not in results:
-        raise SmokerFailure("sin document_metadata — pipeline de metadata incompleto")
+        raise SmokerFailure("sin document_metadata — metadata incompleta")
     chunks = results.get("chunks") or []
     if not chunks:
         raise SmokerFailure("0 chunks — el texto no llegó a embeddings")
     if expected_dims:
-        emb = chunks[0].get("embeddings") or []
-        dim = len(emb[0]) if emb and isinstance(emb[0], list) else len(emb)
+        vec = chunks[0].get("embeddings") or chunks[0].get("embedding_compressed")
+        if not vec:
+            raise SmokerFailure("chunk sin embeddings — embeddings-worker/git")
+        dim = len(decode_embedding(vec))
         raise_on_dims(dim, expected_dims)
-    if not results.get("entities"):
+    if "entities" in results and not results["entities"]:
         print("⚠️  entities vacío — GLiNER no detectó nada en el texto de prueba",
               file=sys.stderr)
 
@@ -116,36 +143,54 @@ def raise_on_dims(got: int, want: int) -> None:
             f"embeddings dims {got} != {want} — revisa EMBEDDINGS_* y el backend")
 
 
-def http_status_json(url: str, timeout: int = 30) -> dict:
+# -------------------------------- main --------------------------------------
+
+
+def http(url: str, data=None, headers: dict | None = None,
+         timeout: int = 60) -> tuple[int, bytes]:
+    headers = headers or {}
     try:
-        r = urllib.request.urlopen(url, timeout=timeout)
-        return json.loads(r.read())
+        r = urllib.request.urlopen(
+            urllib.request.Request(url, data=data, headers=headers), timeout=timeout)
+        return r.status, r.read()
     except urllib.error.HTTPError as e:
-        raise SmokerFailure(f"HTTP {e.code} en {url}") from e
+        return e.code, e.read()
 
 
-def run_client(pdf_path: Path, out_path: Path, url: str, profile: str,
-               timeout_s: int, job_id: str | None) -> str:
-    """Ejecuta ./bin/client (build si falta) — devuelve job_id parseado."""
-    if not CLIENT_BIN.is_file():
-        subprocess.run(["make", "build-client"], cwd=PROJECT_ROOT,
-                       capture_output=True, timeout=120, check=True)
-    cmd = [str(CLIENT_BIN), "-i", str(pdf_path), "-o", str(out_path),
-           "-u", url, "-p", profile, "--timeout", f"{timeout_s}s"] + (
-           ["--job-id", job_id] if job_id else [])
-    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s + 60)
-    out = cp.stdout + cp.stderr
-    job = ""
-    for ln in out.splitlines():
-        if ln.startswith("Job created: "):
-            job = ln.split("Job created: ", 1)[1].strip()
-    if cp.returncode != 0:
-        raise SmokerFailure(
-            f"client exit={cp.returncode}:\n{(out.strip()[-400:])}")
+def upload(url: str, pdf: bytes) -> str:
+    body, boundary = build_multipart("smoke.pdf", pdf, "application/pdf")
+    status, resp = http(f"{url}/v1/documents/upload", data=body,
+                        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    if status not in (200, 201, 202):
+        raise SmokerFailure(f"upload HTTP {status}: {resp[:200].decode(errors='replace')}")
+    js = json.loads(resp)
+    job = js.get("job_id") or js.get("id")
+    if not job:
+        raise SmokerFailure(f"upload sin job_id: {resp[:200]}")
     return job
 
 
-# -------------------------------- main --------------------------------------
+def poll(url: str, job: str, deadline: float, interval: float = 2.0) -> dict:
+    while time.time() < deadline:
+        status, resp = http(f"{url}/v1/documents/{job}", timeout=30)
+        if status == 200:
+            js = json.loads(resp)
+            if js.get("status") in ("completed", "failed"):
+                return js
+        elif status not in (404, 503):
+            print(f"  poll HTTP {status}", file=sys.stderr)
+        time.sleep(interval)
+    raise SmokerFailure(
+        f"timeout esperando job {job} (sigue en el server: recupera con --job-id)")
+
+
+def fetch_results(url: str, job: str) -> dict:
+    status, data = http(f"{url}/v1/documents/{job}/download", timeout=120)
+    if status != 200:
+        raise SmokerFailure(f"download HTTP {status}")
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    return json.loads(data)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -159,20 +204,21 @@ def main(argv: list[str] | None = None) -> int:
     dims_raw = _read_env("EMBEDDINGS_DIMENSION")
     expected_dims = int(dims_raw) if dims_raw.isdigit() else None
 
-    pdf_path = Path("/tmp/opencode/smoke.pdf")
-    out_path = Path("/tmp/opencode/smoke_out.json")
     try:
-        if not args.job_id:
-            pdf_path.parent.mkdir(parents=True, exist_ok=True)
-            pdf_path.write_bytes(build_pdf(SMOKE_TEXT))
-            print(f"→ PDF {pdf_path.stat().st_size} bytes, client -p {args.profile}")
-        job = run_client(pdf_path, out_path, args.url, args.profile,
-                         args.timeout, args.job_id)
-        if not job:
-            raise SmokerFailure("client no reportó job id")
-        job_state = http_status_json(f"{args.url}/v1/documents/{job}")
-        results = {**json.loads(out_path.read_text()),
-                   "status": job_state.get("status"), "steps": job_state.get("steps")}
+        if args.job_id:
+            job = args.job_id
+            print(f"→ verificando job existente: {job}")
+        else:
+            pdf = build_pdf(SMOKE_TEXT)
+            print(f"→ upload {len(pdf)} bytes (profile={args.profile})")
+            job = upload(args.url, pdf)
+            print(f"  job= {job}")
+        final = poll(args.url, job, time.time() + args.timeout)
+        if final.get("status") != "completed":
+            raise SmokerFailure(f"poll: status={final.get('status')} steps={final.get('steps')}")
+        # status/steps en /v1/documents/{id}; datos en /download — fusionar
+        results = {**fetch_results(args.url, job),
+                   "status": final.get("status"), "steps": final.get("steps")}
         assert_results(results, expected_dims, PROFILE_STEPS[args.profile])
     except SmokerFailure as exc:
         print(f"❌ SMOKE FAIL: {exc}")

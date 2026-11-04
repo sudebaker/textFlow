@@ -9,7 +9,9 @@ sys.path.insert(0, str(sys_path))
 
 from smoke_test import (  # noqa: E402
     build_pdf,
+    build_multipart,
     assert_results,
+    decode_embedding,
     SmokerFailure,
 )
 
@@ -17,6 +19,30 @@ from smoke_test import (  # noqa: E402
 def test_build_pdf_header():
     data = build_pdf("prueba de humo")
     assert data[:8] == b"%PDF-1.4" and b"prueba de humo" in data and data.endswith(b"%%EOF\n")
+
+
+def test_build_multipart_field():
+    body, boundary = build_multipart("doc.pdf", b"%PDF-x", "application/pdf")
+    assert boundary.encode() in body and b'name="file"' in body and b"%PDF-x" in body
+
+
+def test_decode_embedding_gzip_b64_float32le():
+    import base64, gzip, struct
+    vec = [0.25, -0.5, 1.0]
+    blob = struct.pack("<3f", *vec)
+    raw = base64.b64encode(gzip.compress(blob)).decode()
+    assert decode_embedding(raw) == pytest.approx(vec)
+
+
+def test_decode_embedding_plain_passthrough():
+    assert decode_embedding([1.0, 2.0]) == [1.0, 2.0]
+
+
+def test_decode_embedding_rejects_bad_size():
+    import base64, gzip
+    raw = base64.b64encode(gzip.compress(b"abc")).decode()
+    with pytest.raises(SmokerFailure, match="múltiplo"):
+        decode_embedding(raw)
 
 
 def _results(status="completed", dims=768):

@@ -17,8 +17,22 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = PROJECT_ROOT / "deploy" / "docker" / "docker-compose.yml"
 DEFAULT_ENV = PROJECT_ROOT / ".env"
+
+
+def _resolve_compose() -> Path | None:
+    """dev: deploy/docker/… · bundle: config/… (install.sh layout)."""
+    for rel in ("deploy/docker/docker-compose.yml", "config/docker-compose.yml"):
+        p = PROJECT_ROOT / rel
+        if p.is_file():
+            return p
+    return None
+
+
+COMPOSE_FILE = _resolve_compose()
+# proyecto compose por defecto = dir del compose file (dev: "docker"); el
+# bundle usa COMPOSE_PROJECT_NAME=ia_text (install.sh) → --volume-name allí
+DEFAULT_VOLUME = "docker_models-data"
 
 REQUIRED_BACKEND_VARS = (
     "EMBEDDINGS_BASE_URL",
@@ -146,17 +160,17 @@ def check_dangling_symlinks(staging: Path) -> None:
 WARNABLE = {"whisper", "docling"}
 
 
-def check_volume() -> None:
+def check_volume(name: str = DEFAULT_VOLUME) -> None:
     # el volumen lo crea compose; si no existe aún, es info, no fallo duro
     out = subprocess.run(
-        ["docker", "volume", "inspect", "docker_models-data"],
+        ["docker", "volume", "inspect", name],
         capture_output=True, text=True,
     )
     if out.returncode != 0:
-        record("volume", False, "models-data no existe aún (make models-sync lo crea)")
+        record("volume", False, f"{name} no existe aún (make models-sync lo crea)")
         return
     probe = subprocess.run(
-        ["docker", "run", "--rm", "-v", "docker_models-data:/m",
+        ["docker", "run", "--rm", "-v", f"{name}:/m",
          "python:3.10-slim", "python", "-c",
          "import os,sys; sys.exit(0 if len(os.listdir('/m'))>=3 else 1)"],
         capture_output=True, timeout=60,
@@ -241,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-network", action="store_true",
                     help="no sondear backends desde la red del stack")
     ap.add_argument("--skip-volume", action="store_true")
+    ap.add_argument("--volume-name", default=DEFAULT_VOLUME)
     ap.add_argument("--skip-staging", action="store_true",
                     help="sin checks de models/ (bootstrap lo baja después)")
     ap.add_argument("--env", default=str(DEFAULT_ENV))
@@ -248,8 +263,8 @@ def main(argv: list[str] | None = None) -> int:
 
     check_binary(["docker", "--version"], "docker", "docker instalado")
     check_binary(["docker", "compose", "version"], "compose", "docker compose v2")
-    if not COMPOSE_FILE.is_file():
-        record("compose", False, f"falta {COMPOSE_FILE}")
+    if COMPOSE_FILE is None:
+        record("compose", False, "docker-compose.yml no encontrado (deploy/docker o config)")
 
     env_path = Path(args.env)
     record("env", env_path.is_file(),
@@ -268,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             record(cid, ok, detail)
 
     if not args.skip_volume and RESULTS and RESULTS[1][1]:  # compose disponible
-        check_volume()
+        check_volume(args.volume_name)
 
     network_ok = backends_ok and urls_ok
     if not args.skip_network and network_ok:

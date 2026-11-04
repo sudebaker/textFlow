@@ -8,27 +8,24 @@ textFlow extrae, analiza y enriquece contenido de documentos, imágenes y archiv
 
 ## 🚀 Quick Start
 
+Requisitos: **docker + compose v2** y un **backend ML que tú proves** (embeddings + LLM para inferences; p.ej. Ollama/OpenAI-compat/vLLM). Los modelos de fichero local (GLiNER, whisper, docling) los baja el repo.
+
 ```bash
-# 1. Clonar y configurar
-git clone https://github.com/sudebaker/textFlow.git
-cd textflow
-cp .env.example .env
+# 1. Configura tus backends (embeddings + LLM de inferencia)
+cp .env.example .env          # .env ÚNICO, en la raíz
+$EDITOR .env                  # bloque BACKENDS: EMBEDDINGS_* / INFERENCE_*
 
-# 2. Descargar modelos ML (~3.6 GB, primera vez)
-make setup-models
+# 2. Descarga los modelos que elijas (interactivo; endpoint-resolved se excluye)
+make setup-models             # o: MODELS="gliner docling whisper" make setup-models
 
-# 3. Cargar los modelos en el volumen compartido models-data
-make models-sync
+# 3. Levanta TODO y valida: doctor → modelos → sync → build → up → smoke E2E
+make bootstrap
 
-# 4. Iniciar infraestructura (RabbitMQ, Redis, Docling)
-make infra-up
-
-# 5. Iniciar todos los servicios
-make docker-up
-
-# 6. Verificar salud
-curl http://localhost:8080/health
+# Saltos parciales: SKIP_BUILD=1 SKIP_MODELS=1 make bootstrap
+# Solo validación: make doctor && make smoke-test
 ```
+
+Si `make doctor` falla, te dice exactamente qué arreglar (`.env`, modelos que faltan, URL con `/v1` de más...). Investigión: `MODELS=all` añade MiniCPM (~16GB, solo para el overlay GPU de vision).
 
 ---
 
@@ -96,7 +93,7 @@ Document ──▶ [Orchestrator] ───────▶ │  extract_text que
 ## ✨ Características
 
 - **Procesamiento multimodal:** Documentos (PDF, DOCX, PPTX), imágenes, audio, spreadsheets
-- **Embeddings:** 1024 dimensiones con BAAI/bge-m3
+- **Embeddings agnósticos:** el backend que tú proveas vía `EMBEDDINGS_BASE_URL` (dims vía `EMBEDDINGS_DIMENSION`)
 - **Reconocimiento de entidades:** GLiNER (PERSON, ORGANIZATION, LOCATION, MONEY) + 20+ patterns regex (EMAIL, PHONE, IBAN, DNI, etc.)
 - **Transcripción de audio:** Whisper (con VAD; diarización por speaker pendiente de implementar)
 - **Análisis de imágenes:** LLM multimodal para extracción del texto visible

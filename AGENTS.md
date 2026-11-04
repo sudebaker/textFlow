@@ -237,16 +237,29 @@ modelos (bge-m3, deberta, gliner) + vLLM + infra arriba, para medir antes/despu�
 ### Model Files
 
 Los modelos se cargan desde el volumen Docker compartido `models-data`, poblado desde
-el staging `models/` con `make models-sync` (`MODELS_PATH` solo se usa para esa
-sincronización). `make models-verify` muestra tamaños y `MANIFEST.txt`.
+el staging `models/` con `make models-sync`. Staging con `make setup-models`
+(interactivo o `MODELS="gliner whisper docling"`; el catálogo solo tiene modelos
+de fichero local — embeddings/LLM/vision **se resuelven por endpoint**, vía env
+vars del bloque BACKENDS de `.env`). `make doctor` valida env + staging +
+backends (fail-fast); `make bootstrap` encadena doctor → setup-models →
+models-sync → build → up → doctor → smoke.
 
+- Archivos pequeños de modelos (tokenizer/config de GLiNER, `special_tokens_map.json`
+  de deberta) están **vendorizados** en `deploy/models-assets/` (SHA256SUMS): los
+  repos upstream los perdieron en 2026. huggingface_hub 2.x usa **CAS compartido**
+  (`hub/blobs/<shard>/`): copiar dirs sueltos rompe symlinks; `seed_whisper` trae
+  los shards colgados.
 - `models-data:/models:ro` → `entities-worker` (`HF_HOME=/models/huggingface_cache`,
   GLiNER + DeBERTa), `whisper` (`MODEL_PATH=/models/whisper`), `docling`
   (`DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`) y `vllm-minicpm` (GPU overlay).
-- Layout dentro del volumen: `bge-m3/`, `deberta-v3-small/`, `gliner-small-v2.1/`,
-  `whisper/`, `docling/`, `huggingface_cache/`, `minicpm-v-4.5/` (opcional).
-- `bge-m3/` solo si sirves el backend de embeddings por separado (el worker no lo monta).
-- `modern-gliner/` → variante alternativa de embeddings-worker (no usada por el worker actual).
+- Layout dentro del volumen: `deberta-v3-small/`, `gliner-small-v2.1/`,
+  `whisper/`, `docling/`, `huggingface_cache/`, `minicpm-v-4.5/` (opcional, GPU).
+- Los workers que hablan con backends en el HOST (embeddings, completion,
+  inference, image-analyzer) requieren la red `docker_default` + `extra_hosts:
+  host.docker.internal:host-gateway` — `backend`/`datastore` son `internal: true`.
+- `.env` ÚNICO en la raíz: el Makefile inyecta `--env-file .env` a compose.
+  Las BASE_URL de backends van SIN sufijo `/v1` (los clientes lo añaden:
+  `/v1/v1/embeddings` = fallo silencioso).
 
 ### Docker Build Rules
 

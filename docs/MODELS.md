@@ -9,7 +9,36 @@
 
 Regla (§27): `make setup-models` debe producir **todo** el árbol `models/` que
 este inventario describe y escribir `models/MANIFEST.txt` (fuente, revision,
-sha256). Véase `deploy/docker/download_models_offline.py`.
+sha256). Véase `deploy/docker/download_models.py`.
+
+## Instalación staging (2026-11-04, actualizado post-upstream-break)
+
+`make setup-models` es **interactivo/`--models`**: el usuario elige de un
+catálogo de modelos **de fichero local**:
+
+| job | contenido | resultado en staging |
+|-----|-----------|----------------------|
+| `gliner` | pesos `urchade/gliner_small-v2.1` (~583MB) | `models/gliner-small-v2.1/` plano (assets vendidos en `deploy/models-assets/` + pesos) y `models/deberta-v3-small/` |
+| `whisper` | `Systran/faster-whisper-large-v2` (~3GB) | `models/whisper/models--Systran--...` con shards CAS resueltos |
+| `docling` | artefactos de la imagen docling-serve (~900MB) | `models/docling/` |
+
+**Excluidos del catálogo** — los modelos que se resuelven por endpoint
+(embeddings/LLM/vision, p. ej. bge-m3, MiniCPM, qwen) NO se descargan aquí:
+el usuario los provee vía `EMBEDDINGS_MODEL` / `INFERENCE_MODEL` / `VISION_*`
+en el `.env`. Este repo no fija presets: agnóstico a Ollama/vLLM/OpenAI-compat.
+
+Adquisición: las descargas HF corren en contenedor `python:3.10-slim`
+(`huggingface_hub==2.1.1` pineado) — el host solo necesita docker + python3.
+Los archivos pequeños (config/tokenizer de GLiNER, `special_tokens_map.json`
+de deberta) están **vendorizados en-repo** (`deploy/models-assets/`,
+SHA256SUMS) porque los repos upstream los perdieron en 2026 (404 en
+`resolve/main`). huggingface_hub 2.x usa **CAS compartido**:
+`hub/blobs/<shard>/` con symlinks — copiar dirs sueltos rompe los enlaces;
+el ensamblador trae cada shard colgado (`seed_whisper`).
+
+Aviso conocido del inventario: los checks estrictos del script antiguo
+(`download_models_offline.py`) reportaban warnings de integridad falsos por
+el mismo motivo — el nuevo catálogo valida contra lo que upstream sirve.
 
 ## Volumen compartido `models-data`
 

@@ -321,7 +321,10 @@ def write_manifest() -> None:
             continue
         digest = hashlib.sha256(f.read_bytes()).hexdigest()
         lines.append(f"  {f.relative_to(STAGING_DIR)}  sha256:{digest}")
-    (STAGING_DIR / "MANIFEST.txt").write_text("\n".join(lines) + "\n")
+    manifest = STAGING_DIR / "MANIFEST.txt"
+    if manifest.exists() or manifest.is_symlink():
+        manifest.unlink()  # manifest previos pueden ser r--r--r--
+    manifest.write_text("\n".join(lines) + "\n")
     print(f"✓ MANIFEST ({len(lines) - 1} ficheros): {STAGING_DIR / 'MANIFEST.txt'}")
 
 

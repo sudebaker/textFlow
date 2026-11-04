@@ -6,6 +6,8 @@
 GO_VERSION?=1.22
 PYTHON_VERSION?=3.11
 COMPOSE_FILE := deploy/docker/docker-compose.yml
+# único .env canónico (raíz del repo) — compose lo interpola vía --env-file
+COMPOSE := docker compose --env-file .env
 
 # Colors
 RED=\033[0;31m
@@ -65,23 +67,23 @@ run-all: ## Run all services locally (requires docker-compose infrastructure)
 
 docker-build: ## Build all Docker images
 	@echo -e "${YELLOW}Building all Docker images...${NC}"
-	docker compose -f $(COMPOSE_FILE) build
+	$(COMPOSE) -f $(COMPOSE_FILE) build
 
 docker-push: ## Push all Docker images to registry
 	@echo -e "${YELLOW}Pushing all Docker images...${NC}"
-	docker compose -f $(COMPOSE_FILE) push
+	$(COMPOSE) -f $(COMPOSE_FILE) push
 
 docker-logs: ## Show logs from all services
 	@echo -e "${YELLOW}Showing logs from all services...${NC}"
-	docker compose -f $(COMPOSE_FILE) logs -f
+	$(COMPOSE) -f $(COMPOSE_FILE) logs -f
 
 docker-up: ## Start all services with docker-compose
 	@echo -e "${YELLOW}Starting all services...${NC}"
-	docker compose -f $(COMPOSE_FILE) up -d
+	$(COMPOSE) -f $(COMPOSE_FILE) up -d
 
 docker-down: ## Stop all services
 	@echo -e "${YELLOW}Stopping all services...${NC}"
-	docker compose -f $(COMPOSE_FILE) down
+	$(COMPOSE) -f $(COMPOSE_FILE) down
 
 ***REMOVED***=================
 # Testing
@@ -198,11 +200,11 @@ clean: ## Clean build artifacts
 
 infra-up: ## Start infrastructure (RabbitMQ, Redis, Docling)
 	@echo -e "${YELLOW}Starting infrastructure...${NC}"
-	docker compose -f $(COMPOSE_FILE) up -d rabbitmq redis docling
+	$(COMPOSE) -f $(COMPOSE_FILE) up -d rabbitmq redis docling
 
 infra-down: ## Stop infrastructure
 	@echo -e "${YELLOW}Stopping infrastructure...${NC}"
-	docker compose -f $(COMPOSE_FILE) down rabbitmq redis docling
+	$(COMPOSE) -f $(COMPOSE_FILE) down rabbitmq redis docling
 
 ***REMOVED***=================
 # Air-Gapped Deployment
@@ -218,15 +220,15 @@ models-list: ## Show the staging model catalog (local vs endpoint-resolved)
 
 models-sync: ## Copy staged models (MODELS_PATH) into the shared models-data volume
 	@echo -e "${YELLOW}Syncing models into the shared volume...${NC}"
-	docker compose -f $(COMPOSE_FILE) --profile models run --rm models-sync
+	$(COMPOSE) -f $(COMPOSE_FILE) --profile models run --rm models-sync
 	@echo -e "${GREEN}✅ models-data ready${NC}"
 
 models-verify: ## Show the contents and sizes of the shared models-data volume
-	docker compose -f $(COMPOSE_FILE) --profile models run --rm models-sync sh -c 'du -sh /dst/*; echo; head -20 /dst/MANIFEST.txt 2>/dev/null || true'
+	$(COMPOSE) -f $(COMPOSE_FILE) --profile models run --rm models-sync sh -c 'du -sh /dst/*; echo; head -20 /dst/MANIFEST.txt 2>/dev/null || true'
 
 docker-build-models: ## Build images using local models (100% offline after setup)
 	@echo -e "${YELLOW}Building Docker images with local models...${NC}"
-	docker compose -f $(COMPOSE_FILE) build
+	$(COMPOSE) -f $(COMPOSE_FILE) build
 	@echo -e "${GREEN}✅ All images built successfully!${NC}"
 
 docker-build-offline: setup-models docker-build-models

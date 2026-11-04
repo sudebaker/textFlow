@@ -264,8 +264,13 @@ services:
     - PREFETCH_COUNT=20
     - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
     - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
+    - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:-1024}
     - EMBEDDING_BATCH_SIZE_GPU=${EMBEDDING_BATCH_SIZE_GPU:-32}
     - EMBEDDING_BATCH_SIZE_CPU=${EMBEDDING_BATCH_SIZE_CPU:-2}
+    extra_hosts:
+    # Reach embedding backends on the host (e.g. local Ollama at
+    # EMBEDDINGS_BASE_URL=http://host.docker.internal:11434/v1).
+    - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy
@@ -285,6 +290,7 @@ services:
     networks:
     - backend
     - datastore
+    - docker_default
     restart: unless-stopped
     deploy:
       resources:
@@ -489,7 +495,7 @@ services:
       context: ../../
       dockerfile: cmd/completion-worker/Dockerfile
     container_name: textflow-completion-worker
-    env_file: .env
+    env_file: ../../.env
     environment:
     - REDIS_URL=redis://redis:6379
     - LOG_LEVEL=debug
@@ -498,6 +504,11 @@ services:
     - PIPELINE_CONFIG_PATH=/app/configs/pipeline.json
     - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
     - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-m3}
+    - EMBEDDINGS_DIMENSION=${EMBEDDINGS_DIMENSION:-1024}
+    extra_hosts:
+    # Reach embedding backends on the host (e.g. local Ollama at
+    # EMBEDDINGS_BASE_URL=http://host.docker.internal:11434/v1).
+    - "host.docker.internal:host-gateway"
     volumes:
     - results-data:/app/data/results
     - artifacts-data:/app/data/artifacts
@@ -517,6 +528,7 @@ services:
       start_period: 120s
     networks:
     - datastore
+    - docker_default
     restart: unless-stopped
     deploy:
       resources:

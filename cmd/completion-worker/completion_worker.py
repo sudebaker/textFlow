@@ -52,18 +52,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from app.config.settings import Settings
 from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
 from pkg.worker_common.entity_utils import deduplicate_entities
+from pkg.worker_common.embeddings_client import EmbeddingsClient
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.pubsub_base import BasePubSubWorker
-
-try:
-    from sentence_transformers import SentenceTransformer
-    import torch
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError as e:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    SentenceTransformer = None
-    torch = None
 
 _settings = Settings()
 
@@ -73,9 +65,17 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))
 FUZZY_MATCH_THRESHOLD: float = _settings.fuzzy_match_threshold
 
-EMBEDDINGS_MODEL_PATH = os.getenv("EMBEDDINGS_MODEL_PATH", "/models/bge-m3")
-EMBEDDINGS_DEVICE = os.getenv("EMBEDDINGS_DEVICE", "cuda")
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+
+
+def _load_optional_json(raw):
+    """Parse an optional JSON Redis value, returning None when absent/invalid."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 class CompletionWorker(BasePubSubWorker):
@@ -99,37 +99,21 @@ class CompletionWorker(BasePubSubWorker):
             metrics_port=METRICS_PORT,
         )
         self.pipeline = PipelineDefinition.load()
-        self._embedding_service = None
-        self._embedding_service_loaded = False
+        self._embeddings_client = None
 
-    def _get_embedding_service(self):
-        """Lazy loading of embedding service to avoid blocking startup."""
-        if self._embedding_service_loaded:
-            return self._embedding_service
-
-        if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            self.logger.warning("sentence-transformers not available, inference embeddings disabled")
-            self._embedding_service_loaded = True
-            return None
-
-        try:
-            device = EMBEDDINGS_DEVICE if torch.cuda.is_available() else "cpu"
-            self._embedding_service = SentenceTransformer(
-                EMBEDDINGS_MODEL_PATH,
-                device=device
+    def _get_embeddings_client(self) -> EmbeddingsClient:
+        """Lazy remote embeddings client (no local model, no fallback)."""
+        if self._embeddings_client is None:
+            self._embeddings_client = EmbeddingsClient(
+                redis_client=self.redis_client,
+                batch_size=EMBEDDING_BATCH_SIZE,
             )
-            self.logger.info(f"Embedding service loaded with device={device}")
-        except Exception as e:
-            self.logger.warning(f"Failed to load embedding service: {e}")
-            self._embedding_service = None
-
-        self._embedding_service_loaded = True
-        return self._embedding_service
+        return self._embeddings_client
 
     def _generate_inference_embeddings(
         self, inferences_by_chunk: Dict[str, List[Dict]]
     ) -> Dict[str, Dict[str, List[float]]]:
-        """Generate embeddings for inference texts.
+        """Generate inference embeddings via the remote embeddings backend.
 
         Args:
             inferences_by_chunk: Dict mapping chunk_id to list of inference dicts
@@ -137,37 +121,15 @@ class CompletionWorker(BasePubSubWorker):
         Returns:
             Dict mapping chunk_id to {inference_idx: embedding_vector}
         """
-        if not self._get_embedding_service() or not inferences_by_chunk:
+        if not inferences_by_chunk:
             return {}
 
-        inference_embeddings: Dict[str, Dict[str, List[float]]] = {}
-
-        for chunk_id, inferences in inferences_by_chunk.items():
-            if not inferences:
-                continue
-
-            texts = [inf.get("text", "") or "" for inf in inferences]
-            if not any(texts):
-                continue
-
-            try:
-                embeddings = self._get_embedding_service().encode(
-                    texts,
-                    batch_size=EMBEDDING_BATCH_SIZE,
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
-                )
-
-                chunk_embeddings: Dict[str, List[float]] = {}
-                for idx, embedding in enumerate(embeddings):
-                    chunk_embeddings[f"inference_{idx}"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
-
-                inference_embeddings[chunk_id] = chunk_embeddings
-                self.logger.debug(f"Generated {len(chunk_embeddings)} inference embeddings for chunk {chunk_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate embeddings for chunk {chunk_id}: {e}")
-
-        return inference_embeddings
+        client = self._get_embeddings_client()
+        return generate_inference_embeddings(
+            inferences_by_chunk=inferences_by_chunk,
+            embed_fn=lambda texts: client.embed(texts).vectors,
+            logger=self.logger,
+        )
 
     def save_results_to_file(self, job_id: str, results: Dict[str, Any]) -> bool:
         """Save finalized job results to JSON file.
@@ -448,27 +410,21 @@ class CompletionWorker(BasePubSubWorker):
 
             self.logger.info(f"Job {job_id} completed steps: {completed_steps}")
 
-            # Determine required steps based on document type and features
-            document_metadata_json = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:document"
-            )
-            document_metadata = (
-                json.loads(document_metadata_json) if document_metadata_json else {}
-            )
-            mime_type = document_metadata.get("mime_type", "")
-
-            # Check if it's a spreadsheet
-            is_spreadsheet = "spreadsheet" in mime_type.lower() or mime_type in [
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.ms-excel",
-                "text/csv",
-                "application/zip",  # Excel files may show as ZIP
-            ]
-
-            # Check if it's an audio job (has audio step instead of extraction)
+            # Entry stage is type-driven (v2): audio/image jobs replace
+            # extraction, documents and spreadsheets both enter at extraction.
             is_audio = "audio" in completed_steps
-            # Check if it's an image job (has image step instead of extraction)
             is_image = "image" in completed_steps
+            entry = "audio" if is_audio else "image" if is_image else "extraction"
+
+            image_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:image"
+            )
+            audio_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:audio"
+            )
+            audio_segments_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:audio_segments"
+            )
 
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
@@ -478,19 +434,16 @@ class CompletionWorker(BasePubSubWorker):
                 except Exception as e:
                     self.logger.warning(f"Failed to parse features: {e}")
 
-            profile = self.redis_client.get(f"orchestrator:job:{job_id}:profile") or "balanced"
+            profile = self.redis_client.get(f"orchestrator:job:{job_id}:profile") or "full"
 
             required_steps = self.pipeline.steps_for(
-                is_spreadsheet=is_spreadsheet,
-                is_audio=is_audio,
-                is_image=is_image,
+                entry=entry,
                 features=features,
                 profile=profile,
             )
 
             self.logger.info(
-                f"Job {job_id} document type: {'spreadsheet' if is_spreadsheet else 'full'}, "
-                f"required steps: {required_steps}"
+                f"Job {job_id} entry stage: {entry}, required steps: {required_steps}"
             )
 
             if required_steps.issubset(completed_steps):
@@ -678,6 +631,16 @@ class CompletionWorker(BasePubSubWorker):
 
             # --- Generate inference embeddings ONLY if feature is enabled ---
             # Read features from Redis to check if inference_embeddings is enabled
+            image_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:image"
+            )
+            audio_metadata_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:metadata:audio"
+            )
+            audio_segments_raw = self.redis_client.get(
+                f"orchestrator:job:{job_id}:audio_segments"
+            )
+
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
             if features_json:
@@ -689,7 +652,7 @@ class CompletionWorker(BasePubSubWorker):
             inference_embeddings_enabled = "inference_embeddings" in features and "inferences" in features
 
             if inference_embeddings_enabled:
-                if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embedding_service():
+                if not inference_embeddings_by_chunk and inferences_by_chunk and self._get_embeddings_client():
                     self.logger.info("Feature 'inference_embeddings' enabled, generating embeddings...")
                     inference_embeddings_by_chunk = self._generate_inference_embeddings(inferences_by_chunk)
                     if inference_embeddings_by_chunk:
@@ -748,6 +711,29 @@ class CompletionWorker(BasePubSubWorker):
 
             if source_classification is not None:
                 results["source_classification"] = source_classification
+
+            if (
+                self.redis_client.get(
+                    f"orchestrator:job:{job_id}:embeddings_degraded"
+                )
+                == "true"
+            ):
+                results["embeddings_degraded"] = True
+
+            # --- Media fields (image-ocr-description / job-result-format) ---
+            image_metadata = _load_optional_json(image_metadata_raw)
+            if isinstance(image_metadata, dict):
+                results["image_ocr_text"] = text
+                results["image_description"] = image_metadata.get("description")
+                results["metadata_image"] = image_metadata
+
+            audio_metadata = _load_optional_json(audio_metadata_raw)
+            if isinstance(audio_metadata, dict):
+                results["metadata_audio"] = audio_metadata
+
+            audio_segments = _load_optional_json(audio_segments_raw)
+            if isinstance(audio_segments, list):
+                results["audio_segments"] = audio_segments
 
             # Log completion stats
             total_inferences = sum(len(c.get("inferences", [])) for c in enriched_chunks)

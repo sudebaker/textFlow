@@ -100,3 +100,9 @@ func (c *ContentCache) Set(ctx context.Context, key string, value interface{}) e
       - An error if JSON marshaling or the Redis Set operation fails; nil on
         success
 
+func (c *ContentCache) SetStageVersion(v string)
+    SetStageVersion sets the explicit stage version used to namespace cache
+    keys. Keys are formatted as artifact:content:{stageVersion}:{hash},
+    so bumping the version invalidates previously cached entries under the old
+    namespace.
+

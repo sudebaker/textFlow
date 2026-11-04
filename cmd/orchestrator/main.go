@@ -461,6 +461,16 @@ func createJobHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate the processing profile before creating any job state
+	profile, err := normalizeProfile(req.Profile)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_profile",
+			Detail: err.Error(),
+		})
+		return
+	}
+
 	// Admission control: check system capacity before accepting job
 	if admission != nil {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -514,8 +524,7 @@ func createJobHandler(c *gin.Context) {
 		logger.Info().Msgf("Job %s: No features requested", jobID)
 	}
 
-	// Normalize and store the processing profile (fast/balanced/full)
-	profile := normalizeProfile(req.Profile)
+	// Store the processing profile (rag|full)
 	if err := redis.SetJobProfile(ctx, jobID, profile); err != nil {
 		logger.Error().Err(err).Str("job_id", jobID).Str("profile", profile).Msg("Failed to store job profile")
 	} else {
@@ -1041,6 +1050,16 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate the processing profile before creating any job state
+	profile, err := normalizeProfile(c.PostForm("profile"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_profile",
+			Detail: err.Error(),
+		})
+		return
+	}
+
 	// Check spreadsheet size and row limits
 	if ext == ".csv" || ext == ".xls" || ext == ".xlsx" {
 		// Check file size
@@ -1212,8 +1231,7 @@ func uploadHandler(c *gin.Context) {
 		}
 	}
 
-	// Normalize and store the processing profile (fast/balanced/full)
-	profile := normalizeProfile(c.PostForm("profile"))
+	// Store the processing profile (rag|full) from multipart
 	if err := redis.SetJobProfile(ctx, jobID, profile); err != nil {
 		logger.Error().Err(err).Str("job_id", jobID).Str("profile", profile).Msg("Failed to store job profile")
 	} else {
@@ -1399,35 +1417,7 @@ func downloadHandler(c *gin.Context) {
 			chunks[i] = chunkData
 		}
 
-		// Return full results with compressed embeddings
-		response := gin.H{
-			"job_id":      jobID,
-			"status":      results.Status,
-			"created_at":  results.CreatedAt,
-			"compression": "gzip",
-			"chunks":      chunks,
-		}
-
-		// Add optional fields if present
-		if results.CompletedAt != "" {
-			response["completed_at"] = results.CompletedAt
-		}
-		if results.Text != "" {
-			response["text"] = results.Text
-		}
-		if len(results.Entities) > 0 {
-			response["entities"] = results.Entities
-		}
-		if len(results.DocumentMetadata) > 0 {
-			response["document_metadata"] = results.DocumentMetadata
-		}
-		if len(results.TextMetadata) > 0 {
-			response["text_metadata"] = results.TextMetadata
-		}
-		if results.SourceClassification != nil {
-			response["source_classification"] = results.SourceClassification
-		}
-
+		response := buildCompressedResults(&results, chunks)
 		c.JSON(http.StatusOK, response)
 		return
 	}
@@ -1438,19 +1428,14 @@ func downloadHandler(c *gin.Context) {
 }
 
 // normalizeProfile validates and normalizes a processing profile string.
-// Accepts fast|balanced|full (case-insensitive). Unknown or empty values
-// fall back to "balanced" (the default pipeline behavior).
-func normalizeProfile(profile string) string {
-	normalized := strings.ToLower(strings.TrimSpace(profile))
-	switch normalized {
-	case "fast", "balanced", "full":
-		return normalized
-	default:
-		if normalized != "" {
-			logger.Warn().Str("profile", profile).Msg("Invalid profile requested, defaulting to balanced (valid: fast, balanced, full)")
-		}
-		return "balanced"
+// Accepts rag|full (case-insensitive). Empty values default to "full";
+// any other value is rejected.
+func normalizeProfile(profile string) (string, error) {
+	normalized, err := models.NormalizeProfile(profile)
+	if err != nil {
+		logger.Warn().Str("profile", profile).Msg("Invalid profile requested (valid: rag, full)")
 	}
+	return normalized, err
 }
 
 // validateFeatures validates, deduplicates, and normalizes feature strings.
@@ -1461,7 +1446,8 @@ func validateFeatures(featuresStr string) []string {
 	}
 
 	validFeatureSet := map[string]bool{
-		"inferences": true,
+		"inferences":           true,
+		"inference_embeddings": true,
 	}
 
 	rawFeatures := strings.Split(featuresStr, ",")
@@ -1480,7 +1466,7 @@ func validateFeatures(featuresStr string) []string {
 		if !validFeatureSet[normalized] {
 			metrics.InvalidFeaturesTotal.WithLabelValues("unknown_feature").Inc()
 			logger.Warn().Str("feature", f).
-				Msg("Invalid feature requested, ignoring (valid: inferences)")
+				Msg("Invalid feature requested, ignoring (valid: inferences, inference_embeddings)")
 			continue
 		}
 
@@ -1496,4 +1482,56 @@ func validateFeatures(featuresStr string) []string {
 	}
 
 	return validatedFeatures
+}
+
+// buildCompressedResults assembles the default /download payload (gzip
+// embeddings) without dropping media or degradation fields.
+func buildCompressedResults(results *models.JobResults, chunks []map[string]interface{}) gin.H {
+	response := gin.H{
+		"job_id":      results.JobID,
+		"status":      results.Status,
+		"created_at":  results.CreatedAt,
+		"compression": "gzip",
+		"chunks":      chunks,
+	}
+
+	if results.CompletedAt != "" {
+		response["completed_at"] = results.CompletedAt
+	}
+	if results.Text != "" {
+		response["text"] = results.Text
+	}
+	if len(results.Entities) > 0 {
+		response["entities"] = results.Entities
+	}
+	if len(results.DocumentMetadata) > 0 {
+		response["document_metadata"] = results.DocumentMetadata
+	}
+	if len(results.TextMetadata) > 0 {
+		response["text_metadata"] = results.TextMetadata
+	}
+	if results.SourceClassification != nil {
+		response["source_classification"] = results.SourceClassification
+	}
+
+	// Media fields: image_description is always present for image jobs (null
+	// when the profile did not request it), never omitted.
+	if results.MetadataImage != nil || results.ImageOcrText != "" {
+		response["image_ocr_text"] = results.ImageOcrText
+		response["image_description"] = results.ImageDescription
+	}
+	if results.MetadataImage != nil {
+		response["metadata_image"] = results.MetadataImage
+	}
+	if results.MetadataAudio != nil {
+		response["metadata_audio"] = results.MetadataAudio
+	}
+	if len(results.AudioSegments) > 0 {
+		response["audio_segments"] = results.AudioSegments
+	}
+	if results.EmbeddingsDegraded {
+		response["embeddings_degraded"] = true
+	}
+
+	return response
 }

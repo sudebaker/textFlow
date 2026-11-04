@@ -18,7 +18,7 @@ extraction-worker (or audio-worker / image-worker for multimodal)
   ↓  fan-out per PipelineDefinition.steps_for
 RabbitMQ (embeddings | entities | metadata | [inferences])
   ↓
-embeddings-worker (BAAI/bge-m3)  → Redis :embeddings (msgpack blob via FS, noeviction)
+embeddings-worker (POST /v1/embeddings) → Redis :embeddings (msgpack blob via FS, noeviction)
 entities-worker (GLiNER + deberta backbone + regex parallel) → Redis :entities_raw + fan-out inferences if enabled
 metadata-worker (text analytics) → Redis :metadata:text
 inference-worker (vLLM/Ollama OpenAI-compat) → Redis :micro_inferences (per-chunk grouped JSON)
@@ -56,7 +56,7 @@ Ver `docs/OPERATIONS.md` §Vision OCR para activación/calibración y `docs/extr
 `pkg/worker_common/artifact_store.py` (`FSStore`, 65k sharded, atomic write, `65k buckets`). Keys migrated: `:text`, `:chunks`, `:embeddings`, `:inference_embeddings`, `:results` refs; `:micro_inferences_raw` still in Redis. GC `pkg/worker_common/artifact_gc.py` (reachability, min-age 24h).
 
 ### Profiles & PipelineDefinition
-`configs/pipeline.json` (`PipelineDefinition` in `pkg/worker_common/pipeline_config.py`). `profiles: fast/balanced/full` (full = balanced + inferences, decidido 2026-09-27 §8; `inferences` also available via `feature_extras` with `-f` for `fast`/`balanced`), `pipelines.spreadsheet` (entities-only), `audio_replaces_extraction`/`image_replaces_extraction`, `feature_extras.inferences → step/queue`.
+`configs/pipeline.json` (`PipelineDefinition` in `pkg/worker_common/pipeline_config.py`). `profiles: rag/full` (rag = entry + chunking + embeddings + inferences; full = rag + entities + metadata, default), `types.*.entry` + `capabilities: [chunking]`, `audio_replaces_extraction`/`image_replaces_extraction`, `feature_extras.inferences → step/queue`. Per-file profiles are accepted at admission and in batches.
 
 ### Stages → workers
 
@@ -64,8 +64,8 @@ Ver `docs/OPERATIONS.md` §Vision OCR para activación/calibración y `docs/extr
 |-------|-------|--------|-------|
 | extraction | extract_text | extraction-worker (async, PREFETCH=EXTRACTION_CONCURRENCY, Docling polling) | routing via `queues_for`, cancellation checks before metadata/publish |
 | audio | audio | audio-worker (whisper, `whisper:9666/transcribe`) | VAD, not yet diarized |
-| image | image | image-worker (image-analyzer `POST /analyze` OCR-only, resize + `image:{hash}` cache §5.3) | LLM `LLM_BASE_URL` (Ollama dev / vLLM prod) |
-| embeddings | embeddings | embeddings-worker | bge-m3, noeviction FS ref |
+| image | image | image-worker (image-analyzer `POST /analyze` OCR + `POST /describe` for `full`, resize + cache) | backends `OCR_*`/`IMAGE_*` |
+| embeddings | embeddings | embeddings-worker | remote `/v1/embeddings` (`EMBEDDINGS_*`), noeviction FS ref |
 | entities | entities | entities-worker | GLiNER offline, regex parallel (I/O thread) fan-out to inferences |
 | metadata | metadata | metadata-worker | text analytics |
 | inferences | inferences | inference-worker | 4 replicas × adaptive semaphore, batch+cache, `inferences:total` + deferred assembly |

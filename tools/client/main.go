@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"strconv"
 	"math"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,6 +44,7 @@ type CreateJobRequest struct {
 	DocumentURL    string   `json:"document_url,omitempty"`
 	Filename       string   `json:"filename,omitempty"`
 	Features       []string `json:"features,omitempty"`
+	Profile        string   `json:"profile,omitempty"` // rag|full
 	WebhookURL     string   `json:"webhook_url,omitempty"`
 	WebhookSecret  string   `json:"webhook_secret,omitempty"`
 }
@@ -77,15 +78,29 @@ type JobProgress struct {
 }
 
 type JobResults struct {
-	JobID            string                   `json:"job_id"`
-	Status           string                   `json:"status"`
-	CreatedAt        string                   `json:"created_at"`
-	CompletedAt      string                   `json:"completed_at"`
-	Text             string                   `json:"text"`
-	Chunks           []Chunk                  `json:"chunks,omitempty"`
-	Entities         map[string]EntityMinimal `json:"entities,omitempty"`
-	DocumentMetadata map[string]interface{}   `json:"document_metadata,omitempty"`
-	TextMetadata     map[string]interface{}   `json:"text_metadata,omitempty"`
+	JobID                string                   `json:"job_id"`
+	Status               string                   `json:"status"`
+	CreatedAt            string                   `json:"created_at"`
+	CompletedAt          string                   `json:"completed_at"`
+	Text                 string                   `json:"text"`
+	Chunks               []Chunk                  `json:"chunks,omitempty"`
+	Entities             map[string]EntityMinimal `json:"entities,omitempty"`
+	DocumentMetadata     map[string]interface{}   `json:"document_metadata,omitempty"`
+	TextMetadata         map[string]interface{}   `json:"text_metadata,omitempty"`
+	SourceClassification *SourceClassification    `json:"source_classification,omitempty"`
+	ImageOcrText         string                   `json:"image_ocr_text,omitempty"`
+	ImageDescription     *string                  `json:"image_description"`
+	MetadataImage        map[string]interface{}   `json:"metadata_image,omitempty"`
+	MetadataAudio        map[string]interface{}   `json:"metadata_audio,omitempty"`
+	AudioSegments        []interface{}            `json:"audio_segments,omitempty"`
+	EmbeddingsDegraded   bool                     `json:"embeddings_degraded,omitempty"`
+}
+
+// SourceClassification mirrors internal/models.SourceClassificationResult.
+type SourceClassification struct {
+	DocumentType      string  `json:"document_type"`
+	Confidence        float32 `json:"confidence"`
+	ClassifierVersion string  `json:"classifier_version"`
 }
 
 type Chunk struct {
@@ -109,11 +124,12 @@ type EntityMinimal struct {
 }
 
 type InferenceItem struct {
-	Text       string    `json:"text"`
-	Confidence float32   `json:"confidence"`
-	EntityRefs []string  `json:"entity_refs,omitempty"`
-	EntityID   string    `json:"entity_id,omitempty"`
-	Embedding  []float32 `json:"embedding,omitempty"`
+	Text         string    `json:"text"`
+	Confidence   float32   `json:"confidence"`
+	EntityRefs   []string  `json:"entity_refs,omitempty"`
+	EntityID     string    `json:"entity_id,omitempty"`
+	EntityIDRefs []string  `json:"entity_id_refs,omitempty"`
+	Embedding    []float32 `json:"embedding,omitempty"`
 }
 
 type MicroInference struct {
@@ -131,11 +147,14 @@ type ChunkInferences struct {
 type BatchDocument struct {
 	Text     string                 `json:"text"`
 	Filename string                 `json:"filename,omitempty"`
+	Profile  string                 `json:"profile,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type BatchRequest struct {
 	Documents      []BatchDocument `json:"documents"`
+	Features       []string        `json:"features,omitempty"`
+	Profile        string          `json:"profile,omitempty"`
 	MaxConcurrency int             `json:"max_concurrency,omitempty"`
 	WebhookURL     string          `json:"webhook_url,omitempty"`
 	WebhookSecret  string          `json:"webhook_secret,omitempty"`
@@ -202,6 +221,8 @@ func main() {
 		timeoutStr                 string
 		resumeJobID                string
 		diarizeEnabled             bool
+		profile                    string
+		profileSet                 bool
 	)
 
 	args := os.Args[1:]
@@ -277,6 +298,15 @@ func main() {
 			}
 			resumeJobID = args[i+1]
 			i++
+		case "-p", "--profile":
+			if i+1 >= len(args) {
+				fmt.Println("Error: -p/--profile requires a value (rag|full)")
+				printUsage()
+				os.Exit(1)
+			}
+			profile = args[i+1]
+			profileSet = true
+			i++
 		case "--diarize":
 			diarizeEnabled = true
 		default:
@@ -293,6 +323,16 @@ func main() {
 
 	if apiURL == "" {
 		apiURL = defaultAPIURL
+	}
+
+	if profile == "" {
+		profile = "full"
+	}
+	profile = strings.ToLower(profile)
+	if profile != "rag" && profile != "full" {
+		fmt.Printf("Error: invalid profile %q (valid: rag|full)\n", profile)
+		printUsage()
+		os.Exit(1)
 	}
 
 	// Validate inference-embeddings requires inferences
@@ -357,7 +397,7 @@ func main() {
 	start := time.Now()
 
 	if useBatch {
-		err := runBatchMode(ctx, apiURL, batchFile, outputFile, webhookURL, webhookSecret)
+		err := runBatchMode(ctx, apiURL, batchFile, outputFile, webhookURL, webhookSecret, profile, profileSet)
 		if err != nil {
 			fmt.Printf("Error in batch mode: %v\n", err)
 			os.Exit(1)
@@ -399,7 +439,7 @@ func main() {
 
 		fmt.Printf("\nResults saved to: %s\n", outputFile)
 	} else {
-		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, inferenceEmbeddingsEnabled, webhookURL, webhookSecret, diarizeEnabled)
+		jobID, err := uploadDocument(ctx, apiURL, inputFile, inferencesEnabled, inferenceEmbeddingsEnabled, webhookURL, webhookSecret, diarizeEnabled, profile)
 		if err != nil {
 			fmt.Printf("Error uploading document: %v\n", err)
 			os.Exit(1)
@@ -445,9 +485,10 @@ func printUsage() {
 	fmt.Println("  --inference-embeddings      Generate vector embeddings for inferences (requires -f)")
 	fmt.Println("  -w, --webhook <url>         Webhook URL for job completion notification")
 	fmt.Println("  --webhook-secret <secret>   Secret for webhook signature verification")
+	fmt.Println("  -p, --profile <rag|full>   Processing profile (default: full)")
 	fmt.Println("  --diarize                  Enable speaker diarization for audio files (Whisper)")
 	fmt.Println("  --sse                      Use SSE streaming instead of polling")
-	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 10m)")
+	fmt.Println("  --timeout <duration>       Timeout for entire operation (default: 1h)")
 	fmt.Println("  -b, --batch [file]         Batch processing mode (reads JSON file with documents)")
 	fmt.Println("  --job-id <id>              Resume or download results for an existing job ID")
 	fmt.Println("  -h, --help                 Show this help message")
@@ -457,6 +498,10 @@ func printUsage() {
 	fmt.Println("  client -i https://example.com/file.pdf -o output.json -w https://myapp.com/webhook")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json --sse")
 	fmt.Println("  client -i /path/to/large.pdf -o output.json --timeout 1h")
+	fmt.Println("")
+	fmt.Println("Profiles:")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json -p rag    # embeddings + inferences only")
+	fmt.Println("  client -i /path/to/file.pdf -o output.json -p full   # default: all stages")
 	fmt.Println("")
 	fmt.Println("Inference Mode:")
 	fmt.Println("  client -i /path/to/file.pdf -o output.json -f")
@@ -478,7 +523,7 @@ func printUsage() {
 	fmt.Println("  client -b documents.json -o results.json -w https://myapp.com/webhook")
 }
 
-func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool) (string, error) {
+func uploadDocument(ctx context.Context, apiURL string, inputFile string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, webhookURL, webhookSecret string, diarizeEnabled bool, profile string) (string, error) {
 	if strings.HasPrefix(inputFile, "http://") || strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
@@ -489,7 +534,7 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 	if !strings.HasPrefix(inputFile, "http://") && !strings.HasPrefix(inputFile, "https://") {
 		ext := strings.ToLower(filepath.Ext(inputFile))
 		if audioExtensions[ext] || imageExtensions[ext] {
-			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled, inferenceEmbeddingsEnabled)
+			return uploadFileMultipart(ctx, apiURL, inputFile, ext, diarizeEnabled, webhookURL, inferencesEnabled, inferenceEmbeddingsEnabled, profile)
 		}
 	}
 
@@ -518,6 +563,7 @@ func uploadDocument(ctx context.Context, apiURL string, inputFile string, infere
 	reqBody := CreateJobRequest{
 		DocumentBase64: documentBase64,
 		Filename:       filename,
+		Profile:        profile,
 		WebhookURL:     webhookURL,
 		WebhookSecret:  webhookSecret,
 	}
@@ -638,7 +684,7 @@ func downloadAndEncode(ctx context.Context, fileURL string) (string, string, err
 	return encoded, filename, nil
 }
 
-func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool) (string, error) {
+func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ext string, diarizeEnabled bool, webhookURL string, inferencesEnabled bool, inferenceEmbeddingsEnabled bool, profile string) (string, error) {
 	fmt.Printf("Uploading %s file via multipart: %s\n", strings.TrimPrefix(ext, "."), filePath)
 
 	body := &bytes.Buffer{}
@@ -657,6 +703,10 @@ func uploadFileMultipart(ctx context.Context, apiURL string, filePath string, ex
 
 	if _, err := io.Copy(part, fileData); err != nil {
 		return "", fmt.Errorf("failed to copy file data: %w", err)
+	}
+
+	if err := writer.WriteField("profile", profile); err != nil {
+		return "", fmt.Errorf("failed to write profile field: %w", err)
 	}
 
 	if audioExtensions[ext] && diarizeEnabled {
@@ -857,7 +907,7 @@ func monitorJob(ctx context.Context, apiURL string, jobID string) (string, error
 	}
 }
 
-func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL, webhookSecret string) error {
+func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL, webhookSecret, profile string, profileSet bool) error {
 	fmt.Println("Reading batch file...")
 
 	data, err := os.ReadFile(batchFile)
@@ -877,6 +927,9 @@ func runBatchMode(ctx context.Context, apiURL, batchFile, outputFile, webhookURL
 	if webhookURL != "" {
 		batchReq.WebhookURL = webhookURL
 		batchReq.WebhookSecret = webhookSecret
+	}
+	if profileSet || batchReq.Profile == "" {
+		batchReq.Profile = profile
 	}
 
 	fmt.Printf("Creating batch with %d documents...\n", len(batchReq.Documents))
@@ -1104,6 +1157,14 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
+					// Stream closed while the job may have finished without a
+					// parsed terminal event (e.g. race between completion and
+					// our subscription). Trust the API status over the stream.
+					if !isTerminalStatus(lastStatus) && lastStatus != "timeout" {
+						if status, _, statErr := getJobStatus(ctx, apiURL, jobID); statErr == nil && isTerminalStatus(status) {
+							lastStatus = status
+						}
+					}
 					mu.RLock()
 					printStatus("\r✓ %s\n", lastLabel)
 					mu.RUnlock()
@@ -1118,8 +1179,13 @@ func monitorJobSSE(ctx context.Context, apiURL string, jobID string) (string, er
 				continue
 			}
 
-			if strings.HasPrefix(line, "data: ") {
-				data := strings.TrimPrefix(line, "data: ")
+			// Gin emits SSE frames without an extra space ("data:{...}").
+			// Accept both "data: {...}" and "data:{...}".
+			if strings.HasPrefix(line, "data") {
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if data == "" {
+					continue
+				}
 
 				var event JobEvent
 				if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -1249,11 +1315,12 @@ func downloadResults(ctx context.Context, apiURL string, jobID string, outputFil
 		return err
 	}
 
-	// Validate that we have at least one of: text or chunks
-	// The 'text' field is optional (only present if it was extracted).
-	// Results with chunks but no full text are valid (e.g., document with separate chunks).
-	if len(result.Chunks) == 0 && result.Text == "" {
-		return fmt.Errorf("no results found for job %s: no chunks or text extracted", jobID)
+	hasDescription := result.ImageDescription != nil && *result.ImageDescription != ""
+	if len(result.Chunks) == 0 && result.Text == "" &&
+		result.ImageOcrText == "" && !hasDescription &&
+		len(result.MetadataImage) == 0 && len(result.MetadataAudio) == 0 &&
+		len(result.AudioSegments) == 0 {
+		return fmt.Errorf("no results found for job %s", jobID)
 	}
 
 	for i, chunk := range result.Chunks {

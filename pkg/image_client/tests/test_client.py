@@ -200,3 +200,80 @@ class TestMultimodalLLMClientPool:
         ):
             client = MultimodalLLMClientPool()
             assert client._timeout == 60
+
+class TestDescribe:
+    """OCR (/analyze) and description (/describe) use distinct endpoints."""
+
+    def test_describe_uses_describe_endpoint_and_timeout(self, mocker):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"description": "A cat on a sofa"}
+        post = mocker.patch("requests.post", return_value=mock_response)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MULTIMODAL_LLM_URLS": "http://analyzer:8080",
+                "MULTIMODAL_LLM_TIMEOUT": "42",
+            },
+            clear=False,
+        ):
+            client = MultimodalLLMClientPool()
+            description = client.describe(image_bytes=b"image", filename="cat.jpg")
+
+        assert description == "A cat on a sofa"
+        assert post.call_args.args[0] == "http://analyzer:8080/describe"
+        assert post.call_args.kwargs["timeout"] == 42
+
+    def test_analyze_uses_analyze_endpoint(self, mocker):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"extracted_text": "visible text"}
+        post = mocker.patch("requests.post", return_value=mock_response)
+
+        with patch.dict(
+            "os.environ",
+            {"MULTIMODAL_LLM_URLS": "http://analyzer:8080"},
+            clear=False,
+        ):
+            client = MultimodalLLMClientPool()
+            result = client.analyze(image_bytes=b"image", filename="doc.jpg")
+
+        assert result.extracted_text == "visible text"
+        assert post.call_args.args[0] == "http://analyzer:8080/analyze"
+
+    def test_describe_without_description_returns_empty_string(self, mocker):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"description": None}
+        mocker.patch("requests.post", return_value=mock_response)
+
+        client = MultimodalLLMClientPool()
+        assert client.describe(image_bytes=b"image", filename="cat.jpg") == ""
+
+
+    def test_describe_failover(self, mocker):
+        """describe() fails over to the next service URL like analyze()."""
+        mock_500 = MagicMock()
+        mock_500.status_code = 500
+
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+        mock_success.json.return_value = {"description": "Second URL"}
+
+        post = mocker.patch("requests.post", side_effect=[mock_500, mock_success])
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MULTIMODAL_LLM_URLS": "http://llm-1:8000,http://llm-2:8000",
+                "MULTIMODAL_LLM_MAX_RETRIES": "2",
+            },
+            clear=False,
+        ):
+            client = MultimodalLLMClientPool()
+            description = client.describe(image_bytes=b"image", filename="cat.jpg")
+
+        assert description == "Second URL"
+        urls = [call.args[0] for call in post.call_args_list]
+        assert urls == ["http://llm-1:8000/describe", "http://llm-2:8000/describe"]

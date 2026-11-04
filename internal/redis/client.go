@@ -600,7 +600,7 @@ func (c *RedisClient) GetJobFeatures(ctx context.Context, jobID string) ([]strin
 	return features, nil
 }
 
-// SetJobProfile stores the processing profile (fast/balanced/full) for a job.
+// SetJobProfile stores the processing profile (rag|full) for a job.
 // Redis key: {namespace}:job:{jobID}:profile
 // TTL: jobTTL (typically 24 hours), set on initial write.
 // Returns error if the Redis operation fails.
@@ -661,6 +661,10 @@ func (c *RedisClient) DeleteJob(ctx context.Context, jobID string) error {
 		c.key("job", jobID, "chunks"),
 		c.key("job", jobID, "metadata:document"),
 		c.key("job", jobID, "metadata:text"),
+		c.key("job", jobID, "metadata:image"),
+		c.key("job", jobID, "metadata:audio"),
+		c.key("job", jobID, "audio_segments"),
+		c.key("job", jobID, "embeddings_degraded"),
 		c.key("job", jobID, "extraction_provenance"),
 	}
 	err := c.client.Del(ctx, keys...).Err()

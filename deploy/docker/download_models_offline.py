@@ -368,8 +368,18 @@ def main():
         },
         {
             "repo_id": "BAAI/bge-m3",
-            "type": "BGE-M3 (embeddings)",
-            "critical": True,
+            "type": "BGE-M3 (optional: self-hosted embeddings backend)",
+            "critical": False,
+        },
+        {
+            "repo_id": "Systran/faster-whisper-large-v2",
+            "type": "Whisper large-v2 (audio)",
+            "critical": False,
+        },
+        {
+            "repo_id": "openbmb/MiniCPM-V-4_5",
+            "type": "MiniCPM-V 4.5 (vision OCR)",
+            "critical": False,
         },
         {
             "repo_id": "Systran/faster-whisper-large-v2",

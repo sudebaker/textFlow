@@ -9,6 +9,14 @@ from pkg.audio_client.client import WhisperClientPool
 from pkg.audio_client.exceptions import WhisperServiceError
 from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.async_base import BaseAsyncWorker
+from pkg.worker_common.inference_dispatch import (
+    INFERENCES_QUEUE,
+    INFERENCES_TTL_SECONDS,
+    dispatch_inference_chunks,
+    inference_counter_key,
+    skip_empty_inference_stage,
+)
+from pkg.worker_common.job_keys import set_job_key
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
 from segment_chunker import SegmentChunker
@@ -29,6 +37,31 @@ class AudioWorker(BaseAsyncWorker):
         self.whisper_pool = WhisperClientPool()
         self.chunker = SegmentChunker()
         self.pipeline = PipelineDefinition.load()
+
+    async def _dispatch_inferences(self, job_id: str, chunks: list) -> int:
+        """Own the inference dispatch from the audio fan-out (D3)."""
+
+        async def publish(message: Dict[str, Any]) -> None:
+            await self._channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    content_type="application/json",
+                ),
+                routing_key=INFERENCES_QUEUE,
+            )
+
+        def set_counter(suffix: str, value: int) -> None:
+            self.redis_client.setex(
+                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
+            )
+
+        return await dispatch_inference_chunks(
+            publish=publish,
+            set_counter=set_counter,
+            job_id=job_id,
+            chunks=chunks,
+        )
 
     async def process_message(self, message: Dict[str, Any]) -> None:
         job_id = message.get("job_id")
@@ -74,17 +107,23 @@ class AudioWorker(BaseAsyncWorker):
             audio_metadata = {
                 "language": result.language,
                 "duration_seconds": result.duration_seconds,
-                "has_diarization": bool(result.segments),
+                # Diarization is not implemented by the whisper service; never
+                # claim speaker labels that do not exist.
+                "has_diarization": False,
                 "segment_count": len(result.segments) if result.segments else 0,
             }
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:metadata:audio",
+            set_job_key(
+                self.redis_client,
+                job_id,
+                "metadata:audio",
                 json.dumps(audio_metadata),
             )
 
             if result.segments:
-                self.redis_client.set(
-                    f"orchestrator:job:{job_id}:audio_segments",
+                set_job_key(
+                    self.redis_client,
+                    job_id,
+                    "audio_segments",
                     json.dumps([s.__dict__ for s in result.segments]),
                 )
 
@@ -108,11 +147,25 @@ class AudioWorker(BaseAsyncWorker):
             if features:
                 job_message["features"] = features
 
-            profile = message.get("profile", "balanced")
+            profile = message.get("profile", "full")
             self._raise_if_cancelled(job_id)
             target_queues = self.pipeline.queues_for(
-                is_spreadsheet=False, features=features, profile=profile
+                entry="audio", features=features, profile=profile
             )
+
+            # Inference dispatch is owned by the entry stage (D3).
+            if INFERENCES_QUEUE in target_queues:
+                if await self._dispatch_inferences(job_id, chunks) == 0:
+                    target_queues = skip_empty_inference_stage(
+                        target_queues, self.redis_client, job_id
+                    )
+
+            # Chunk messages already went to `inferences`; never publish the
+            # job envelope there (it lacks chunk_id/chunk_text and the
+            # inference consumer rejects it).
+            envelope_queues = [
+                queue for queue in target_queues if queue != INFERENCES_QUEUE
+            ]
 
             for qs in target_queues:
                 try:
@@ -120,7 +173,7 @@ class AudioWorker(BaseAsyncWorker):
                 except Exception:
                     pass
             job_message_json = json.dumps(job_message).encode()
-            for queue_name in target_queues:
+            for queue_name in envelope_queues:
                 await self._channel.default_exchange.publish(
                     aio_pika.Message(
                         body=job_message_json,

@@ -10,11 +10,16 @@
 |---|---|---|---|---|---|---|
 | `HF_HUB_OFFLINE` | `1` | bool | `1` air-gapped | todos | `huggingface_hub` no toca internet | **no cambiar** en prod |
 | `TRANSFORMERS_OFFLINE` | `1` | bool | `1` | todos | transformers sólo local | **no cambiar** |
-| `MODELS_PATH` | `../../models` | path | host path | compose | bind-mount `huggingface_cache`, `whisper`, `docling/models` | prod: `../models` (ver `install.sh`) |
+| `MODELS_PATH` | `../../models` | path | host path | `models-sync` | staging que `make models-sync` copia al volumen `models-data` (los servicios ya no lo montan) | prod: `../models` |
 | `RABBITMQ_URL` | `amqp://…@rabbitmq:5672/` | url | `amqp://` | todos | broker | nunca `guest:guest` en prod |
 | `REDIS_URL` | `redis://redis:6379` | url | `redis://` | todos | estado + pub/sub + artifact refs | sin ACL abierta |
 | `HTTP_PORT` | `8080` | int | 1024+ | orchestrator | API + `/metrics` | detrás de reverse-proxy |
 | `LOG_LEVEL` | `info` | enum | `debug/info/warn/error` | todos | verbosidad | prod `info` |
+
+Los modelos se montan desde el volumen compartido `models-data`
+(`make models-sync`); `entities-worker` usa `HF_HOME=/models/huggingface_cache`,
+`whisper` `MODEL_PATH=/models/whisper` y `docling`
+`DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`.
 
 ## Docling / Extraction
 
@@ -61,8 +66,8 @@
 
 | Variable | Default | Servicio | Notas |
 |---|---|---|---|
-| `LLM_URL` | vacío | inference-worker | OpenAI-compat (vLLM `http://vllm:8000`, Ollama) — externo al bundle |
-| `LLM_MODEL` | `qwen3-coder` | inference-worker | debe coincidir con el modelo cargado en el LLM |
+| `INFERENCE_BASE_URL` | — (requerido) | inference-worker | OpenAI-compat (vLLM/Ollama) — sin fallback; el worker falla al arrancar si falta |
+| `INFERENCE_MODEL` | — (requerido) | inference-worker | debe coincidir con el modelo cargado en el LLM |
 | `INFERENCES_QUEUE` | `inferences` | inference-worker | activada por `-f` / `feature_extras` |
 | `INFERENCE_BATCH_ENABLED/SIZE/TIMEOUT_MS` | `true/3/500` | inference-worker | cache `INFERENCE_CACHE_*`, `MAX_CHUNK_WORDS=5000` |
 | `INFERENCE_ADAPTIVE_ENABLED` + `MAX/MIN_CONCURRENCY, TIMEOUT_DECAY, COOLDOWN` | `false/16/1/2/30` | inference-worker | OFF hasta benchmarks GPU; `INFERENCE_LLM_TIMEOUT=60`, `RETRIES=2` |
@@ -71,12 +76,25 @@
 
 | Variable | Default | Servicio | Notas |
 |---|---|---|---|
-| `WHISPER_MODEL` | `large-v2` | whisper | `tiny…large-v3` → `Systran/faster-whisper-*` ; `MODEL_PATH=/models` |
+| `WHISPER_MODEL` | `large-v2` | whisper | `tiny…large-v3` → `Systran/faster-whisper-*` ; `MODEL_PATH=/models/whisper` |
 | `WHISPER_DEVICE / COMPUTE_TYPE` | `cpu / int8` | whisper | GPU: `cuda / float16` |
 | `WHISPER_URLS`, `TIMEOUT`, `MAX_RETRIES` | `http://whisper:8080`, `300`, `3` | audio-worker | |
 | `AUDIO_CHUNK_MAX_CHARS` / `MAX_AUDIO_SIZE_MB` | `1500 / 500` | audio-worker | |
-| `MULTIMODAL_LLM_URLS / TIMEOUT / RETRIES` | `http://multimodal-llm:8000 / 120 / 3` | image-worker + image-analyzer | Ollama dev `host.docker.internal:11434`, vLLM prod; `MAX_IMAGE_DIM=1024`, `CACHE_TTL_SECONDS=86400` |
+| `MULTIMODAL_LLM_URLS / TIMEOUT / RETRIES` | `http://multimodal-llm:8000 / 120 / 3` | image-worker | pool del servicio image-analyzer (`/analyze` y `/describe`) |
+| `OCR_BASE_URL / OCR_MODEL` | `http://host.docker.internal:11434 / gemma4:e4b` | image-analyzer | backend LLM para OCR (`/analyze`) |
+| `IMAGE_BASE_URL / IMAGE_MODEL` | fallback a `OCR_*` | image-analyzer | backend LLM para descripción (`/describe`); vacío = usar el de OCR |
+| `MAX_IMAGE_DIM / CACHE_TTL_SECONDS` | `1024 / 86400` | image-analyzer | resize y caché por hash |
 | `IMAGE_QUEUE / AUDIO_QUEUE` | `image / audio` | image/audio-worker | reemplazadas por `image_replaces_extraction` / `audio_replaces_extraction` |
+
+## Embeddings (remotos)
+
+| Variable | Default | Servicio | Notas |
+|---|---|---|---|
+| `EMBEDDINGS_BASE_URL` | — (requerido) | embeddings-worker, completion-worker | OpenAI-compat `POST /v1/embeddings`; sin fallback local |
+| `EMBEDDINGS_MODEL` | `BAAI/bge-m3` | embeddings/completion-worker | 1024 dimensiones |
+| `EMBEDDINGS_TIMEOUT / MAX_RETRIES / BATCH_SIZE` | `30 / 3 / 32` | cliente | reintentos con backoff |
+| `EMBEDDINGS_CACHE_TTL_SECONDS` | `604800` (7d) | cliente | caché `emb:{sha256(model+text)}` |
+| `EMBEDDINGS_DIMENSION` | `1024` | cliente | validación de vectores |
 
 ## RabbitMQ / Recursos
 

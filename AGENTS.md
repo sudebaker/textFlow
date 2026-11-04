@@ -134,7 +134,7 @@ pkg/              # shared: logging/, metrics/, events_python.py, worker_common/
 |---------|------|------|-------|
 | orchestrator | Go/Gin | 8080 | REST API, SSRF validation |
 | resource-manager | Go | 9090 | GPU monitoring |
-| embeddings-worker | Python | - | BAAI/bge-m3 |
+| embeddings-worker | Python | - | cliente remoto `/v1/embeddings` (`EMBEDDINGS_*`), sin modelo local |
 | entities-worker | Python | - | GLiNER ⚠️ offline |
 | extraction-worker | Python | - | Unstructured API |
 
@@ -236,12 +236,17 @@ modelos (bge-m3, deberta, gliner) + vLLM + infra arriba, para medir antes/despu�
 
 ### Model Files
 
-Mount `-v ../../models:/models` with:
-- `models/bge-m3/` → embeddings-worker
-- `models/deberta-v3-small/` → GLiNER backbone (config.json, pytorch_model.bin, spm.model, tokenizer_config.json)
-- `models/gliner-small-v2.1/` → GLiNER extractor (gliner_config.json, pytorch_model.bin)
-- `models/modern-gliner/` → embeddings-worker GLiNER variant
-- `models/minicpm-v-4.5/` → vision-ocr vLLM serving (openbmb/MiniCPM-V-4_5, opcional: dev vía Ollama en el mac-mini)
+Los modelos se cargan desde el volumen Docker compartido `models-data`, poblado desde
+el staging `models/` con `make models-sync` (`MODELS_PATH` solo se usa para esa
+sincronización). `make models-verify` muestra tamaños y `MANIFEST.txt`.
+
+- `models-data:/models:ro` → `entities-worker` (`HF_HOME=/models/huggingface_cache`,
+  GLiNER + DeBERTa), `whisper` (`MODEL_PATH=/models/whisper`), `docling`
+  (`DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`) y `vllm-minicpm` (GPU overlay).
+- Layout dentro del volumen: `bge-m3/`, `deberta-v3-small/`, `gliner-small-v2.1/`,
+  `whisper/`, `docling/`, `huggingface_cache/`, `minicpm-v-4.5/` (opcional).
+- `bge-m3/` solo si sirves el backend de embeddings por separado (el worker no lo monta).
+- `modern-gliner/` → variante alternativa de embeddings-worker (no usada por el worker actual).
 
 ### Docker Build Rules
 
@@ -296,11 +301,11 @@ Routing por extensión en el orchestrator (`cmd/orchestrator/main.go`): `.mp3/.w
 | Worker | Servicio externo | Endpoint |
 |--------|------------------|----------|
 | `audio-worker` | `whisper` (deploy/docker/whisper) | `POST /transcribe` (multipart `audio`+`language`) |
-| `image-worker` | `image-analyzer` (deploy/docker/image-analyzer) | `POST /analyze` (multipart `file`+`prompt`) |
+| `image-worker` | `image-analyzer` (deploy/docker/image-analyzer) | `POST /analyze` (OCR) + `POST /describe` (`full` only) |
 
-**image-analyzer** (micro-servicio propio, `deploy/docker/image-analyzer/app/main.py`): FastAPI que extrae SOLO el texto visible en la imagen (OCR vía LLM vision), NUNCA descripciones (`description: null`). Hace resize con Pillow (spec 5.1, `MAX_IMAGE_DIM`) y cachea el resultado por SHA256 en Redis (spec 5.3, clave `image:{hash}`, TTL `CACHE_TTL_SECONDS`). El LLM backend es **OpenAI-compatible** (`/v1/chat/completions`): Ollama en dev, vLLM en prod. Env: `LLM_BASE_URL`, `MULTIMODAL_LLM_MODEL` (default `gemma4:e4b`), `MAX_IMAGE_DIM`, `CACHE_TTL_SECONDS`. Requiere la red `docker_default` para alcanzar `host.docker.internal` (las redes `internal: true` no tienen salida al host).
+**image-analyzer** (micro-servicio propio, `deploy/docker/image-analyzer/app/main.py`): FastAPI con dos capacidades separadas: `POST /analyze` (OCR del texto visible) y `POST /describe` (descripción semántica, solo para `profile=full`). Hace resize con Pillow (spec 5.1, `MAX_IMAGE_DIM`) y cachea por SHA256 en Redis (clave `image:{hash}` / `image:describe:{hash}`, TTL `CACHE_TTL_SECONDS`). Los backends LLM son **OpenAI-compatible** (`/v1/chat/completions`): `OCR_BASE_URL`/`OCR_MODEL` para OCR y `IMAGE_BASE_URL`/`IMAGE_MODEL` para descripción (si están vacíos, usa el backend OCR). Requiere la red `docker_default` para alcanzar `host.docker.internal` (las redes `internal: true` no tienen salida al host).
 
-**whisper** (deploy/docker/whisper/app/main.py): FastAPI + faster-whisper, con `vad_filter=True` (spec 5.2, VAD integrado). Modelo montado desde `MODELS_PATH/whisper` (estructura HF cache). **La diarización NO está implementada** — el campo `diarize` se acepta pero se ignora; es feature futura (ver `docs/API.md` §4b).
+**whisper** (deploy/docker/whisper/app/main.py): FastAPI + faster-whisper, con `vad_filter=True` (spec 5.2, VAD integrado). Modelo montado desde el volumen `models-data` (`MODEL_PATH=/models/whisper`, estructura HF cache). **La diarización NO está implementada** — el campo `diarize` se acepta pero se ignora; es feature futura (ver `docs/API.md` §4b).
 
 ### Regla `image_replaces_extraction` (completion-worker)
 

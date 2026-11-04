@@ -277,8 +277,24 @@ def test_golden_capture_plumbing_sanity(monkeypatch):
     assert f"orchestrator:job:{JOB_ID}:metadata:document" in sets
 
     published_keys = {p["routing_key"] for p in result["published"]}
-    assert published_keys == {"embeddings", "entities", "metadata"}
-    for p in result["published"]:
+    assert published_keys == {"embeddings", "entities", "metadata", "inferences"}
+    envelopes = [p for p in result["published"] if "queued_at" in p["body"]]
+    # The inferences queue only receives chunk messages (the job envelope is
+    # never published there; the inference consumer rejects it).
+    assert {p["routing_key"] for p in envelopes} == {
+        "embeddings",
+        "entities",
+        "metadata",
+    }
+    assert len(envelopes) == 3
+    for p in envelopes:
         assert isinstance(p["body"], dict)
         assert p["body"].get("queued_at") == "<ts>"
         assert p["body"].get("job_id") == JOB_ID
+    # Inference dispatch is owned by the entry stage (D3): one message per chunk
+    chunks = [p for p in result["published"] if "chunk_id" in p["body"]]
+    assert chunks
+    assert {p["routing_key"] for p in chunks} == {"inferences"}
+    for p in chunks:
+        assert p["body"]["job_id"] == JOB_ID
+        assert "total_chunks" in p["body"]

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"textflow/internal/models"
 	redisclient "textflow/internal/redis"
 )
@@ -77,6 +79,50 @@ func validateFeatureList(features []string) []string {
 	return validated
 }
 
+// batchPlan holds the resolved profile per submitted document. Profiles is
+// aligned with BatchRequest.Documents; rejected indices carry an empty string.
+type batchPlan struct {
+	Profiles []string
+	Rejected []RejectedDocument
+}
+
+// planBatchProfiles validates the batch-level profile (an invalid value fails
+// the whole request) and resolves each document's effective profile: an explicit
+// document profile overrides the batch profile, otherwise the batch profile is
+// inherited (default "full"). An invalid per-document profile rejects only that
+// document.
+func planBatchProfiles(req *BatchRequest) (*batchPlan, error) {
+	batchProfile, err := models.NormalizeProfile(req.Profile)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := &batchPlan{
+		Profiles: make([]string, len(req.Documents)),
+		Rejected: []RejectedDocument{},
+	}
+
+	for i := range req.Documents {
+		doc := &req.Documents[i]
+		if strings.TrimSpace(doc.Profile) == "" {
+			plan.Profiles[i] = batchProfile
+			continue
+		}
+		profile, err := models.NormalizeProfile(doc.Profile)
+		if err != nil {
+			plan.Rejected = append(plan.Rejected, RejectedDocument{
+				Index:    i,
+				Filename: doc.Filename,
+				Reason:   err.Error(),
+			})
+			continue
+		}
+		plan.Profiles[i] = profile
+	}
+
+	return plan, nil
+}
+
 func CreateBatchHandler(c *gin.Context) {
 	var req BatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -108,6 +154,23 @@ func CreateBatchHandler(c *gin.Context) {
 		return
 	}
 
+	// Resolve per-document profiles; rejected documents are excluded below.
+	plan, err := planBatchProfiles(&req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_profile",
+			Detail: err.Error(),
+		})
+		return
+	}
+	if len(plan.Rejected) == len(req.Documents) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error:  "invalid_profile",
+			Detail: "all documents have an invalid profile",
+		})
+		return
+	}
+
 	maxConcurrency := req.MaxConcurrency
 	if maxConcurrency <= 0 {
 		maxConcurrency = 10
@@ -122,8 +185,10 @@ func CreateBatchHandler(c *gin.Context) {
 	batchMetaKey := redisclient.Key("batch", batchID, "meta")
 	ctx := c.Request.Context()
 
-	err := redisclient.GetClient().HSet(ctx, batchMetaKey, map[string]interface{}{
-		"total":          len(req.Documents),
+	accepted := len(req.Documents) - len(plan.Rejected)
+
+	err = redisclient.GetClient().HSet(ctx, batchMetaKey, map[string]interface{}{
+		"total":          accepted,
 		"created_at":     now.Unix(),
 		"webhook_url":    req.WebhookURL,
 		"webhook_secret": req.WebhookSecret,
@@ -141,12 +206,18 @@ func CreateBatchHandler(c *gin.Context) {
 
 	semaphore := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
-	jobs := make([]BatchJobRef, len(req.Documents))
+	jobs := make([]BatchJobRef, 0, accepted)
 	var mu sync.Mutex
 
 	for i, doc := range req.Documents {
+		profile := plan.Profiles[i]
+		if profile == "" {
+			// Rejected at admission; reported in BatchResponse.Rejected.
+			continue
+		}
+
 		wg.Add(1)
-		go func(i int, doc BatchDocument) {
+		go func(doc BatchDocument, profile string) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
@@ -155,6 +226,7 @@ func CreateBatchHandler(c *gin.Context) {
 
 			redisInst.SetJobStatus(ctx, jobID, models.StatusPending)
 			redisInst.SetJobCreated(ctx, jobID)
+			redisInst.SetJobProfile(ctx, jobID, profile)
 
 			// Store features in Redis for completion-worker
 			if len(validatedFeatures) > 0 {
@@ -169,34 +241,61 @@ func CreateBatchHandler(c *gin.Context) {
 				redisInst.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret)
 			}
 
-			jobMsg := &models.JobMessage{
-				JobID:           jobID,
-				Filename:        doc.Filename,
-				Features:        validatedFeatures,
-				PipelineVersion: "v1",
+			jobMsg := buildBatchJobMessage(jobID, doc, validatedFeatures, profile)
+			if err := mqBroker.PublishJobMessage(ctx, jobMsg); err != nil {
+				log.Error().Err(err).Str("job_id", jobID).Msg("Failed to publish batch job")
+				_ = redisInst.SetJobError(ctx, jobID, err.Error())
+				_ = redisInst.SetJobStatus(ctx, jobID, models.StatusFailed)
 			}
 
-			mqBroker.PublishJobMessage(ctx, jobMsg)
-
 			mu.Lock()
-			jobs[i] = BatchJobRef{
+			jobs = append(jobs, BatchJobRef{
 				ID:       jobID,
 				Filename: doc.Filename,
 				Status:   "pending",
-			}
+			})
 			mu.Unlock()
-		}(i, doc)
+		}(doc, profile)
 	}
 
 	wg.Wait()
 
 	c.JSON(http.StatusAccepted, BatchResponse{
-		BatchID:   batchID,
-		Total:     len(req.Documents),
+		BatchID: batchID,
+		// Accepted-jobs semantics, consistent with the stored batch metadata
+		// (batch:meta total) and with GET /v1/batches/:id/status, whose
+		// completed+failed+pending == total invariant counts jobs only.
+		// Submitted = Total + len(Rejected).
+		Total:     accepted,
 		Jobs:      jobs,
+		Rejected:  plan.Rejected,
 		StatusURL: fmt.Sprintf("/v1/batches/%s/status", batchID),
 		CreatedAt: now,
 	})
+}
+
+// buildBatchJobMessage turns a text batch document into a JobMessage the
+// extraction queue can consume. Batch documents carry plain text, not files,
+// so the text is base64-encoded as a `.txt` payload; without this the broker
+// rejects the message ("no document provided") and the job stays pending.
+func buildBatchJobMessage(jobID string, doc BatchDocument, features []string, profile string) *models.JobMessage {
+	filename := strings.TrimSpace(doc.Filename)
+	if filename == "" {
+		filename = "document.txt"
+	} else if !strings.HasSuffix(strings.ToLower(filename), ".txt") {
+		filename += ".txt"
+	}
+
+	return &models.JobMessage{
+		JobID:           jobID,
+		DocumentBase64:  base64.StdEncoding.EncodeToString([]byte(doc.Text)),
+		Filename:        filename,
+		MIMEType:        "text/plain",
+		ContentType:     models.ContentTypeDocument,
+		Features:        features,
+		Profile:         profile,
+		PipelineVersion: "v1",
+	}
 }
 
 func GetBatchStatusHandler(c *gin.Context) {

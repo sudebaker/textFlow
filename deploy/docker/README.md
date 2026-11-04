@@ -18,7 +18,7 @@ This system is **NOT** designed for cloud deployment. All model files must be pr
 ### ❌ What's NOT Included
 - Internet access (not needed, not allowed)
 - HuggingFace model downloads (blocked by design)
-- Model files (must be pre-downloaded to `./models/`)
+- Model files (pre-downloaded to `./models/`, then loaded into the `models-data` volume with `make models-sync`)
 
 ## 📋 Prerequisites
 
@@ -32,7 +32,6 @@ mkdir -p models/
 
 # Required models:
 models/
-├── bge-m3/                    # Embeddings model (BAAI/bge-m3)
 ├── deberta-v3-small/         # Tokenizer backbone for GLiNER
 ├── gliner-small-v2.1/        # Entity extraction model
 └── modern-gliner/            # Alternative GLiNER variant
@@ -42,12 +41,11 @@ models/
 
 | Model | Files Required | Size |
 |-------|----------------|------|
-| `bge-m3/` | 10 files (.bin, .json, .txt) | ~1GB |
 | `deberta-v3-small/` | 8 files (.bin, .json, .model) | ~300MB |
 | `gliner-small-v2.1/` | 8 files (.bin, .json, config) | ~800MB |
 | `modern-gliner/` | 13 files | ~1.5GB |
 
-**Total: ~3.6GB of model files required**
+**Total: ~2.6GB of local model files required** (embeddings run on an external backend).
 
 ### 2. Create Environment File
 
@@ -66,8 +64,11 @@ RABBITMQ_USER=guest
 RABBITMQ_PASS=guest
 
 # Device selection (leave blank for auto-detect)
-EMBEDDINGS_DEVICE=cpu
 ENTITIES_DEVICE=cpu
+
+# Embeddings: external OpenAI-compatible backend (no local model)
+EMBEDDINGS_BASE_URL=http://embeddings-backend:8000
+EMBEDDINGS_MODEL=BAAI/bge-m3
 
 # Optional: Webhook notifications
 WEBHOOK_URL=https://your-domain.com/webhooks/jobs
@@ -139,7 +140,6 @@ MAX_RETRIES=3
 # Worker Settings
 PREFETCH_COUNT=5
 ENTITIES_DEVICE=cpu
-EMBEDDINGS_DEVICE=cpu
 ```
 
 ### Service Ports
@@ -203,7 +203,7 @@ docker compose logs service-name
 ```
 
 Common issues:
-- Missing model files → Download to `./models/`
+- Missing model files → `make setup-models` then `make models-sync` (loads the `models-data` volume)
 - Port already in use → Change ports in `.env`
 - Out of memory → Increase Docker memory limits
 
@@ -252,7 +252,7 @@ docker compose rm
 ### Air-Gapped Compliance
 - ✅ No internet downloads at build time
 - ✅ No internet downloads at runtime
-- ✅ All models loaded from local `/models/` directory
+- ✅ All models loaded from the shared `models-data` volume (`make models-sync`)
 - ✅ Environment variables block HuggingFace Hub access
 
 ### Network Isolation

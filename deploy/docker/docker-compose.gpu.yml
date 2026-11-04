@@ -41,7 +41,7 @@ services:
     image: vllm/vllm-openai:0.10.2
     runtime: nvidia
     volumes:
-    - "${MODELS_PATH:?MODELS_PATH is not set}/minicpm-v-4.5:/models/minicpm-v-4.5:ro"
+    - models-data:/models:ro
     command: >
       vllm serve /models/minicpm-v-4.5
       --served-model-name minicpm-v-4.5

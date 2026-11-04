@@ -1,29 +1,30 @@
 {
-  "version": "v1",
-  "default_pipeline": {
-    "name": "full",
-    "steps": ["extraction", "embeddings", "entities", "metadata"],
-    "publish_queues": ["embeddings", "entities", "metadata"]
-  },
-  "pipelines": {
-    "spreadsheet": {
-      "name": "spreadsheet",
-      "steps": ["extraction", "entities"],
-      "publish_queues": ["entities"]
-    }
-  },
+  "version": "v2",
   "profiles": {
-    "fast": {
-      "steps": ["extraction", "metadata"],
-      "publish_queues": ["metadata"]
-    },
-    "balanced": {
-      "steps": ["extraction", "embeddings", "entities", "metadata"],
-      "publish_queues": ["embeddings", "entities", "metadata"]
+    "rag": {
+      "downstream": ["embeddings", "inferences"]
     },
     "full": {
-      "steps": ["extraction", "embeddings", "entities", "metadata", "inferences"],
-      "publish_queues": ["embeddings", "entities", "metadata", "inferences"]
+      "downstream": ["embeddings", "entities", "metadata", "inferences"],
+      "image_description": true
+    }
+  },
+  "types": {
+    "document": {
+      "entry": "extraction",
+      "capabilities": ["chunking"]
+    },
+    "spreadsheet": {
+      "entry": "extraction",
+      "capabilities": ["chunking"]
+    },
+    "audio": {
+      "entry": "audio",
+      "capabilities": ["chunking"]
+    },
+    "image": {
+      "entry": "image",
+      "capabilities": ["chunking"]
     }
   },
   "feature_extras": {

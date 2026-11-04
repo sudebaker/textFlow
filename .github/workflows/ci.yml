@@ -101,10 +101,11 @@ jobs:
       run: |
         find cmd/*/requirements-test.txt -exec pip install -r {} \; 2>/dev/null || true
         find cmd/*/dev-requirements.txt -exec pip install -r {} \; 2>/dev/null || true
+        pip install httpx pillow langdetect python-multipart
 
     - name: Run Python tests
       run: |
-        for dir in cmd/*/tests; do
+        for dir in cmd/*/tests pkg/*/tests deploy/docker/vision-ocr/tests deploy/docker/image-analyzer/tests; do
           if [ -d "$dir" ]; then
             echo "Running tests in $dir"
             python -m pytest "$dir" -v --tb=short || exit 1

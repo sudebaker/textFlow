@@ -62,6 +62,14 @@ from prometheus_client import Counter, Histogram, start_http_server
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from pkg.events_python import EventBus
 from pkg.worker_common.artifact_store import STORE
+from pkg.worker_common.inference_dispatch import (
+    INFERENCES_QUEUE,
+    INFERENCES_TTL_SECONDS,
+    dispatch_inference_chunks,
+    inference_counter_key,
+    resolve_source_type,
+    skip_empty_inference_stage,
+)
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.rabbitmq_async import declare_queue_async
 
@@ -131,6 +139,36 @@ def _docling_page_count(doc: dict):
             pass
     legacy = doc.get("pages") if isinstance(doc, dict) else None
     return legacy and len(legacy)
+
+
+PLAIN_TEXT_SUFFIXES = {".txt"}
+
+
+def _is_plain_text_filename(filename: str) -> bool:
+    """Whether the document is plain text and must bypass Docling.
+
+    `.txt` is an admitted extension but docling-serve returns empty text for
+    it; batch ingestion encodes text documents as `.txt`, so this path is
+    required for both single `.txt` uploads and text batches.
+    """
+    return Path(filename or "").suffix.lower() in PLAIN_TEXT_SUFFIXES
+
+
+def _decode_plain_text(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _plain_text_result(document_bytes: bytes) -> Dict[str, Any]:
+    return {
+        "text": _decode_plain_text(document_bytes),
+        "metadata": {"docling_pages": None, "extraction_method": "plain_text"},
+        "docling_document": {},
+    }
 
 
 def compute_file_hash(file_bytes: bytes) -> str:
@@ -665,6 +703,32 @@ class ExtractionWorker:
 
             raise JobCancelledError(f"Job {job_id} was cancelled")
 
+    async def _dispatch_inferences(self, channel, job_id: str, chunks: List[Dict]) -> int:
+        """Own the inference dispatch from the extraction fan-out (D3)."""
+
+        async def publish(message: Dict[str, Any]) -> None:
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    content_type="application/json",
+                ),
+                routing_key=INFERENCES_QUEUE,
+            )
+
+        def set_counter(suffix: str, value: int) -> None:
+            self.redis_client.setex(
+                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
+            )
+
+        return await dispatch_inference_chunks(
+            publish=publish,
+            set_counter=set_counter,
+            job_id=job_id,
+            chunks=chunks,
+            source_type=resolve_source_type(self.redis_client, job_id),
+        )
+
     def __del__(self):
         """Clean up temporary directory on worker deletion."""
         import shutil
@@ -798,6 +862,10 @@ class ExtractionWorker:
             document_bytes = base64.b64decode(document_base64)
             logger.info(f"Decoded {len(document_bytes)} bytes, filename: {filename}")
 
+            if _is_plain_text_filename(filename):
+                logger.info(f"Plain-text document detected: {filename}")
+                return _plain_text_result(document_bytes)
+
             # Detect PDF by magic bytes
             if document_bytes[:4] == b"%PDF":
                 if not filename.lower().endswith(".pdf"):
@@ -852,6 +920,10 @@ class ExtractionWorker:
             with open(file_path, "rb") as f:
                 document_bytes = f.read()
             logger.info(f"Read {len(document_bytes)} bytes from {file_path}")
+
+            if _is_plain_text_filename(filename):
+                logger.info(f"Plain-text document detected: {filename}")
+                return _plain_text_result(document_bytes)
 
             result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
@@ -941,6 +1013,10 @@ class ExtractionWorker:
                 if "." not in filename:
                     filename = "document.pdf"
 
+            if _is_plain_text_filename(filename):
+                logger.info(f"Plain-text document detected: {filename}")
+                return _plain_text_result(document_bytes)
+
             result = await self._docling_convert_async(document_bytes, filename)
             doc = result.get("document", {})
             text = doc.get("md_content") or doc.get("text_content") or ""
@@ -1004,11 +1080,13 @@ class ExtractionWorker:
             orchestrator:job:{job_id}:source_classification -> classification result
             orchestrator:job:{job_id}:steps -> hash with extraction="completed"
 
-        Queue publishing:
-            - Publishes to "embeddings" queue (all non-spreadsheet documents)
-            - Publishes to "entities" queue (all documents)
-            - Publishes to "metadata" queue (non-spreadsheet documents)
-            - Spreadsheets (csv, xls, xlsx) route to "entities" only
+        Queue publishing (configs/pipeline.json v2, entry × profile):
+            - The target queues come from PipelineDefinition.queues_for(
+              entry="extraction", features, profile): rag dispatches
+              embeddings+inferences, full adds entities+metadata.
+            - Inference chunk messages are dispatched here (entry stage owns
+              them since D3), one per non-empty chunk.
+            - Spreadsheets follow the same profile routing (no short-circuit).
 
         Message published to queues contains:
             {
@@ -1194,7 +1272,7 @@ class ExtractionWorker:
                     # stage_queue_time_seconds (spec 1.1).
                     "queued_at": int(time.time() * 1000),
                     "pipeline_version": body.get("pipeline_version", "v1"),
-                    "profile": body.get("profile", "balanced"),
+                    "profile": body.get("profile", "full"),
                 }
 
                 if body.get("entity_types"):
@@ -1202,28 +1280,37 @@ class ExtractionWorker:
                 if body.get("features"):
                     job_message["features"] = body["features"]
 
-                # Determine if this is a spreadsheet (reduce pipeline: entities only)
-                is_spreadsheet = False
-                if body.get("mime_type") == "application/spreadsheet":
-                    is_spreadsheet = True
-                elif body.get("document_path"):
-                    path_lower = body["document_path"].lower()
-                    if path_lower.endswith((".csv", ".xls", ".xlsx")):
-                        is_spreadsheet = True
-
                 # Cooperative cancellation before publishing downstream
                 self._raise_if_cancelled(job_id)
 
-                # Route to appropriate queues from the declarative PipelineDefinition
+                # Entry stage is type-driven (v2): documents and spreadsheets
+                # both enter at extraction, and the profile composes downstream.
                 target_queues = self.pipeline.queues_for(
-                    is_spreadsheet=is_spreadsheet,
+                    entry="extraction",
                     features=features,
-                    profile=body.get("profile", "balanced"),
+                    profile=body.get("profile", "full"),
                 )
                 logger.info(
-                    f"Detected {'spreadsheet' if is_spreadsheet else 'full'} pipeline, "
+                    f"Detected {body.get('mime_type') or 'document'} pipeline, "
                     f"routing to queues: {target_queues}"
                 )
+
+                # Inference dispatch is owned by the entry stage (D3): a `rag`
+                # job produces inferences with no entities step. Counters are
+                # written before the first chunk publish inside the helper.
+                if INFERENCES_QUEUE in target_queues:
+                    dispatched = await self._dispatch_inferences(channel, job_id, chunks)
+                    if dispatched == 0:
+                        target_queues = skip_empty_inference_stage(
+                            target_queues, self.redis_client, job_id
+                        )
+
+                # Chunk messages already went to `inferences`; never publish the
+                # job envelope there (it lacks chunk_id/chunk_text and the
+                # inference consumer rejects it).
+                envelope_queues = [
+                    queue for queue in target_queues if queue != INFERENCES_QUEUE
+                ]
 
                 # stage.queued contract: emit per-stage before the RabbitMQ publish (best-effort)
                 for qs in target_queues:
@@ -1233,7 +1320,7 @@ class ExtractionWorker:
                         pass
 
                 job_message_json = json.dumps(job_message).encode()
-                for queue_name in target_queues:
+                for queue_name in envelope_queues:
                     await channel.default_exchange.publish(
                         aio_pika.Message(
                             body=job_message_json,

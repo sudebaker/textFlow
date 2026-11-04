@@ -52,7 +52,7 @@ def pytest_itemcollected(item):
     if Path(item.fspath).resolve().parent == _TESTS_DIR:
         # The worker was renamed worker.py -> inference_worker.py. The tests
         # patch "worker.*" attributes, so alias the new module under the old
-        # name to keep `unittest.mock.patch("worker.LLM_URL", ...)` working.
+        # name to keep `unittest.mock.patch("worker.INFERENCE_BASE_URL", ...)` working.
         captured = sys.modules.get("worker") or sys.modules.get("inference_worker")
         if captured is not None and _worker_module is None:
             sys.modules["worker"] = captured

@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """
-Embeddings Worker for textFlow
-Consumes messages from RabbitMQ and generates embeddings for each chunk using BAAI/bge-m3
+Embeddings Worker for textFlow.
 
-GPU Features:
-- Automatic GPU detection via torch.cuda
-- Adaptive batching (GPU=32, CPU=2)
-- FP16 optimization for GPU (in EmbeddingService)
+Consumes messages from RabbitMQ and generates embeddings for each chunk via
+the remote OpenAI-compatible embeddings backend (``POST /v1/embeddings``,
+``EMBEDDINGS_BASE_URL``/``EMBEDDINGS_MODEL``). There is no local model load and
+no local fallback (remote-embeddings decision).
 """
 
 import os
 import sys
-
-# CRITICAL: Set offline mode BEFORE importing any HuggingFace or transformers packages
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import json
 import time
@@ -28,17 +23,14 @@ from prometheus_client import Counter, Histogram
 sys.path.insert(0, "/app")
 from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
+from pkg.worker_common.embeddings_client import EmbeddingsClient
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
-from app.services.embeddings import EmbeddingService
+from pkg.worker_common.job_keys import set_job_key
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "embeddings")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
-MODEL_PATH = os.getenv("MODEL_PATH", "/models/bge-m3")
 EMBEDDING_BATCH_SIZE_GPU = int(os.getenv("EMBEDDING_BATCH_SIZE_GPU", "64"))
 EMBEDDING_BATCH_SIZE_CPU = int(os.getenv("EMBEDDING_BATCH_SIZE_CPU", "2"))
-
-_device_env = os.getenv("EMBEDDINGS_DEVICE", "").strip()
-EMBEDDINGS_DEVICE = _device_env if _device_env else None
 
 # Throughput metrics (spec 33): batch duration histogram and per-chunk counter.
 # Kept at module level, alongside the existing BaseWorker job metrics.
@@ -69,7 +61,7 @@ class EmbeddingsWorker(BaseWorker):
             metrics_port=METRICS_PORT,
             requires_gpu=True,
         )
-        self.service = None
+        self.embeddings_client = None
         self.batch_size = EMBEDDING_BATCH_SIZE_CPU
 
         # Additional GPU memory metric (BaseWorker already has gpu_available)
@@ -78,7 +70,8 @@ class EmbeddingsWorker(BaseWorker):
             "embeddings_worker_gpu_memory_gb", "GPU memory usage in GB"
         )
 
-    def load_model(self):
+    def configure(self):
+        """Configure batching and connect the remote embeddings client."""
         use_gpu = detect_gpu()
         self.batch_size = (
             EMBEDDING_BATCH_SIZE_GPU if use_gpu else EMBEDDING_BATCH_SIZE_CPU
@@ -96,9 +89,13 @@ class EmbeddingsWorker(BaseWorker):
             self.logger.info(f"CPU Mode detected")
             self.logger.info(f"   Batch size: {self.batch_size} (conservative for CPU)")
 
-        self.logger.info(f"Loading embeddings model from: {MODEL_PATH}")
-        self.service = EmbeddingService(model_path=MODEL_PATH, device=EMBEDDINGS_DEVICE)
-        self.logger.info("Embeddings model loaded successfully")
+        self.embeddings_client = EmbeddingsClient(
+            redis_client=self.redis_client, batch_size=self.batch_size
+        )
+        self.logger.info(
+            f"Remote embeddings backend: {self.embeddings_client.base_url} "
+            f"(model={self.embeddings_client.model})"
+        )
 
     def process_message(self, message: Dict) -> Any:
         job_id = message.get("job_id")
@@ -132,28 +129,38 @@ class EmbeddingsWorker(BaseWorker):
         chunk_texts = [chunk.get("text", "") for chunk in chunks]
         chunk_ids = [chunk.get("chunk_id") for chunk in chunks]
 
-        for batch_start in range(0, len(chunk_texts), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(chunk_texts))
-            batch_texts = chunk_texts[batch_start:batch_end]
-            batch_ids = chunk_ids[batch_start:batch_end]
+        degraded_key = f"orchestrator:job:{job_id}:embeddings_degraded"
 
-            batch_start_time = time.time()
-            batch_embeddings = self.service.generate_embeddings(
-                batch_texts, batch_size=self.batch_size
+        def embed(texts: List[str]) -> List[List[float]]:
+            result = self.embeddings_client.embed_batch(
+                texts, batch_size=self.batch_size
             )
-            batch_duration.labels(batch_size=len(batch_texts)).observe(
-                time.time() - batch_start_time
-            )
+            if result.degraded:
+                # Media-style job key: it must expire with the job and a clean
+                # retry must clear a stale flag.
+                set_job_key(
+                    self.redis_client, job_id, "embeddings_degraded", "true"
+                )
+            else:
+                self.redis_client.delete(degraded_key)
+            return result.vectors
 
-            for chunk_id, embedding in zip(batch_ids, batch_embeddings):
-                if chunk_id:
-                    embeddings_dict[chunk_id] = embedding
-                    chunks_total.labels(status="success").inc()
+        batch_start_time = time.time()
+        batch_embeddings = embed(chunk_texts)
+        batch_duration.labels(batch_size=len(chunk_texts)).observe(
+            time.time() - batch_start_time
+        )
 
-            processed = min(batch_end, total_chunks)
-            self.logger.info(
-                f"Generated embeddings for chunk {processed}/{total_chunks}"
-            )
+        for chunk_id, embedding in zip(chunk_ids, batch_embeddings):
+            if chunk_id and embedding:
+                embeddings_dict[chunk_id] = embedding
+                chunks_total.labels(status="success").inc()
+            elif chunk_id:
+                chunks_total.labels(status="degraded").inc()
+
+        self.logger.info(
+            f"Generated embeddings for {len(embeddings_dict)}/{total_chunks} chunks"
+        )
 
         if detect_gpu():
             self.gpu_memory_gb.set(torch.cuda.memory_allocated() / 1024**3)
@@ -189,9 +196,7 @@ class EmbeddingsWorker(BaseWorker):
 
                     inference_embeddings = generate_inference_embeddings(
                         inferences_by_chunk=inferences_by_chunk,
-                        embed_fn=lambda texts: self.service.generate_embeddings(
-                            texts, batch_size=self.batch_size
-                        ),
+                        embed_fn=embed,
                         logger=self.logger,
                     )
 
@@ -225,15 +230,14 @@ class EmbeddingsWorker(BaseWorker):
 
     def cleanup(self) -> None:
         super().cleanup()
-        if hasattr(self, "service") and self.service is not None:
-            del self.service
+        self.embeddings_client = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 
 def main():
     worker = EmbeddingsWorker()
-    worker.load_model()
+    worker.configure()
     worker.run()
 
 

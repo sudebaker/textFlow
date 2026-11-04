@@ -57,7 +57,7 @@ class TestSemaphoreAcquireRelease:
         """When acquire fails, extract_inferences returns an empty list."""
         with patch.object(worker, "_adaptive", Mock()) as mock_sem:
             mock_sem.acquire.return_value = False
-            with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
                 with patch("worker.CACHE_ENABLED", False):
                     result = worker.extract_inferences(
                         chunk_text="Some text", entities=[], source_type="generico"
@@ -69,7 +69,7 @@ class TestSemaphoreAcquireRelease:
         """release() is called with is_error=False on a successful LLM call."""
         with patch.object(worker, "_adaptive", Mock()) as mock_sem:
             mock_sem.acquire.return_value = True
-            with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
                 with patch("worker.CACHE_ENABLED", False):
                     with patch("requests.post") as mock_post:
                         mock_response = Mock()
@@ -100,7 +100,7 @@ class TestSemaphoreAcquireRelease:
         with patch.object(worker, "_adaptive", Mock()) as mock_sem:
             mock_sem.is_in_cooldown = True
             mock_sem.acquire.return_value = False
-            with patch("worker.LLM_URL", "http://localhost:8000"):
+            with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
                 with patch("worker.CACHE_ENABLED", False):
                     result = worker.extract_inferences(
                         chunk_text="Some text",

@@ -9,6 +9,14 @@ from pkg.image_client.client import MultimodalLLMClientPool
 from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.async_base import BaseAsyncWorker
 from pkg.worker_common.chunking import chunk_text
+from pkg.worker_common.inference_dispatch import (
+    INFERENCES_QUEUE,
+    INFERENCES_TTL_SECONDS,
+    dispatch_inference_chunks,
+    inference_counter_key,
+    skip_empty_inference_stage,
+)
+from pkg.worker_common.job_keys import set_job_key
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.security import validate_upload_path
 
@@ -27,6 +35,31 @@ class ImageWorker(BaseAsyncWorker):
         self.llm_pool = MultimodalLLMClientPool()
         self.pipeline = PipelineDefinition.load()
 
+    async def _dispatch_inferences(self, job_id: str, chunks: list) -> int:
+        """Own the inference dispatch from the image fan-out (D3)."""
+
+        async def publish(message: Dict[str, Any]) -> None:
+            await self._channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    content_type="application/json",
+                ),
+                routing_key=INFERENCES_QUEUE,
+            )
+
+        def set_counter(suffix: str, value: int) -> None:
+            self.redis_client.setex(
+                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
+            )
+
+        return await dispatch_inference_chunks(
+            publish=publish,
+            set_counter=set_counter,
+            job_id=job_id,
+            chunks=chunks,
+        )
+
     async def process_message(self, message: Dict[str, Any]) -> None:
         job_id = message.get("job_id")
 
@@ -42,6 +75,9 @@ class ImageWorker(BaseAsyncWorker):
 
             self._raise_if_cancelled(job_id)
 
+            profile = message.get("profile", "full")
+            want_description = self.pipeline.wants_image_description(profile)
+
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -51,9 +87,19 @@ class ImageWorker(BaseAsyncWorker):
                 ),
             )
 
+            # OCR text is the RAG field. The description is a single semantic
+            # field for `full` jobs, never appended to text or embedded (D5).
             text = result.extracted_text
-            if result.description:
-                text = f"{text}\n\n{result.description}"
+            description = None
+            if want_description:
+                description = await loop.run_in_executor(
+                    None,
+                    lambda: self.llm_pool.describe(
+                        image_bytes=image_bytes,
+                        filename=message.get("filename", "image"),
+                    ),
+                    routing_key=queue_name,
+                )
 
             chunks = chunk_text(text)
 
@@ -64,10 +110,12 @@ class ImageWorker(BaseAsyncWorker):
 
             image_metadata = {
                 "language": result.language,
-                "description": result.description,
+                "description": description,
             }
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:metadata:image",
+            set_job_key(
+                self.redis_client,
+                job_id,
+                "metadata:image",
                 json.dumps(image_metadata),
             )
 
@@ -91,11 +139,24 @@ class ImageWorker(BaseAsyncWorker):
             if features:
                 job_message["features"] = features
 
-            profile = message.get("profile", "balanced")
             self._raise_if_cancelled(job_id)
             target_queues = self.pipeline.queues_for(
-                is_spreadsheet=False, features=features, profile=profile
+                entry="image", features=features, profile=profile
             )
+
+            # Inference dispatch is owned by the entry stage (D3).
+            if INFERENCES_QUEUE in target_queues:
+                if await self._dispatch_inferences(job_id, chunks) == 0:
+                    target_queues = skip_empty_inference_stage(
+                        target_queues, self.redis_client, job_id
+                    )
+
+            # Chunk messages already went to `inferences`; never publish the
+            # job envelope there (it lacks chunk_id/chunk_text and the
+            # inference consumer rejects it).
+            envelope_queues = [
+                queue for queue in target_queues if queue != INFERENCES_QUEUE
+            ]
 
             for qs in target_queues:
                 try:
@@ -103,7 +164,7 @@ class ImageWorker(BaseAsyncWorker):
                 except Exception:
                     pass
             job_message_json = json.dumps(job_message).encode()
-            for queue_name in target_queues:
+            for queue_name in envelope_queues:
                 await self._channel.default_exchange.publish(
                     aio_pika.Message(
                         body=job_message_json,

@@ -5,6 +5,7 @@ Publishes job events to Redis Pub/Sub.
 
 import json
 import time
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import redis
 
@@ -28,7 +29,10 @@ class EventBus:
         event = {
             "event_type": event_type,
             "job_id": job_id,
-            "timestamp": time.time(),
+            # Wire contract mirrors internal/events.JobEvent (Go): RFC3339 UTC
+            # timestamp string. Numeric epochs break Go consumers (time.Time
+            # unmarshal).
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         if progress is not None:

@@ -19,7 +19,7 @@
 - **`HF_HUB_OFFLINE=1` pero intenta acceder a Hugging Face.** Algún env quedó en `false` o `local_files_only=False` en el loader. Busca el modelo faltante en `docker compose logs entities-worker | grep -i "http\|hub"`.
 - **`Tokenizer incorrecto / modelo corrupto`.** Valida `MODEL_REQUIRED_FILE_GROUPS` en `download_models_offline.py:_is_snapshot_complete`. Re-descarga: `rm -rf models/huggingface_cache && make setup-models`.
 - **`No such file: /models/whisper/large-v2/model.bin`.** `WHISPER_MODEL` no coincide con el repo descargado (`Systran/faster-whisper-large-v2`). Alinea `WHISPER_MODEL` ↔ `models/whisper/<size>` o re-descarga.
-- **Ruta incorrecta.** `MODELS_PATH` resuelto relativo a `deploy/docker` (`../../models` dev) ≠ `../models` en target (`install.sh` lo corrige). Verifica el mount: `docker inspect textflow-docling | grep -A2 Mounts`.
+- **Volumen sin modelos.** Ejecuta `make models-sync` (copia el staging `MODELS_PATH` al volumen `models-data`) y verifica con `make models-verify` / `docker inspect textflow-docling | grep -A2 Mounts`.
 
 ## Docling
 
@@ -37,7 +37,9 @@
 
 ## LLM (Ollama / vLLM)
 
-- **`LLM_URL` no disponible / `502`.** Verifica `curl http://<LLM_URL>/v1/models` y `LLM_MODEL` coincide con `vllm serve --model`. `ollama list` en host.
+- **`INFERENCE_BASE_URL` no disponible / `502`.** Verifica `curl http://<INFERENCE_BASE_URL>/v1/models` y que `INFERENCE_MODEL` coincide con `vllm serve --model`. `ollama list` en host. Sin estas variables el worker falla al arrancar (no hay fallback).
 - **`LLM call timed out` / saturación.** Sube `INFERENCE_LLM_TIMEOUT` / `INFERENCE_TIMEOUT_DECAY_FACTOR`, baja `INFERENCE_MAX_CONCURRENCY`, o escala `INFERENCE_WORKER_REPLICAS`. Métrica `inference_worker_in_flight`.
-- **Inference facts vacíos / calidad baja.** `LLM_MODEL` no es instruct (`qwen3-coder` vs `bge`): inference requiere VLM/instruct. Prueba prompt directo con `curl -X POST $LLM_URL/v1/chat/completions`.
+- **Inference facts vacíos / calidad baja.** `INFERENCE_MODEL` no es instruct (`qwen3-coder` vs `bge`): inference requiere un modelo instruct. Prueba prompt directo con `curl -X POST $INFERENCE_BASE_URL/v1/chat/completions`.
+- **Embeddings fallan / `EmbeddingsServiceError`.** Verifica `EMBEDDINGS_BASE_URL` (`POST /v1/embeddings`) y `EMBEDDINGS_MODEL`; no hay fallback local. Un fallo total tumba el job; uno parcial deja `embeddings_degraded: true`.
+- **`image_description` vacío.** Comprueba `IMAGE_BASE_URL`/`IMAGE_MODEL` en image-analyzer (si están vacíos usa el backend OCR) y el endpoint `POST /describe`.
 - **Modelo vision no devuelve OCR.** El endpoint `POST /analyze` (`deploy/docker/image-analyzer`) hace resize `MAX_IMAGE_DIM=1024` y cache `image:{sha}` + prompt+model (§1 p1 fix). Purga `redis-cli DEL "image:<digest>"`.

@@ -166,6 +166,20 @@ setup_volumes() {
 }
 
 # ---------------------------------------------------------------------------
+# 5b. sync_models
+# ---------------------------------------------------------------------------
+sync_models() {
+  log "Loading models into the shared models-data volume ..."
+
+  # The models-sync service copies the extracted models/ tree into the
+  # models-data volume; consumers mount it read-only (see docs/MODELS.md).
+  docker compose --env-file .env -f config/docker-compose.yml \
+    --profile models run --rm models-sync
+
+  log "✓ models-data populated"
+}
+
+# ---------------------------------------------------------------------------
 # 6. start_services
 # ---------------------------------------------------------------------------
 start_services() {
@@ -243,6 +257,7 @@ main() {
   extract_models
   configure_env
   setup_volumes
+  sync_models
   start_services
   wait_for_health
   print_status

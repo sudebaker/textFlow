@@ -1,6 +1,6 @@
 # Makefile for textFlow
 
-.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models docker-build-offline docker-build-models package package-skip-build deploy install-remote
+.PHONY: help run run-orchestrator run-resource run-workers run-all build test lint format clean docker-build docker-push docker-logs setup-models models-sync models-verify docker-build-offline docker-build-models package package-skip-build deploy install-remote
 
 # Variables
 GO_VERSION?=1.22
@@ -110,12 +110,18 @@ test-python: ## Run all Python tests (per-dir pytest loop, see comment)
 	# `import pdb` (class Pdb(bdb.Bdb, cmd.Cmd)) dies with INTERNALERROR on every
 	# dir under cmd/, and the plain `from fixtures import build_pdf` sys.path
 	# imports in extraction tests no longer resolve. Legacy mode keeps both
-	# working. A red dir aborts the loop loudly (no masking); host dep gaps
-	# (pydantic_settings, aio_pika, torch) surface as visible per-dir failures.
-	@for d in cmd/*/tests deploy/docker/vision-ocr/tests; do \
+	# working. Host dep gaps (pydantic_settings, aio_pika, torch) surface as
+	# visible per-dir failures; the loop REPORTS ALL dirs (tally) and exits
+	# nonzero at the end if any dir failed (loud, complete, no masking).
+	@red=0; \
+	for d in cmd/*/tests pkg/*/tests deploy/docker/vision-ocr/tests deploy/docker/image-analyzer/tests; do \
 		echo -e "${YELLOW}--- $$d ---${NC}"; \
-		pytest -v $$d || exit 1; \
-	done
+		pytest -v $$d || { red=1; red_dirs="$$red_dirs $$d"; }; \
+	done; \
+	if [ $$red -ne 0 ]; then \
+		echo -e "${RED}FAILED dirs:$$red_dirs${NC}"; \
+		exit 1; \
+	fi
 
 ***REMOVED***=================
 # Quality
@@ -207,6 +213,14 @@ setup-models: ## Download ML models for air-gapped deployment (~2GB)
 	@echo "This may take several minutes depending on your internet connection."
 	cd deploy/docker && python download_models_offline.py
 	@echo -e "${GREEN}✅ Models ready for air-gapped deployment!${NC}"
+
+models-sync: ## Copy staged models (MODELS_PATH) into the shared models-data volume
+	@echo -e "${YELLOW}Syncing models into the shared volume...${NC}"
+	docker compose -f $(COMPOSE_FILE) --profile models run --rm models-sync
+	@echo -e "${GREEN}✅ models-data ready${NC}"
+
+models-verify: ## Show the contents and sizes of the shared models-data volume
+	docker compose -f $(COMPOSE_FILE) --profile models run --rm models-sync sh -c 'du -sh /dst/*; echo; head -20 /dst/MANIFEST.txt 2>/dev/null || true'
 
 docker-build-models: ## Build images using local models (100% offline after setup)
 	@echo -e "${YELLOW}Building Docker images with local models...${NC}"

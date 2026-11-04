@@ -10,10 +10,10 @@ Antes de comenzar, asegúrate de tener:
    docker compose version
    ```
 
-2. **Modelos pre-descargados** en la carpeta `models/`:
+2. **Modelos pre-descargados** en la carpeta `models/` y sincronizados al volumen
+   compartido con `make models-sync`:
    ```
    models/
-   ├── bge-m3/                    # Embeddings (BAAI/bge-m3)
    ├── deberta-v3-small/          # Tokenizer GLiNER
    ├── gliner-small-v2.1/         # Extractor de entidades
    └── modern-gliner/             # Variante alternativa GLiNER
@@ -41,8 +41,11 @@ RABBITMQ_USER=guest
 RABBITMQ_PASS=guest
 
 # Dispositivo para cálculos (cpu / cuda / auto)
-EMBEDDINGS_DEVICE=cpu
 ENTITIES_DEVICE=cpu
+
+# Embeddings: backend externo OpenAI-compat (sin modelo local)
+EMBEDDINGS_BASE_URL=http://embeddings-backend:8000
+EMBEDDINGS_MODEL=BAAI/bge-m3
 
 # Opcional: URL webhook para notificaciones
 WEBHOOK_URL=

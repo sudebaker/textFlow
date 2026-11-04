@@ -34,7 +34,7 @@ bash install.sh --bundle dist-<previous>/
 docker compose up -d --force-recreate
 ```
 
-`install.sh` hace `docker load` + `tar -xzf models.tar.gz` + `cp config/.env.example` si es preciso y valida (`deploy/package/verify-installation.sh`).
+`install.sh` hace `docker load` + `tar -xzf models.tar.gz` + carga del staging en el volumen `models-data` (`models-sync`) + `cp config/.env.example` si es preciso y valida (`deploy/package/verify-installation.sh`).
 
 ## Bundle & transferencia
 

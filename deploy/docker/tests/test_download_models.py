@@ -3,11 +3,6 @@
 El catálogo solo contiene modelos de fichero local. Los que se resuelven
 por endpoint (embeddings, LLM, vision) NO son descargables aquí.
 """
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import pytest  # noqa: E402
 
 from download_models import (  # noqa: E402

@@ -21,6 +21,7 @@ contenedor (requiere huggingface_hub). No lance a mano salvo para depurar.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STAGING_DIR = PROJECT_ROOT / "models"
 HF_CACHE_DIR = STAGING_DIR / "huggingface_cache"
+ASSETS_DIR = PROJECT_ROOT / "deploy" / "models-assets"
 
 DOWNLOAD_IMAGE = "python:3.10-slim"
 HF_HUB_PIN = "huggingface_hub==2.1.1"
@@ -191,6 +193,111 @@ def dispatch_hf_in_container(jobs: list[str]) -> bool:
     return subprocess.call(cmd) == 0
 
 
+# --------------------------- ensamblado staging ----------------------------
+
+
+def _latest_complete_snapshot(repo: str, required: list[str]) -> Path:
+    """Snapshot más reciente que contenga todos los ficheros requeridos."""
+    snapshots = HF_CACHE_DIR / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots"
+    if not snapshots.is_dir():
+        sys.exit(f"Snapshot de {repo} ausente en staging. Ejecuta make setup-models.")
+    for snap in sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if all((snap / f).is_file() for f in required):
+            return snap
+    sys.exit(
+        f"Snapshot de {repo} incompleto (faltan {', '.join(required)}). "
+        "Ejecuta make setup-models para re-descargarlo."
+    )
+
+
+def _copy(src: Path, dst: Path, follow: bool = True) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_resolve(src) if follow else src, dst)
+
+
+def _resolve(p: Path) -> Path:
+    """Resuelve symlinks dentro del arbol HF cache (CAS: blobs/<shard>)."""
+    return Path(os.path.realpath(p))
+
+
+def assemble_gliner() -> None:
+    """models/gliner-small-v2.1/: assets vendidos + pesos del snapshot urchade."""
+    snap = _latest_complete_snapshot("urchade/gliner_small-v2.1", ["pytorch_model.bin"])
+    flat = STAGING_DIR / "gliner-small-v2.1"
+    flat.mkdir(parents=True, exist_ok=True)
+    for f in (ASSETS_DIR / "gliner-small-v2.1").iterdir():
+        shutil.copy(f, flat / f.name)
+    _copy(snap / "pytorch_model.bin", flat / "pytorch_model.bin")
+    print(f"✓ gliner-small-v2.1/: dir plano listo ({flat})")
+
+
+def assemble_deberta() -> None:
+    """models/deberta-v3-small/: ficheros del snapshot + special_tokens_map vendido."""
+    snap = _latest_complete_snapshot(
+        "microsoft/deberta-v3-small",
+        ["config.json", "spm.model", "tokenizer_config.json", "pytorch_model.bin"],
+    )
+    flat = STAGING_DIR / "deberta-v3-small"
+    flat.mkdir(parents=True, exist_ok=True)
+    for f in ("config.json", "spm.model", "tokenizer_config.json", "pytorch_model.bin"):
+        _copy(snap / f, flat / f)
+    shutil.copy(ASSETS_DIR / "deberta-v3-small" / "special_tokens_map.json",
+                flat / "special_tokens_map.json")
+    print(f"✓ deberta-v3-small/: dir plano listo ({flat})")
+
+
+def _fix_dangling_symlinks(dst: Path, source_root: Path) -> None:
+    """Trae del arbol fuente los ficheros reales de symlinks colgados."""
+    for _ in range(4):
+        pending = 0
+        for root, _dirs, files in os.walk(dst):
+            for name in files:
+                link = Path(root) / name
+                if not link.is_symlink():
+                    continue
+                target = link.parent / os.readlink(link)
+                if target.exists():
+                    continue
+                src = source_root / os.path.relpath(target, dst)
+                if src.is_file():
+                    link.unlink()
+                    shutil.copy(src, link)
+                else:
+                    pending += 1
+        if pending == 0:
+            return
+
+
+def seed_whisper() -> None:
+    """models/whisper/: hub dir de faster-whisper + shards CAS que resuelvan.
+
+    faster-whisper resuelve su modelo con cache_dir=download_root, así que
+    necesita el layout hub-style bajo models/whisper/. El CAS de
+    huggingface_hub 2.x guarda blobs grandes en shards compartidos fuera del
+    dir por-modelo; copia el árbol y trae cada shard colgado.
+    """
+    repo = "Systran/faster-whisper-large-v2"
+    hub_dir = HF_CACHE_DIR / "hub" / f"models--{repo.replace('/', '--')}"
+    if not hub_dir.is_dir():
+        sys.exit(f"Snapshot de {repo} ausente. Ejecuta make setup-models.")
+    dst = STAGING_DIR / "whisper" / hub_dir.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_dir():
+        shutil.rmtree(dst)
+    shutil.copytree(hub_dir, dst, symlinks=True)
+    _fix_dangling_symlinks(dst, hub_dir)
+    print(f"✓ whisper/: seed listo ({dst.parent})")
+
+
+def run_assemblers(jobs: list[str]) -> None:
+    """Ensambla los dirs planos exigidos por los workers (host, stdlib)."""
+    if "gliner" in jobs:
+        assemble_gliner()
+        assemble_deberta()
+    if "whisper" in jobs:
+        seed_whisper()
+
+
 # --------------------------- orquestador -----------------------------------
 
 
@@ -240,7 +347,11 @@ def main(argv: list[str]) -> int:
     hf_selected = [j for j in jobs if j in HF_JOBS]
     if hf_selected:
         print(f"Descargando HF en contenedor ({DOWNLOAD_IMAGE}): {', '.join(hf_selected)}")
-        ok &= dispatch_hf_in_container(hf_selected)
+        if not dispatch_hf_in_container(hf_selected):
+            return 1
+        ok &= True
+
+    run_assemblers([j for j in jobs if j != "docling"])
 
     if "docling" in jobs:
         ok &= run_docling()

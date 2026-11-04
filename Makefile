@@ -208,11 +208,13 @@ infra-down: ## Stop infrastructure
 # Air-Gapped Deployment
 ***REMOVED***=================
 
-setup-models: ## Download ML models for air-gapped deployment (~2GB)
-	@echo -e "${YELLOW}Downloading ML models (one-time setup)...${NC}"
-	@echo "This may take several minutes depending on your internet connection."
-	cd deploy/docker && python download_models_offline.py
-	@echo -e "${GREEN}✅ Models ready for air-gapped deployment!${NC}"
+setup-models: ## Download staging models — choose interactively or MODELS="gliner whisper"
+	@echo -e "${YELLOW}Model staging (interactive picker; MODELS to select; MODELS=all)${NC}"
+	python3 deploy/docker/download_models.py $(if $(MODELS),--models "$(MODELS)")
+	@echo -e "${GREEN}✅ staging models ready${NC}"
+
+models-list: ## Show the staging model catalog (local vs endpoint-resolved)
+	@python3 deploy/docker/download_models.py --list
 
 models-sync: ## Copy staged models (MODELS_PATH) into the shared models-data volume
 	@echo -e "${YELLOW}Syncing models into the shared volume...${NC}"

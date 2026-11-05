@@ -93,9 +93,9 @@ Notas:
 ### 1. BAAI/bge-m3 (remoto)
 
 - Ya **no** se monta en `embeddings-worker` ni en `completion-worker`.
-- Backend: servicio OpenAI-compatible `POST /v1/embeddings` en `EMBEDDINGS_BASE_URL` con `EMBEDDINGS_MODEL` (por defecto `BAAI/bge-m3`, 1024 dimensiones).
+- Backend: servicio OpenAI-compatible `POST /v1/embeddings` en `EMBEDDINGS_BASE_URL` con `EMBEDDINGS_MODEL` — **sin default en el contract agnóstico**: tú proves el modelo (p.ej. `BAAI/bge-m3`, 1024 dims; u `nomic-embed-text` en Ollama, 768 dims).
 - Air-gapped: empaquetar y desplegar el serving (vLLM/TEI) por separado; el bundle de textFlow solo contiene la configuración.
-- Validación: contract check de 1024 dimensiones contra el endpoint antes del despliegue.
+- Validación: contract check contra `EMBEDDINGS_DIMENSION` (`.env`) — el doctor comprueba que la respuesta real del endpoint coincide con la dimensión declarada (no fija 1024).
 
 ### 2. urchade/gliner_small-v2.1
 

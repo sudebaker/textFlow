@@ -91,10 +91,10 @@ Los modelos se montan desde el volumen compartido `models-data`
 | Variable | Default | Servicio | Notas |
 |---|---|---|---|
 | `EMBEDDINGS_BASE_URL` | — (requerido) | embeddings-worker, completion-worker | OpenAI-compat `POST /v1/embeddings`; sin fallback local |
-| `EMBEDDINGS_MODEL` | `BAAI/bge-m3` | embeddings/completion-worker | 1024 dimensiones |
+| `EMBEDDINGS_MODEL` | — (requerido) | embeddings/completion-worker | agnóstico: el modelo que sirvas (p.ej. `BAAI/bge-m3` 1024 dims u `nomic-embed-text` 768) |
 | `EMBEDDINGS_TIMEOUT / MAX_RETRIES / BATCH_SIZE` | `30 / 3 / 32` | cliente | reintentos con backoff |
 | `EMBEDDINGS_CACHE_TTL_SECONDS` | `604800` (7d) | cliente | caché `emb:{sha256(model+text)}` |
-| `EMBEDDINGS_DIMENSION` | `1024` | cliente | validación de vectores |
+| `EMBEDDINGS_DIMENSION` | — (requerido) | cliente | validación de vectores: debe coincidir con lo que tu backend devuelve |
 
 ## RabbitMQ / Recursos
 

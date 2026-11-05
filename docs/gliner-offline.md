@@ -95,7 +95,12 @@ Cuando GLiNER carga el tokenizador, transformers ejecuta `AutoTokenizer.from_pre
 
 ## Implementación Final (Estrategia B)
 
-### 1. Script de descarga: `deploy/docker/download_models_offline.py`
+### 1. Script de descarga: `deploy/docker/download_models.py`
+
+> **Nota (2026-11):** el script original (`download_models_offline.py`) fue
+> sustituido por `download_models.py` (catálogo elegible vía
+> `MODELS=gliner make setup-models`, con assets vendidos y `MANIFEST.txt`
+> sha256). El mecanismo de cache HF que describe esta sección es el mismo.
 
 ```python
 from huggingface_hub import snapshot_download
@@ -313,7 +318,7 @@ Entities completed for job: 1770636839887349004 in 724.36s, found 64 entities
 
 ```bash
 # 1. Descargar modelos con estructura correcta
-python3 deploy/docker/download_models_offline.py
+MODELS=gliner make setup-models
 
 # 2. Verificar estructura
 ls -R models/huggingface_cache/hub/
@@ -365,7 +370,7 @@ docker run --rm docker-entities-worker ls -la /home/app/.cache/huggingface/hub/
 Re-ejecutar el script de descarga para regenerar la estructura de caché:
 
 ```bash
-python3 deploy/docker/download_models_offline.py
+MODELS=gliner make setup-models
 ```
 
 ### Error: "We couldn't connect to 'https://huggingface.co'"
@@ -436,7 +441,7 @@ docker logs ia-text-entities-worker 2>&1 | grep "ERROR"
 
 | Archivo | Propósito |
 |---------|-----------|
-| `deploy/docker/download_models_offline.py` | Script para descargar modelos con estructura de caché HF |
+| `deploy/docker/download_models.py` | Staging de modelos (catálogo `gliner`: `MODELS=gliner make setup-models`) |
 | `cmd/entities-worker/worker.py` | Worker con env vars antes de imports y load_model() simplificado |
 | `cmd/entities-worker/Dockerfile` | Variables de entorno + COPY de caché HF |
 | `cmd/entities-worker/entrypoint.sh` | Pre-flight checks para modo offline |

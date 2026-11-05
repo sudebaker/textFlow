@@ -17,14 +17,14 @@
 ## Modelos
 
 - **`HF_HUB_OFFLINE=1` pero intenta acceder a Hugging Face.** Algún env quedó en `false` o `local_files_only=False` en el loader. Busca el modelo faltante en `docker compose logs entities-worker | grep -i "http\|hub"`.
-- **`Tokenizer incorrecto / modelo corrupto`.** Valida `MODEL_REQUIRED_FILE_GROUPS` en `download_models_offline.py:_is_snapshot_complete`. Re-descarga: `rm -rf models/huggingface_cache && make setup-models`.
+- **`Tokenizer incorrecto / modelo corrupto`.** Valida los archivos `required` del catálogo (`deploy/docker/download_models.py`, `snapshot_complete` + `models/MANIFEST.txt` sha256). Re-descarga: `MODELS=<gliner|whisper|docling> make setup-models`.
 - **`No such file: /models/whisper/large-v2/model.bin`.** `WHISPER_MODEL` no coincide con el repo descargado (`Systran/faster-whisper-large-v2`). Alinea `WHISPER_MODEL` ↔ `models/whisper/<size>` o re-descarga.
 - **Volumen sin modelos.** Ejecuta `make models-sync` (copia el staging `MODELS_PATH` al volumen `models-data`) y verifica con `make models-verify` / `docker inspect textflow-docling | grep -A2 Mounts`.
 
 ## Docling
 
 - **Fallback a CPU aunque GPU esté disponible.** Imagen sin CUDA (`docling-serve:latest` vs `cu128-0.12.0`). Usa el override GPU y confirma `docker inspect docling | grep -i cuda`.
-- **Artifacts ausentes (`FileNotFoundError` en docling).** `models/docling/` no existe y el mount apunta a vacío. Ejecuta `download_models_offline.py:download_docling_models` o usa solo la imagen CUDA bundled.
+- **Artifacts ausentes (`FileNotFoundError` en docling).** `models/docling/` no existe y el mount apunta a vacío. Ejecuta `MODELS=docling make setup-models` (extrae los artifacts desde la imagen con `deploy/scripts/extract_docling.sh`).
 - **OCR no produce texto en escaneado.** `DOCLING_DO_OCR=false` por defecto — escanéalo con `ocr` explícito o activa `DOCLING_DO_OCR=true` para ese profile. `DOCLING_OCR_ENGINE=rapidocr` con backend Torch solo si hay GPU (§14).
 - **`exiftool` timeout 10s / no instalado.** `extract_metadata_deep` ya degrada silenciosamente (fast metadata preservado). Verifica `exiftool -ver` en `extraction-worker`.
 

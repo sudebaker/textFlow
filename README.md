@@ -27,6 +27,9 @@ make bootstrap
 
 Si `make doctor` falla, te dice exactamente qué arreglar (`.env`, modelos que faltan, URL con `/v1` de más...). MiniCPM/vision y el modelo de embeddings son endpoint-resolved: NO se descargan aquí.
 
+> **GPU (dev, opcional):** la base compose es CPU-only. En un host con NVIDIA añade el overlay para Docling/workers en CUDA:
+> `docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.gpu.yml up -d` — ver [`docs/GPU.md`](docs/GPU.md).
+
 ---
 
 ## 📋 Arquitectura

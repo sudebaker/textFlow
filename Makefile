@@ -20,9 +20,9 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
 
-***REMOVED***=================
+# ==================================================================
 # Development
-***REMOVED***=================
+# ==================================================================
 
 run-orchestrator: ## Run orchestrator locally
 	@echo -e "${YELLOW}Running orchestrator on port 8080...${NC}"
@@ -61,9 +61,9 @@ run-all: ## Run all services locally (requires docker-compose infrastructure)
 	@$(MAKE) run-resource &
 	@$(MAKE) run-workers
 
-***REMOVED***=================
+# ==================================================================
 # Docker
-***REMOVED***=================
+# ==================================================================
 
 docker-build: ## Build all Docker images
 	@echo -e "${YELLOW}Building all Docker images...${NC}"
@@ -85,9 +85,9 @@ docker-down: ## Stop all services
 	@echo -e "${YELLOW}Stopping all services...${NC}"
 	$(COMPOSE) -f $(COMPOSE_FILE) down
 
-***REMOVED***=================
+# ==================================================================
 # Testing
-***REMOVED***=================
+# ==================================================================
 
 test: ## Run all Go tests
 	@echo -e "${YELLOW}Running Go tests...${NC}"
@@ -125,9 +125,9 @@ test-python: ## Run all Python tests (per-dir pytest loop, see comment)
 		exit 1; \
 	fi
 
-***REMOVED***=================
+# ==================================================================
 # Quality
-***REMOVED***=================
+# ==================================================================
 
 lint: ## Run Go linter (requires golangci-lint)
 	@echo -e "${YELLOW}Running Go linter...${NC}"
@@ -144,9 +144,9 @@ format: ## Format Go and Python code
 	black cmd/*/ --line-length 120
 	isort cmd/*/ --profile black
 
-***REMOVED***=================
+# ==================================================================
 # Build
-***REMOVED***=================
+# ==================================================================
 
 build: ## Build all binaries
 	@echo -e "${YELLOW}Building all binaries...${NC}"
@@ -170,9 +170,9 @@ build-client: ## Build tools/client binary
 	@mkdir -p bin
 	cd tools/client && go build -o ../../bin/client .
 
-***REMOVED***=================
+# ==================================================================
 # Dependencies
-***REMOVED***=================
+# ==================================================================
 
 deps: ## Install Go dependencies
 	@echo -e "${YELLOW}Installing Go dependencies...${NC}"
@@ -184,9 +184,9 @@ deps-python: ## Install Python dependencies
 	pip install -r cmd/embeddings-worker/requirements.txt
 	pip install -r cmd/entities-worker/requirements.txt
 
-***REMOVED***=================
+# ==================================================================
 # Clean
-***REMOVED***=================
+# ==================================================================
 
 clean: ## Clean build artifacts
 	@echo -e "${YELLOW}Cleaning build artifacts...${NC}"
@@ -194,9 +194,9 @@ clean: ## Clean build artifacts
 	rm -f coverage.out coverage.html
 	go clean -cache
 
-***REMOVED***=================
+# ==================================================================
 # Docker Infrastructure
-***REMOVED***=================
+# ==================================================================
 
 infra-up: ## Start infrastructure (RabbitMQ, Redis, Docling)
 	@echo -e "${YELLOW}Starting infrastructure...${NC}"
@@ -206,9 +206,9 @@ infra-down: ## Stop infrastructure
 	@echo -e "${YELLOW}Stopping infrastructure...${NC}"
 	$(COMPOSE) -f $(COMPOSE_FILE) down rabbitmq redis docling
 
-***REMOVED***=================
+# ==================================================================
 # Air-Gapped Deployment
-***REMOVED***=================
+# ==================================================================
 
 setup-models: ## Download staging models — choose interactively or MODELS="gliner whisper"
 	@echo -e "${YELLOW}Model staging (interactive picker; MODELS to select; MODELS=all)${NC}"
@@ -276,9 +276,9 @@ docker-build-models: ## Build images using local models (100% offline after setu
 docker-build-offline: setup-models docker-build-models
 	@echo -e "${GREEN}🎉 Build complete! You can now deploy without internet.${NC}"
 
-***REMOVED***=================
+# ==================================================================
 # Air-Gapped Packaging & Deployment
-***REMOVED***=================
+# ==================================================================
 
 package: ## Build images and create air-gapped deployment bundle in dist/
 	@echo -e "${YELLOW}Packaging deployment bundle...${NC}"
@@ -294,11 +294,11 @@ deploy: ## Transfer bundle to target via rsync (requires HOST=<ip>)
 
 install-remote: ## Run install.sh on target machine (requires HOST=<ip>)
 	@test -n "$(HOST)" || (echo "ERROR: HOST is required. Usage: make install-remote HOST=10.0.0.5"; exit 1)
-	@ssh $(HOST) "bash ~/ia-text-deployment/install.sh"
+	@ssh $(HOST) "bash ~/textflow-deployment/install.sh"
 
-***REMOVED***=================
+# ==================================================================
 # Documentation
-***REMOVED***=================
+# ==================================================================
 
 docs: ## Generate documentation
 	@echo -e "${YELLOW}Generating documentation...${NC}"

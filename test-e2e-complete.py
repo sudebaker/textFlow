@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-End-to-End Test for IA Text Orchestrator
+End-to-End Test for textFlow
 Tests complete document processing pipeline from upload to result retrieval
 """
 
@@ -389,7 +389,7 @@ def save_results_to_file(job_id: str, results: Dict[str, Any]) -> bool:
 
 def main():
     """Main test execution."""
-    print_section("🧪 IA Text Orchestrator - End-to-End Test")
+    print_section("🧪 textFlow - End-to-End Test")
 
     print("Test configuration:")
     print(f"   Orchestrator: {ORCHESTRATOR_URL}")

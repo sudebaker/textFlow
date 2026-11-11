@@ -19,7 +19,7 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 ### Fixed
 - CI roto por `actions/upload-artifact@v3` deprecated
 - Bare `except:` en tests e2e y docling-server
-- URL incorrecta en README (`anomalyco/textflow` → `sudebaker/textFlow`)
+- URL incorrecta en README (repositorio público de textFlow)
 
 ## [0.1.0] - 2026-07-20
 

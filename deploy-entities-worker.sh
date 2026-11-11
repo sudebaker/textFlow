@@ -29,18 +29,18 @@ echo "   - DeBERTa: models/huggingface_cache/hub/models--microsoft--deberta-v3-s
 # Stop current container
 echo ""
 echo "🛑 Stopping current entities-worker..."
-docker compose -f "$COMPOSE_FILE" stop entities-worker 2>/dev/null || true
-docker compose -f "$COMPOSE_FILE" rm -f entities-worker 2>/dev/null || true
+docker compose --env-file .env -f "$COMPOSE_FILE" stop entities-worker 2>/dev/null || true
+docker compose --env-file .env -f "$COMPOSE_FILE" rm -f entities-worker 2>/dev/null || true
 
 # Build new image
 echo ""
 echo "🔨 Building new entities-worker image..."
-docker compose -f "$COMPOSE_FILE" build entities-worker
+docker compose --env-file .env -f "$COMPOSE_FILE" build entities-worker
 
 # Start new container
 echo ""
 echo "🚀 Starting entities-worker..."
-docker compose -f "$COMPOSE_FILE" up -d entities-worker
+docker compose --env-file .env -f "$COMPOSE_FILE" up -d entities-worker
 
 # Wait for startup
 echo ""
@@ -57,13 +57,13 @@ echo ""
 echo "================================================================================"
 echo "📋 Container logs (last 50 lines):"
 echo "================================================================================"
-docker logs --tail 50 ia-text-entities-worker
+docker logs --tail 50 textflow-entities-worker
 
 echo ""
 echo "================================================================================"
 echo "✅ Deployment complete"
 echo "================================================================================"
 echo ""
-echo "Monitor logs with: docker logs -f ia-text-entities-worker"
+echo "Monitor logs with: docker logs -f textflow-entities-worker"
 echo "Check status with: docker ps | grep entities-worker"
 echo ""

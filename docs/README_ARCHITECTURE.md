@@ -2,7 +2,11 @@
 
 ## System Overview
 
-Event-driven microservices system for extracting and processing documents. Orchestrates extraction, metadata, embeddings, entities, and optional inference extraction from PDFs, DOCX, and other document formats. Air-gapped capable (all ML models run locally).
+Event-driven microservices system for extracting and processing documents. Orchestrates
+extraction, metadata, embeddings, entities and inferences for PDFs, DOCX and other
+document formats. Air-gapped capable: file-based ML models are mounted
+locally, while embeddings, inference and vision back ends are operator-provided
+OpenAI-compatible endpoints.
 
 ## Key Components
 
@@ -12,12 +16,14 @@ Event-driven microservices system for extracting and processing documents. Orche
 - **Embeddings Worker** (Python): remote `/v1/embeddings` client (`EMBEDDINGS_*`)
 - **Entities Worker** (Python): GLiNER NER extraction
 - **Metadata Worker** (Python): Lightweight text analytics
-- **Inference Worker** (Python): Optional LLM-based fact extraction
+- **Inference Worker** (Python): LLM-based fact extraction (part of both profiles)
 - **Completion Worker** (Python): Results aggregation, webhook notifications
+- **Audio Worker** (Python): Whisper client (transcription)
+- **Image Worker** (Python): image-analyzer client (OCR + optional description)
 - **Redis**: State persistence, 24h TTL
 - **RabbitMQ**: Async message queuing
 - **Docling**: Document extraction service (optional, self-hosted)
-- **vLLM**: LLM serving (optional, for inferences)
+- **LLM backend**: Operator-provided OpenAI-compatible serving for inferences and vision
 
 ## Architecture Diagram
 
@@ -35,17 +41,17 @@ graph TB
     ExtractionWorker -->|publish| Q_Embed["RabbitMQ<br/>embeddings"]
     ExtractionWorker -->|publish| Q_Ent["RabbitMQ<br/>entities"]
     ExtractionWorker -->|publish| Q_Meta["RabbitMQ<br/>metadata"]
-    ExtractionWorker -->|publish?| Q_Inf["RabbitMQ<br/>inferences"]
+    ExtractionWorker -->|publish| Q_Inf["RabbitMQ<br/>inferences"]
     
     Q_Embed --> EmbeddingsWorker["Embeddings Worker<br/>(remote /v1/embeddings)"]
     Q_Ent --> EntitiesWorker["Entities Worker<br/>(GLiNER)"]
     Q_Meta --> MetadataWorker["Metadata Worker<br/>(text analytics)"]
-    Q_Inf --> InferenceWorker["Inference Worker<br/>(vLLM)"]
+    Q_Inf --> InferenceWorker["Inference Worker<br/>(LLM HTTP)"]
     
     EmbeddingsWorker -->|store embeddings ref (FS)| Redis
     EntitiesWorker -->|store entities| Redis
     MetadataWorker -->|store metadata| Redis
-    InferenceWorker -->|vLLM REST| vLLM["vLLM<br/>(optional)"]
+    InferenceWorker -->|/v1/chat/completions| LLM["LLM backend<br/>(operator-provided)"]
     InferenceWorker -->|store inferences| Redis
     
     Redis -->|pub/sub: job:events| CompletionWorker["Completion Worker<br/>(aggregator)"]
@@ -71,7 +77,7 @@ The typical document processing flow:
 1. **Upload**: Client performs `POST /documents` with `document_base64` or `document_url`
 2. **Creation**: Orchestrator creates job, stores in Redis, publishes to extraction queue
 3. **Extraction**: Extraction worker downloads/decodes, extracts text, chunks it, classifies source, publishes to embeddings/entities/metadata/inferences queues
-4. **Processing**: 4 workers (or 3 if no inferences) process in parallel, store results in Redis (text/chunks/embeddings as `sha256:` refs pointing to the FS artifact store; entities/metadata as raw values)
+4. **Processing**: the workers selected by the profile process in parallel and store results in Redis (text/chunks/embeddings as `sha256:` refs pointing to the FS artifact store; entities/metadata as raw values)
 5. **Completion**: CompletionWorker watches Redis pub/sub, when all steps done, finalizes job, saves to file, sends webhook
 
 ## Redis Key Schema
@@ -96,16 +102,14 @@ Data Results (raw in Redis):
 
 Processing State:
   orchestrator:job:abc123:steps → {"extraction": "completed", "embeddings": "completed", ...}
-  orchestrator:job:abc123:features → JSON array (requested features)
+  orchestrator:job:abc123:features → JSON array (optional extras)
 
 Results:
   :results no longer lives in Redis; the completion worker writes aggregated
   results to results-data/{jobID}.json
 
-Optional:
-  orchestrator:job:abc123:inferences → JSON array (if requested)
-  orchestrator:job:abc123:llm_model → "gpt-3.5-turbo"
-  orchestrator:job:abc123:llm_max_len → 512
+Inferences:
+  orchestrator:job:abc123:inferences → JSON array
 ```
 
 Redis keys (refs, control) expire after **24 hours** (configurable via `JOB_TTL` env var); FS artifact store blobs do not expire.
@@ -115,7 +119,7 @@ Redis keys (refs, control) expire after **24 hours** (configurable via `JOB_TTL`
 Key configuration variables:
 
 - `REDIS_URL`: Redis connection string (default: `redis://localhost:6379`)
-- `RABBITMQ_URL`: RabbitMQ AMQP URL (default: `amqp://localhost:5672/`)
+- `RABBITMQ_URL`: RabbitMQ AMQP URL (required)
 - `DOCLING_URL`: Docling service endpoint (default: `http://docling:5001`)
 - `INFERENCE_BASE_URL` / `INFERENCE_MODEL`: OpenAI-compatible inference backend (required; the worker fails at startup if unset)
 - `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_MODEL`: OpenAI-compatible embeddings backend (required; no local fallback)
@@ -124,13 +128,13 @@ Key configuration variables:
 - `JOB_TIMEOUT`: Job processing timeout (default: `60m`)
 - `JOB_TTL`: Redis key expiration (default: `24h`)
 - `WEBHOOK_URL`: Optional client webhook for notifications
-- `HF_HUB_OFFLINE`: Set to `1` for air-gapped mode (entities worker)
+- `HF_HUB_OFFLINE`: Set to `1` for air-gapped mode (model-loading services)
 - `TRANSFORMERS_OFFLINE`: Set to `1` for air-gapped mode
 
 ## Error Handling & Resilience
 
 ### Circuit Breaker Pattern
-External service failures (vLLM, Docling) are protected by circuit breaker:
+External service failures (LLM backends, Docling) are protected by circuit breaker:
 - **Closed**: Normal operation
 - **Open**: Too many failures, block all requests
 - **Half-Open**: Testing probes after timeout
@@ -144,11 +148,11 @@ Exponential backoff applied to transient failures:
 - Max delay: 10s
 - Max retries: 3
 
-Used by: Pipeline (orchestration failures), workers (network hiccups).
+Used by: orchestrator (broker failures), workers (network hiccups).
 
 ### Graceful Degradation
 If optional services unavailable:
-- vLLM/Ollama unavailable → Inferences skipped, job completes without inferences
+- Inference backend unavailable → the inference stage fails or degrades; check the worker logs and `INFERENCE_*` configuration
 - Webhook URL not set → Notification optional, no error
 - Docling temporarily down → Retry with circuit breaker
 

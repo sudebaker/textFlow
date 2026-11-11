@@ -2,7 +2,7 @@
 
 **Idioma**: Responde siempre en español.
 
-Event-driven microservices: Go orchestrator + Python workers (RabbitMQ, Redis, Unstructured API).
+Event-driven microservices: Go orchestrator + Python workers (RabbitMQ, Redis, Docling).
 
 ---
 
@@ -136,7 +136,7 @@ pkg/              # shared: logging/, metrics/, events_python.py, worker_common/
 | resource-manager | Go | 9090 | GPU monitoring |
 | embeddings-worker | Python | - | cliente remoto `/v1/embeddings` (`EMBEDDINGS_*`), sin modelo local |
 | entities-worker | Python | - | GLiNER ⚠️ offline |
-| extraction-worker | Python | - | Unstructured API |
+| extraction-worker | Python | - | Docling (extracción de documentos) |
 
 **Redis keys:** control/raw: `orchestrator:job:{id}:{status|steps|features|error|entities|metadata|entities_raw}` + refs `sha256:<hex>` para `:text|:chunks|:embeddings|:inference_embeddings` (blobs en FS artifact store); resultados en `results-data/{jobID}.json`.
 
@@ -226,7 +226,7 @@ llamada LLM pero NO hay `ThreadPoolExecutor` tocando pika. El `ThreadPoolExecuto
 (reservado como `self._executor`, sin uso) y el rediseño completo del loop pika (acks vía
 `add_callback_threadsafe`) quedan para los benchmarks de la Fase 2 (W6), cuando haya GPU +
 modelos (bge-m3, deberta, gliner) + vLLM + infra arriba, para medir antes/después. Ver
-`docs/plan-adaptive-flow-control.md`.
+`cmd/inference-worker/adaptive_semaphore.py` y `docs/ARCHITECTURE.md`.
 
 ---
 

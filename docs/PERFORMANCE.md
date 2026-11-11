@@ -13,7 +13,7 @@
 
 ## Dónde medir
 
-- Grafana `textflow-overview` (Fase 3 T3.2): panels `Queue time P50/P95`, `Job duration P50/P95`, `Stage duration P50/P95` (`histogram_quantile(0.95, sum by(le) rate(ia_text_job_duration_seconds_bucket[5m]))` etc.), `Throughput`, `Errors`, `Queue depth` (`ia_text_queue_depth`, `consumer_lag`).
+- Grafana `textflow-overview`: panels `Queue time P50/P95`, `Job duration P50/P95`, `Stage duration P50/P95` (`histogram_quantile(0.95, sum by(le) rate(ia_text_job_duration_seconds_bucket[5m]))` etc.), `Throughput`, `Errors`, `Queue depth` (`ia_text_queue_depth`, `consumer_lag`).
 - Prometheus scrape: orchestrator `8080/metrics`, workers `8001-8006/metrics`, `redis-exporter:9121`, `rabbitmq:15692/metrics`. Alertas `deploy/prometheus/alerts.yml` (queue saturada, jobs stuck, high failure rate).
 - Perfiles: `?profile=rag|full` (default `full`). `rag = entry + chunking + embeddings + inferences`; `full = rag + entities + metadata` (+ descripción de imagen). Aceptados por fichero y por documento en batch.
 
@@ -37,4 +37,4 @@ Medir `pages/sec`, `queue time`, `conversion time`, `P50/P95`, `GPU util`, `VRAM
 
 ## Evitar regresiones
 
-Ninguna optimización (streaming hash T4.1, adaptive inference T3, `TORCH_COMPILE=true`) se considera terminada hasta reproducir P50/P95 estables + `make test` verde en el hardware de producción.
+Ninguna optimización se considera terminada hasta reproducir P50/P95 estables y `make test` en verde sobre el hardware de producción.

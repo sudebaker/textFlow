@@ -444,10 +444,10 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/swagger/doc.json",
     contact={
-        "name": "GLiNER Service",
-        "url": "https://github.com/amphora/journalist-agent",
+        "name": "textFlow",
+        "url": "https://github.com/sudebaker/textFlow",
     },
-    license_info={"name": "MIT"},
+    license_info={"name": "Apache-2.0"},
     servers=[{"url": "http://localhost:8080", "description": "Local"}],
 )
 

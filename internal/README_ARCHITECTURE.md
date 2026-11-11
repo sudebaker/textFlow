@@ -2,7 +2,7 @@
 
 ## Module Purpose
 
-Core Go infrastructure: Broker abstraction, caching, config, health checks, middleware, models, pipeline orchestration, Redis client, event bus. 
+Core Go infrastructure: broker abstraction, caching, config, health checks, middleware, models, Redis client and event bus.
 
 No business logic is present in this module—all components are pure infrastructure supporting the orchestrator and external services.
 
@@ -15,9 +15,7 @@ No business logic is present in this module—all components are pure infrastruc
 - **health/**: Health check endpoints for Redis, RabbitMQ, circuit breaker state
 - **middleware/**: Circuit breaker pattern, retry policy with exponential backoff
 - **models/**: Data structures (Job, Entity, Chunk, Embedding, etc.)
-- **pipeline/**: Orchestration logic (fan-out to workers, poll for completion)
 - **redis/**: Redis client with 30+ methods for state management
-- **metrics/**: Prometheus metric registration and collection
 
 ## Dependency Graph
 
@@ -34,11 +32,9 @@ graph TB
     Models["models<br/>(Job, Entity, Chunk, etc.)"]
     EventBus["events<br/>(pub/sub)"]
     
-    Redis --> Pipeline
-    Broker --> Pipeline
-    EventBus --> Pipeline
-    
-    Pipeline["pipeline<br/>(orchestrator)"]
+    Redis --> Orchestrator["orchestrator<br/>(cmd/orchestrator)"]
+    Broker --> Orchestrator
+    EventBus --> Orchestrator
     
     Middleware["middleware<br/>(circuit, retry)"]
     Cache["cache<br/>(content cache)"]
@@ -47,13 +43,13 @@ graph TB
     
     Redis --> Health
     Broker --> Health
-    Middleware -.->|used by| Pipeline
+    Middleware -.->|used by| Orchestrator
     Middleware -.->|used by| Broker
     
     style Config fill:#F39C12,stroke:#C87F0A,color:#fff
     style Redis fill:#E74C3C,stroke:#A73B2D,color:#fff
     style Broker fill:#E74C3C,stroke:#A73B2D,color:#fff
-    style Pipeline fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style Orchestrator fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style Models fill:#95A5A6,stroke:#7F8C8D,color:#fff
     style EventBus fill:#3498DB,stroke:#2980B9,color:#fff
     style Middleware fill:#F39C12,stroke:#C87F0A,color:#fff
@@ -208,7 +204,7 @@ Total max time: ~7 seconds
 ```
 
 Used by:
-- Pipeline: On broker publish failures
+- Orchestrator: On broker publish failures
 - Workers: On network timeouts
 - Health checks: On connectivity issues
 
@@ -452,10 +448,6 @@ Loaded via `config.Load()` at startup, validated for required fields.
 Unit tests per package:
 - `internal/redis/*_test.go`: Redis operations (mocked Redis)
 - `internal/broker/*_test.go`: Message publishing (mocked RabbitMQ)
-- `internal/pipeline/*_test.go`: Orchestration logic
 - `internal/middleware/*_test.go`: Circuit breaker state transitions
-
-Integration tests:
-- `internal/integration/...`: Full stack (real Redis + RabbitMQ)
 
 Run via: `make test`, `make test-coverage`

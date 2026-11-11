@@ -19,7 +19,7 @@ extraction-worker (or audio-worker / image-worker for multimodal)
 RabbitMQ (embeddings | entities | metadata | [inferences])
   ↓
 embeddings-worker (POST /v1/embeddings) → Redis :embeddings (msgpack blob via FS, noeviction)
-entities-worker (GLiNER + deberta backbone + regex parallel) → Redis :entities_raw + fan-out inferences if enabled
+entities-worker (GLiNER + deberta backbone + regex parallel) → Redis :entities_raw
 metadata-worker (text analytics) → Redis :metadata:text
 inference-worker (vLLM/Ollama OpenAI-compat) → Redis :micro_inferences (per-chunk grouped JSON)
   ↓  EventBus pub/sub
@@ -38,19 +38,19 @@ El fast path documental es **intacto** (salida byte-idéntica, golden test): tra
 - **Document-level gate** (señales baratas del blob: chars/página, ratio placeholders, ratio basura) → PASS devuelve la salida actual sin render.
 - **Slow path** solo en SUSPECT: materializa páginas con `pypdfium2` (bytes ya en memoria, sin re-descarga), gate por página (texto por página derivado de `document.json_content.texts[].prov[].page_no`, `to_formats=md,json`), y **Vision OCR** (`vision-ocr` FastAPI, cache SHA256 + semáforo server-side, backend OpenAI-compatible: vLLM en prod / Ollama solo-DEV) **reemplaza** el texto de página (no fusiona). Presupuesto por doc (timeout/página, max páginas, max segundos) + cancelación cooperativa → `degraded`; error de vision conserva el texto Docling y escribe provenance `vision_error` en `orchestrator:job:{id}:extraction_provenance` (Redis, job-scoped).
 
-Ver `docs/OPERATIONS.md` §Vision OCR para activación/calibración y `docs/extraccion-visual-benchmark.md` para el protocolo (backend-agnóstico).
+Ver `docs/OPERATIONS.md` §Vision OCR para activación y calibración.
 
 ### Orchestrator (Go, 8080)
-`cmd/orchestrator` (Gin). Admission via `internal/broker/rabbitmq.go` (backpressure on `QueueDepthRejectThreshold`), SSRF guard on `DocumentURL`, `POST /v1/documents`, `GET /v1/documents/:id`, `POST /v1/documents/:id/cancel` (`status=cancelled`), batch `CreateBatchHandler`. Ver §23 rabbitmq `3.13-management` drift fixed.
+`cmd/orchestrator` (Gin). Admission via `handlers.AdmissionController` (rate limit, concurrent jobs and `QueueDepthRejectThreshold`), SSRF guard on `DocumentURL`, `POST /v1/documents`, `GET /v1/documents/:id`, `POST /v1/documents/:id/cancel` (`status=cancelled`), batch `CreateBatchHandler`.
 
 ### Redis (state)
 `internal/redis/client.go`. Content keys + refs (`sha256:<hex>` → FS blob), control keys (`:status:steps`, `:features:profile`, `:inferences:remaining|total`). TTL 24h on job keys; pub/sub `job:events`, `job:{id}:events` (`stage.queued/started/completed/failed`, `job:created/progress/completed/failed`). Maxmemory `noeviction` — large blobs live in FS.
 
 ### RabbitMQ
-`internal/broker/rabbitmq.go`. DLX `document_processor_dlx` + DLQ, delayed exchange `document_processor_delayed` for retries, pool `ChannelPool`. Metrics `QueueDepth`, `QueueConsumerLag`. Preflight derives built images from compose.
+`internal/broker/rabbitmq.go`. DLX `document_processor_dlx` + DLQ, delayed exchange `document_processor_delayed` for retries, pool `ChannelPool`. Metrics `QueueDepth`, `QueueConsumerLag`.
 
 ### EventBus
-`internal/events/event_bus.go` (Go) + `pkg/events_python.py` (Python). Spec 4.5 `stage.queued → RabbitMQ → stage.started → stage.completed/failed`. Fase 3 added `stage.queued` best-effort before each `publish`.
+`internal/events/event_bus.go` (Go) + `pkg/events_python.py` (Python). Eventos `stage.queued → RabbitMQ → stage.started → stage.completed/failed`; `stage.queued` se emite best-effort antes de cada `publish`.
 
 ### Artifact Store
 `pkg/worker_common/artifact_store.py` (`FSStore`, 65k sharded, atomic write, `65k buckets`). Keys migrated: `:text`, `:chunks`, `:embeddings`, `:inference_embeddings`, `:results` refs; `:micro_inferences_raw` still in Redis. GC `pkg/worker_common/artifact_gc.py` (reachability, min-age 24h).
@@ -63,7 +63,7 @@ Ver `docs/OPERATIONS.md` §Vision OCR para activación/calibración y `docs/extr
 | Stage | Queue | Worker | Notes |
 |-------|-------|--------|-------|
 | extraction | extract_text | extraction-worker (async, PREFETCH=EXTRACTION_CONCURRENCY, Docling polling) | routing via `queues_for`, cancellation checks before metadata/publish |
-| audio | audio | audio-worker (whisper, `whisper:9666/transcribe`) | VAD, not yet diarized |
+| audio | audio | audio-worker (whisper, `whisper:8080/transcribe`) | VAD, not yet diarized |
 | image | image | image-worker (image-analyzer `POST /analyze` OCR + `POST /describe` for `full`, resize + cache) | backends `OCR_*`/`IMAGE_*` |
 | embeddings | embeddings | embeddings-worker | remote `/v1/embeddings` (`EMBEDDINGS_*`), noeviction FS ref |
 | entities | entities | entities-worker | GLiNER offline, regex parallel (I/O thread) fan-out to inferences |
@@ -77,7 +77,7 @@ Ver `docs/OPERATIONS.md` §Vision OCR para activación/calibración y `docs/extr
 `pkg/worker_common/stage.py` (`Stage.execute`). Multimodal path `image→OCR→text/chunks` / `audio→transcription→text/chunks`.
 
 ### Retry / Cancellation / Backpressure
-Retry via DLX delayed exchange; `internal/middleware/retry.go`. Cancellation cooperative (`pkg/shared/exceptions.JobCancelledError`, `_is_cancelled` → `ack` `status=cancelled`) at stage start, before caro, entre batches, antes de publish — no mata threads/CUDA (Fase 2). Backpressure: `AdmissionController` checks rate limit + concurrent jobs + queue depth.
+Retry via DLX delayed exchange; `internal/middleware/retry.go`. Cancellation cooperative (`pkg/shared/exceptions.JobCancelledError`, `_is_cancelled` → `ack` `status=cancelled`) al inicio de cada stage, antes de trabajo costoso, entre batches y antes de publicar — no mata threads ni CUDA. Backpressure: `AdmissionController` checks rate limit + concurrent jobs + queue depth.
 
 ### Metrics
-`pkg/metrics/metrics.go` (`ia_text_*`) + Python `*_job_duration_seconds`, `*_queue_time_seconds`, `inference_worker_in_flight/cwnd/cooldown`. Grafana dashboard `deploy/docker/grafana/dashboards/textflow.json` (uid `textflow-overview`, P50/P95, queue time, throughput, errors, queue depth — Fase 3).
+`pkg/metrics/metrics.go` (`ia_text_*`) + Python `*_job_duration_seconds`, `*_queue_time_seconds`, `inference_worker_in_flight/cwnd/cooldown`. Grafana dashboard `deploy/docker/grafana/dashboards/textflow.json` (uid `textflow-overview`, P50/P95, queue time, throughput, errors, queue depth).

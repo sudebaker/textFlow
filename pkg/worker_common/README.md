@@ -1,346 +1,175 @@
 # Worker Common Library
 
-Shared utilities for Python workers in the textFlow project.
-
-## Overview
-
-This package eliminates code duplication across Python workers by providing standardized utilities for:
-
-- **Configuration Management**: Environment variable parsing with validation
-- **RabbitMQ Integration**: Connection management and URL parsing
-- **Resource Manager Client**: GPU/CPU resource allocation
-- **Prometheus Metrics**: Standardized worker and GPU metrics
-- **Signal Handling**: Graceful shutdown on SIGINT/SIGTERM
+Shared utilities for the Python workers in textFlow. The package removes
+duplication across workers: configuration, RabbitMQ lifecycle, queue
+declaration, metrics, signals, artifacts and pipeline routing.
 
 ## Installation
 
-### Development
-
-From the project root:
+For local development:
 
 ```bash
-cd pkg/worker_common
-pip install -e .
+pip install -e pkg/worker_common
 ```
 
-### Production
+In the container images the repository root is on `sys.path`, so workers
+import it as `pkg.worker_common`.
 
-```bash
-pip install worker-common==1.0.0
-```
+## Recommended: `BaseWorker`
 
-Or add to `requirements.txt`:
-
-```txt
-worker-common==1.0.0
-```
-
-## Quick Start
+`BaseWorker` owns connection retries, queue declaration, acknowledgements,
+dead-lettering and graceful shutdown. Subclasses only implement
+`process_message`.
 
 ```python
-from worker_common.config import WorkerConfig, get_env, get_int_env
-from worker_common.rabbitmq import rabbitmq_connection
-from worker_common.metrics import create_worker_metrics
-from worker_common.signals import SignalHandler
+from pkg.worker_common.base import BaseWorker
 
-# Configure worker
-config = WorkerConfig(
-    rabbitmq_url=get_env("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
-    queue_name=get_env("QUEUE_NAME", "my_queue"),
-    prefetch_count=get_int_env("PREFETCH_COUNT", 5),
-    worker_name="my-worker",
-    metrics_port=8001
-)
+class MyWorker(BaseWorker):
+    def __init__(self):
+        super().__init__(worker_name="my-worker", queue_name="my_queue")
 
-# Setup
-signal_handler = SignalHandler()
-metrics = create_worker_metrics(config.worker_name)
-config.start_metrics_server()
+    def process_message(self, message: dict):
+        # Do the work; raising sends the message to the DLQ flow.
+        ...
 
-# Process messages
-with rabbitmq_connection(config.rabbitmq_url) as (connection, channel):
-    channel.basic_qos(prefetch_count=config.prefetch_count)
-    
-    while not signal_handler.should_shutdown:
-        # Your worker logic here
-        pass
+if __name__ == "__main__":
+    MyWorker().run()
 ```
 
-## Modules
+Variants:
 
-### `config.py`
+- `BaseAsyncWorker` (`async_base.py`) for aio-pika workers.
+- `BasePubSubWorker` (`pubsub_base.py`) for Redis pub/sub consumers.
 
-Configuration management with type-safe environment variable parsing.
+## `config.py`
 
 ```python
-from worker_common.config import WorkerConfig, get_env, get_int_env, get_bool_env
+from pkg.worker_common.config import WorkerConfig, get_env, get_int_env, get_bool_env
 
-# Parse environment variables
-redis_host = get_env("REDIS_HOST", "localhost")
-redis_port = get_int_env("REDIS_PORT", 6379)
-use_gpu = get_bool_env("USE_GPU", False)
+config = WorkerConfig("embeddings")   # worker_name
 
-# Create worker configuration
-config = WorkerConfig(
-    rabbitmq_url="amqp://localhost",
-    queue_name="my_queue",
-    worker_name="my-worker"
-)
-
-# Start metrics server
-config.start_metrics_server()
+config.rabbitmq_url     # RABBITMQ_URL (required)
+config.redis_url        # REDIS_URL (required)
+config.queue_name       # QUEUE_NAME (default: worker_name)
+config.prefetch_count   # PREFETCH_COUNT (default: 5)
+config.metrics_port     # METRICS_PORT (default: 8000)
+config.log_level        # LOG_LEVEL (default: INFO)
+config.max_retries      # MAX_RETRIES (default: 3)
 ```
 
-**Classes:**
-- `WorkerConfig`: Worker configuration container
-
-**Functions:**
-- `get_env(key, default)`: Get string from environment
-- `get_int_env(key, default)`: Get integer from environment
-- `get_bool_env(key, default)`: Get boolean from environment
-
-### `rabbitmq.py`
-
-RabbitMQ connection utilities.
+## `rabbitmq.py`
 
 ```python
-from worker_common.rabbitmq import parse_rabbitmq_url, rabbitmq_connection
+from pkg.worker_common.rabbitmq import connect_rabbitmq, declare_queue, parse_rabbitmq_url
 
-# Parse URL
-params = parse_rabbitmq_url("amqp://user:pass@host:5672/vhost")
-# Returns: {"host": "host", "port": 5672, "virtual_host": "vhost", "credentials": ...}
-
-# Connection context manager
-with rabbitmq_connection("amqp://localhost") as (connection, channel):
-    channel.basic_publish(exchange="", routing_key="queue", body="message")
+with connect_rabbitmq("amqp://localhost", prefetch_count=5) as (connection, channel):
+    declare_queue(channel, "my_queue")
+    channel.basic_publish(exchange="", routing_key="my_queue", body=b"message")
 ```
 
-**Functions:**
-- `parse_rabbitmq_url(url)`: Parse AMQP URL into connection parameters
-- `rabbitmq_connection(url, timeout=30)`: Context manager for connections
+`declare_queue()` uses `queue_args.build_queue_arguments()`, the single source
+of truth shared with `internal/broker/rabbitmq.go:declareQueue()`. Any new
+queue argument must be added there and in the Go declaration.
 
-### `resource_manager.py`
-
-Resource Manager client for GPU/CPU allocation.
+## `queue_args.py`
 
 ```python
-from worker_common.resource_manager import ResourceManagerClient
+from pkg.worker_common.queue_args import build_queue_arguments, DLX_EXCHANGE
 
-client = ResourceManagerClient("http://localhost:8081")
+arguments = build_queue_arguments("extract_text")
+```
 
-# Acquire resource
-resource = client.acquire_resource(resource_type="gpu", worker_id="worker-1")
-# Returns: {"resource_id": "gpu-0", "device": "cuda:0", ...}
+## `metrics.py`
 
+```python
+from pkg.worker_common.metrics import create_worker_metrics, create_gpu_metrics
+
+metrics = create_worker_metrics("embeddings")
+metrics["jobs_total"].labels(status="success").inc()
+with metrics["job_duration"].time():
+    process_job()
+metrics["errors_total"].labels(error_type="timeout").inc()
+
+create_gpu_metrics("embeddings").labels(device="cuda:0").set(1)
+```
+
+Metric names are derived from the worker name:
+`{worker}_worker_jobs_total`, `{worker}_worker_job_duration_seconds`,
+`{worker}_worker_errors_total`, `{worker}_worker_gpu_available`.
+
+## `signals.py`
+
+```python
+from pkg.worker_common.signals import SignalHandler
+
+handler = SignalHandler()
+handler.register(cleanup_callback=lambda: connection.close())
+
+while not handler.should_exit:
+    ...
+```
+
+## `resource_manager.py`
+
+```python
+from pkg.worker_common.resource_manager import ResourceManagerClient
+
+client = ResourceManagerClient("http://localhost:9090")
+resource = client.allocate_resource("gpu", worker_id="worker-1")
 try:
-    # Use resource
-    pass
+    use(resource["device"])
 finally:
-    # Release resource
     client.release_resource(resource["resource_id"])
 ```
 
-**Classes:**
-- `ResourceManagerClient`: HTTP client for resource management
+## `artifact_store.py`
 
-**Methods:**
-- `acquire_resource(resource_type, worker_id)`: Acquire GPU/CPU
-- `release_resource(resource_id)`: Release resource
-- `health_check()`: Check service health
-
-### `metrics.py`
-
-Prometheus metrics helpers.
+Large payloads are written to disk and referenced from Redis as
+`sha256:<hex>`; legacy raw values are still accepted.
 
 ```python
-from worker_common.metrics import create_worker_metrics, create_gpu_metrics
+from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
 
-# Create standard worker metrics
-metrics = create_worker_metrics("my-worker")
-metrics['messages_processed'].labels(worker="my-worker", status="success").inc()
-metrics['processing_time'].labels(worker="my-worker").observe(1.5)
-metrics['queue_size'].labels(worker="my-worker", queue="my_queue").set(10)
-
-# Create GPU metrics
-gpu_metrics = create_gpu_metrics("my-worker")
-gpu_metrics['memory_used'].labels(worker="my-worker", device="cuda:0").set(8192)
-gpu_metrics['utilization'].labels(worker="my-worker", device="cuda:0").set(85.5)
+ref = STORE.put(b"...")
+data = resolve(STORE, ref)
+text = resolve_text(STORE, ref)
 ```
 
-**Functions:**
-- `create_worker_metrics(worker_name)`: Create standard worker metrics dict
-- `create_gpu_metrics(worker_name)`: Create GPU-specific metrics dict
+## `pipeline_config.py`
 
-**Standard Metrics:**
-- `messages_processed_total`: Counter (labels: worker, status)
-- `processing_time_seconds`: Histogram (labels: worker)
-- `queue_size`: Gauge (labels: worker, queue)
-- `active_tasks`: Gauge (labels: worker)
-- `errors_total`: Counter (labels: worker, error_type)
-
-**GPU Metrics:**
-- `gpu_memory_used_bytes`: Gauge (labels: worker, device)
-- `gpu_utilization_percent`: Gauge (labels: worker, device)
-- `gpu_temperature_celsius`: Gauge (labels: worker, device)
-
-### `signals.py`
-
-Graceful shutdown signal handling.
+Loads `configs/pipeline.json` and answers the two routing questions:
 
 ```python
-from worker_common.signals import SignalHandler
+from pkg.worker_common.pipeline_config import PipelineDefinition
 
-handler = SignalHandler()
-
-while not handler.should_shutdown:
-    # Process work
-    if handler.should_shutdown:
-        break
-
-print("Shutting down gracefully...")
+pipeline = PipelineDefinition.load()
+queues = pipeline.queues_for(entry="extraction", features=["inferences"], profile="full")
+steps = pipeline.steps_for(entry="extraction", features=[], profile="rag")
 ```
 
-**Classes:**
-- `SignalHandler`: Handle SIGINT/SIGTERM signals
+`queues_for` drives the entry-stage fan-out; `steps_for` drives the
+completion-worker's required steps.
 
-**Properties:**
-- `should_shutdown`: Boolean indicating shutdown requested
+## Other modules
 
-## Examples
+| Module | Purpose |
+|---|---|
+| `chunking.py` | Shared text chunking |
+| `embeddings_client.py` | OpenAI-compatible `/v1/embeddings` client |
+| `inference_dispatch.py` | Inference chunk dispatch and counters |
+| `inference_embeddings.py` | Embeddings for inference results |
+| `entity_utils.py` | Entity normalization and deduplication |
+| `job_keys.py` | Canonical Redis key builders and TTLs |
+| `security.py` | Upload path validation and signal helpers |
+| `stage.py` | Stage result helpers |
+| `artifact_gc.py` | Reachability-based artifact garbage collection |
 
-### Complete Worker Example
-
-See `example_worker.py` for a complete working example demonstrating all features.
-
-### Minimal Worker
-
-```python
-from worker_common.config import WorkerConfig
-from worker_common.rabbitmq import rabbitmq_connection
-from worker_common.signals import SignalHandler
-
-config = WorkerConfig(
-    rabbitmq_url="amqp://localhost",
-    queue_name="tasks",
-    worker_name="minimal-worker"
-)
-
-signal_handler = SignalHandler()
-
-with rabbitmq_connection(config.rabbitmq_url) as (conn, ch):
-    ch.queue_declare(queue=config.queue_name)
-    
-    for method, properties, body in ch.consume(config.queue_name):
-        if signal_handler.should_shutdown:
-            break
-        
-        # Process message
-        print(f"Received: {body}")
-        ch.basic_ack(method.delivery_tag)
-```
-
-## Migration Guide
-
-See `../../MIGRATION.md` for detailed instructions on migrating existing workers to use this library.
-
-### Quick Migration Checklist
-
-- [ ] Install `worker_common` package
-- [ ] Replace configuration parsing with `WorkerConfig`
-- [ ] Replace RabbitMQ connection code with `rabbitmq_connection`
-- [ ] Replace signal handling with `SignalHandler`
-- [ ] Replace metrics setup with `create_worker_metrics`
-- [ ] Remove duplicated utility functions
-- [ ] Test locally
-- [ ] Deploy and monitor
-
-## Development
-
-### Running Tests
+## Tests
 
 ```bash
-cd pkg/worker_common
-pip install -e ".[dev]"
-pytest tests/ -v --cov=worker_common
+pytest pkg/worker_common/tests/ -v
 ```
 
-### Code Style
-
-```bash
-# Format code
-black .
-
-# Lint
-flake8 .
-```
-
-### Dependencies
-
-Core dependencies:
-- `pika>=1.3.0` - RabbitMQ client
-- `prometheus-client>=0.16.0` - Metrics
-- `requests>=2.28.0` - HTTP client
-
-Development dependencies:
-- `pytest>=7.0.0`
-- `pytest-cov>=4.0.0`
-- `black>=23.0.0`
-- `flake8>=6.0.0`
-
-## Benefits
-
-Using `worker_common` provides:
-
-- **Reduced Duplication**: ~200 lines removed per worker
-- **Consistency**: All workers use same patterns
-- **Type Safety**: Full type hints throughout
-- **Testing**: Shared code tested once
-- **Maintainability**: Bug fixes in one place
-- **Standardization**: Common metrics and error handling
-
-## Troubleshooting
-
-### ModuleNotFoundError
-
-```bash
-cd pkg/worker_common
-pip install -e .
-```
-
-### Metrics Port Already in Use
-
-Change the port in configuration:
-
-```python
-config = WorkerConfig(..., metrics_port=8002)
-```
-
-### Connection Timeout
-
-Increase timeout:
-
-```python
-with rabbitmq_connection(url, timeout=60) as (conn, ch):
-    pass
-```
-
-## Support
-
-- Check `MIGRATION.md` for migration help
-- Review `example_worker.py` for usage examples
-- Check source code for detailed documentation
-
-## License
-
-Same as parent project.
-
-## Version History
-
-### 1.0.0 (Current)
-
-- Initial release
-- Configuration management
-- RabbitMQ utilities
-- Resource Manager client
-- Prometheus metrics
-- Signal handling
+Queue-declaration parity is anchored by
+`pkg/worker_common/tests/test_queue_declaration_sites.py` and
+`test_queue_args.py`.

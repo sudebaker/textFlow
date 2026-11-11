@@ -23,7 +23,7 @@
 
 ## Docling
 
-- **Fallback a CPU aunque GPU esté disponible.** Imagen sin CUDA (`docling-serve:latest` vs `cu128-0.12.0`). Usa el override GPU y confirma `docker inspect docling | grep -i cuda`.
+- **Fallback a CPU aunque GPU esté disponible.** Imagen sin CUDA (`docling-serve:latest` vs `cu128-0.12.0`). Usa el override GPU y confirma `docker inspect textflow-docling | grep -i cuda`.
 - **Artifacts ausentes (`FileNotFoundError` en docling).** `models/docling/` no existe y el mount apunta a vacío. Ejecuta `MODELS=docling make setup-models` (extrae los artifacts desde la imagen con `deploy/scripts/extract_docling.sh`).
 - **OCR no produce texto en escaneado.** `DOCLING_DO_OCR=false` por defecto — escanéalo con `ocr` explícito o activa `DOCLING_DO_OCR=true` para ese profile. `DOCLING_OCR_ENGINE=rapidocr` con backend Torch solo si hay GPU (§14).
 - **`exiftool` timeout 10s / no instalado.** `extract_metadata_deep` ya degrada silenciosamente (fast metadata preservado). Verifica `exiftool -ver` en `extraction-worker`.

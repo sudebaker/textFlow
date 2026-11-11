@@ -15,16 +15,27 @@
 
 - `handlers/batch.go:validateWebhookURL` rechaza loopback/private/metadata, solo `http|https`.
 - Límite `MAX_SPREADSHEET_ROWS=2000`, `MAX_SPREADSHEET_SIZE_MB=5`, `MAX_AUDIO_SIZE_MB=500`.
-- `MAX_FEATURES_PER_JOB=2`, `MAX_FEATURE_NAME_LENGTH=50`.
+- Features: solo se aceptan `inferences` e `inference_embeddings` (whitelist); no hay límite de número ni de longitud.
 
 ## Redis / RabbitMQ
 
-- Redis: `maxmemory 1GB + noeviction` (evita evicción de refs), sin Internet, no exponer `6379` al host. Considerar ACL `requirepass`.
-- RabbitMQ: imagen `rabbitmq:3.13-management` (pinned), `x-delayed-message` plugin para retry. Cambiar `RABBITMQ_USER/PASS` (nunca `guest:guest`) y no exponer management fuera de la VPN/bastión.
+- Redis runs with `maxmemory 1GB` and `noeviction`, is not published to the
+  host, and should not be exposed. Set an ACL/`requirepass` if the network is
+  shared.
+- RabbitMQ is not published to the host. Management UI access, if enabled, must
+  stay inside the VPN/bastion. Change `RABBITMQ_USER`/`RABBITMQ_PASS` (never
+  `guest:guest`).
 
-## Red interna
+## Network isolation
 
-- `internal: true` en `docker-compose.yml` para `extract_text, embeddings, entities, metadata, inferences` networks — aísla workers de egress. `image-analyzer` y `whisper` explícitamente en `docker_default` para alcanzar el backend LLM/host.
+- `backend` and `datastore` are `internal: true`: workers cannot reach the
+  internet.
+- `frontend` exposes the orchestrator; `docker_default` is the only network with
+  host egress and is reserved for services that must reach operator backends
+  (`image-analyzer`, `whisper`, and the LLM/embeddings clients).
+- Only the orchestrator (8080), resource-manager (9090), Docling (8000),
+  Prometheus (9091) and Grafana (3000) publish host ports. Redis and RabbitMQ
+  do not.
 
 ## Secrets y env
 

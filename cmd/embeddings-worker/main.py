@@ -117,7 +117,7 @@ Generation) systems and Qdrant vector databases.
 - Monitor **memory usage** for large document processing
 
 ---
-*Built with ❤️ for the journalist-agent ecosystem*
+*Built with ❤️ for the textFlow platform*
 """,
     version="1.0.0",
     lifespan=lifespan,
@@ -133,15 +133,14 @@ Generation) systems and Qdrant vector databases.
         }
     },
     contact={
-        "name": "Journalist Agent Team",
-        "url": "https://github.com/amphora/journalist-agent",
-        "email": "team@journalist-agent.com"
+        "name": "textFlow",
+        "url": "https://github.com/sudebaker/textFlow",
     },
     license_info={
-        "name": "MIT License",
-        "url": "https://opensource.org/licenses/MIT"
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    terms_of_service="https://github.com/amphora/journalist-agent/blob/main/LICENSE"
+    terms_of_service="https://github.com/sudebaker/textFlow/blob/main/LICENSE"
 )
 
 # Add CORS middleware

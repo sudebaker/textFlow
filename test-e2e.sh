@@ -2,7 +2,7 @@
 set -e
 
 echo "======================================"
-echo "Test End-to-End - IA Text Orchestrator"
+echo "Test End-to-End - textFlow"
 echo "======================================"
 echo ""
 

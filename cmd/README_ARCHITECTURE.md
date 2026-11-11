@@ -2,20 +2,22 @@
 
 ## Module Purpose
 
-Distributed workers implementing the business logic. Each worker is a RabbitMQ consumer specializing in one task: extraction, embeddings, entities, metadata, inferences, or completion. Also includes CLI tools and the orchestrator HTTP server.
+Distributed services implementing the business logic. Each worker is a RabbitMQ consumer specializing in one task (extraction, embeddings, entities, metadata, inferences, completion, audio or image). Also includes the Go orchestrator and the HTTP-only services (image-analyzer, vision-ocr, whisper).
 
 ## Workers Overview
 
-Six independent workers process documents in parallel:
+Independent workers process jobs in parallel:
 
 | Worker | Input | Output | Dependencies | Optional | Concurrency |
 |--------|-------|--------|--------------|----------|-------------|
 | **Extraction** | document bytes | text, chunks, source_class | Docling, exiftool | No (first step) | async I/O |
-| **Embeddings** | text | embeddings (1024-dim vector) | BAAI/bge-m3 model | No (default) | batch processing |
+| **Embeddings** | text | embeddings (vector) | Remote `/v1/embeddings` backend | No (default) | batch processing |
 | **Entities** | text | entities (NER) | GLiNER model | No (default) | batch processing |
 | **Metadata** | text | metadata (analytics) | None (heuristic) | No (default) | async |
-| **Inference** | chunks + entities | inferences (facts) | vLLM service | Yes (optional) | sequential |
+| **Inference** | chunks | inferences (facts) | OpenAI-compatible LLM backend | No (both profiles) | adaptive |
 | **Completion** | job events | finalized results | None | No (aggregator) | async I/O |
+| **Audio** | audio bytes | transcript + segments | Whisper service | Per file type | I/O |
+| **Image** | image bytes | OCR text + description | image-analyzer service | Per file type | I/O |
 
 ## Worker Lifecycle
 
@@ -53,7 +55,7 @@ graph TB
 ## Extraction Worker
 
 **Input**: `extract_text` queue → DocumentMessage (base64 or URL)
-**Output**: Redis keys + publish to embeddings/entities/metadata/inferences
+**Output**: Redis keys + publish to the profile's downstream queues
 
 **Process**:
 1. Receive document (PDF, DOCX, etc.)
@@ -62,7 +64,7 @@ graph TB
 4. Classify source (journal article, news, etc.)
 5. Extract metadata (language, length, keywords)
 6. Store text, chunks refs (FS artifact store)
-7. Publish to downstream queues (embeddings, entities, metadata, inferences if enabled)
+7. Publish to the downstream queues declared by the profile in `configs/pipeline.json`
 8. ACK message
 
 **Error Handling**:
@@ -183,11 +185,11 @@ graph TB
 
 ## Inference Worker
 
-**Input**: `inferences` queue → Chunks + entities (optional)
+**Input**: `inferences` queue → chunks declared by the entry stage
 **Output**: Redis `inferences` key + signal completion
 
 **Process**:
-1. Connect to vLLM service (via REST API)
+1. Connect to the OpenAI-compatible LLM backend (`INFERENCE_BASE_URL`)
 2. Receive text chunks + extracted entities
 3. For each chunk:
    - Build prompt: "Extract key facts from: {chunk}"
@@ -360,8 +362,8 @@ Update job status in Redis (step completed)
 - Inference worker detects timeout
 - Circuit breaker opens (future requests blocked)
 - Current message: NACK with requeue
-- Job status: "inferences" → "skipped" (graceful degradation)
-- Result: Job completes without inferences (other steps still succeed)
+- The message is retried or dead-lettered according to `MAX_RETRIES`
+- If the backend remains unavailable, the stage fails and the job surfaces the error
 
 **Example: Docling service down**
 - Extraction worker fails to connect

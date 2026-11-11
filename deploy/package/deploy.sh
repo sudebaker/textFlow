@@ -10,7 +10,7 @@ set -euo pipefail
 # Config
 # ---------------------------------------------------------------------------
 DIST_DIR="dist"
-REMOTE_DIR="ia-text-deployment/"
+REMOTE_DIR="textflow-deployment/"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,5 +67,5 @@ log "Next steps on target machine:"
 echo "======================================"
 echo ""
 echo "  ssh ${TARGET}"
-echo "  bash ~/ia-text-deployment/install.sh"
+echo "  bash ~/textflow-deployment/install.sh"
 echo ""

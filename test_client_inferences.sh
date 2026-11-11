@@ -24,7 +24,7 @@ set -e
 API_URL="http://localhost:8080"
 CLIENT_BIN="./bin/client"
 REDIS_CLI="redis-cli"
-TEMP_DIR="/tmp/ia-text-orchestrator-tests-$$"
+TEMP_DIR="/tmp/textflow-tests-$$"
 AUDIO_SAMPLE_RATE=16000
 AUDIO_DURATION_SEC=1
 AUDIO_BITS_PER_SAMPLE=16

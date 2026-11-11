@@ -5,7 +5,7 @@
 > aquí con adquisición y verificación reproducibles. Si un modelo no figura
 > aquí, no debe documentarse como requisito del bundle.
 
-Última revisión: 2026-08-28 · commit de referencia: `c6e21b3`.
+Última revisión: 2026-11-11 · commit de referencia: `b218c9a`.
 
 Regla (§27): `make setup-models` debe producir **todo** el árbol `models/` que
 este inventario describe y escribir `models/MANIFEST.txt` (fuente, revision,
@@ -79,7 +79,7 @@ Notas:
   espera `deploy/docker/whisper` (`MODEL_SIZE` / `MODEL_PATH`). Otros tamaños
   (`tiny…large-v3`) son intercambiables cambiando la env y descargando el repo
   `Systran/faster-whisper-<size>` correspondiente.
-- (5) Dual Docling (acuerdo Fase A A4): **CPU** → artifacts externos
+- (5) Dual Docling: **CPU** → artifacts externos
   `models/docling/` montados (`HF_HUB_OFFLINE=1`); **GPU** → imagen CUDA
   `cu128-0.12.0` self-contained (no requiere `models/docling/`). No documentar
   `models/docling/` como requisito si la instalación usa GPU-only.
@@ -145,7 +145,7 @@ Notas:
 ### 7. Inference LLM (hechos)
 
 - Servicio: `cmd/inference-worker` consume runtime OpenAI-compatible (`INFERENCE_BASE_URL`, `INFERENCE_MODEL`, `INFERENCE_LLM_TIMEOUT`, `INFERENCE_MAX_CONCURRENCY`, `INFERENCE_WORKER_REPLICAS`).
-- Air-gapped igual que (6): externo, no en `models/`. Documentar `vLLM` vs `Ollama` por separado (§19) y cómo provisionar cada uno offline. Fase A: *externo al bundle*.
+- Air-gapped igual que (6): externo, no en `models/`. Documentar `vLLM` vs `Ollama` por separado y cómo provisionar cada uno offline. Es *externo al bundle*.
 
 ### 8. openbmb/MiniCPM-V-4_5 (vision OCR)
 
@@ -155,8 +155,8 @@ Notas:
 - Descarga: `hf download openbmb/MiniCPM-V-4_5 --local-dir models/minicpm-v-4.5/` (o `huggingface-cli download` en máquinas sin `hf`), desde la máquina online de preparación.
 - MiniCPM es endpoint-resolved (VISION_LLM backend) y NO está en el catálogo de staging; para el overlay GPU se baja aparte con `hf download openbmb/MiniCPM-V-4_5 --local-dir models/minicpm-v-4.5/`.
 - Serving **prod (GPU)**: `vllm/vllm-openai:0.10.2` (pin validado en §21, soporte MiniCPMV >= v0.10.2) vía `docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.gpu.yml up -d vllm-minicpm`; el backend OpenAI-compatible queda en `http://vllm-minicpm:8000/v1`.
-- Serving **dev/benchmark (sin GPU)**: Ollama del mac-mini `192.168.88.12:11434`, modelo `minicpm-v4.5:latest` (`ollama pull minicpm-v4.5`); en `.env`: `VISION_LLM_BASE_URL=http://192.168.88.12:11434`, `VISION_LLM_MODEL=minicpm-v4.5:latest`.
-- Consumidor: `vision-ocr` (`deploy/docker/vision-ocr`, `POST /transcribe`) vía `VISION_LLM_BASE_URL`/`VISION_LLM_MODEL`. `critical: False` hasta validar VRAM/latencia en serving real (Fase D/D.3) — en dev el modelo vive fuera del bundle (passthrough Ollama).
+- Serving **dev/benchmark (sin GPU)**: cualquier servidor OpenAI-compatible accesible desde el host, p. ej. Ollama con `minicpm-v4.5:latest` (`ollama pull minicpm-v4.5`); en `.env`: `VISION_LLM_BASE_URL=http://host.docker.internal:11434`, `VISION_LLM_MODEL=minicpm-v4.5:latest`.
+- Consumidor: `vision-ocr` (`deploy/docker/vision-ocr`, `POST /transcribe`) vía `VISION_LLM_BASE_URL`/`VISION_LLM_MODEL`. `critical: False` hasta validar VRAM/latencia en serving real; en dev el modelo vive fuera del bundle (passthrough a un backend externo).
 
 ## Procedimientos canónicos
 

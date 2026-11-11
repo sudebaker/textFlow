@@ -146,7 +146,7 @@ textflow/
 │   └── swagger/                  # OpenAPI specs
 ├── tools/
 │   └── client/                   # CLI client en Go
-├── models/                       # Modelos ML (~3.6 GB, gitignored)
+├── models/                       # Staging de modelos locales (~12 GB, gitignored)
 ├── bin/                          # Binarios compilados (gitignored)
 ├── Makefile                      # Comandos de build
 └── README.md                     # Este archivo
@@ -285,7 +285,6 @@ make deploy HOST=10.0.0.5   # Requiere rsync
 
 ```bash
 make install-remote HOST=10.0.0.5
-ssh 10.0.0.5 "bash ~/ia-text-deployment/install.sh"
 ```
 
 ### Modelos requeridos (staging ~12 GB esenciales)
@@ -325,11 +324,14 @@ curl http://localhost:8080/metrics
 
 Métricas disponibles:
 
-- `textflow_jobs_total{status,type}` — Jobs totales por estado
-- `textflow_job_duration_seconds` — Histograma de duración
-- `textflow_jobs_in_progress` — Jobs procesando actualmente
-- `textflow_queue_depth` — Profundidad de colas RabbitMQ
-- `textflow_http_requests_total{method,path,status}` — Requests HTTP
+- `ia_text_jobs_total{status,type}` — Jobs totales por estado
+- `ia_text_job_duration_seconds` — Histograma de duración
+- `ia_text_jobs_in_progress` — Jobs procesando actualmente
+- `ia_text_queue_depth` — Profundidad de colas RabbitMQ
+- `ia_text_http_requests_total{method,path,status}` — Requests HTTP
+
+El prefijo `ia_text_` se conserva por compatibilidad con dashboards y alertas
+existentes.
 
 ---
 
@@ -338,7 +340,7 @@ Métricas disponibles:
 - **Air-gapped:** Sin acceso a internet en producción
 - **SSRF protection:** Validación de URLs, bloquea metadata clouds
 - **Validación de archivos:** Whitelist de extensiones, límites de tamaño
-- **Rate limiting:** 100 req/s por IP (configurable)
+- **Rate limiting:** 100 req/s por IP (middleware global) + admission control configurable (`INGESTION_RATE_LIMIT`, 10 req/s por defecto)
 - **Circuit breaker:** Protección contra fallos en cascada
 - **Usuarios no-root:** Containers corren como usuario no privilegiado
 
@@ -365,7 +367,7 @@ ls -la models/gliner-small-v2.1/
 | Archivo | Descripción |
 |---------|-------------|
 | `docs/API.md` | Referencia completa de la API REST |
-| `docs/AIRGAPPED_DEPLOYMENT.md` | Guía detallada de deployment offline |
+| `docs/deployment-guide.md` | Guía de despliegue air-gapped y verificación |
 | `docs/MODELS.md` | Inventario canónico de modelos (fuente de verdad) |
 | `docs/GPU.md` | GPU, Docling CUDA, Whisper, benchmarks |
 | `docs/ARCHITECTURE.md` | Pipeline, artefactos, profiles, stages |
@@ -375,6 +377,7 @@ ls -la models/gliner-small-v2.1/
 | `docs/OPERATIONS.md` | Upgrades, rollback, GC, monitoreo |
 | `docs/SECURITY.md` | SSRF, webhooks, red interna, secrets |
 | `docs/COMPATIBILITY.md` | Matriz versiones / CUDA / driver |
+| `docs/roadmap.md` | Alcance público y limitaciones conocidas |
 | `cmd/entities-worker/README.md` | Documentación del worker de entidades |
 | `AGENTS.md` | Convenciones de código y arquitectura |
 
@@ -382,4 +385,4 @@ ls -la models/gliner-small-v2.1/
 
 ## 📄 Licencia
 
-MIT
+Apache-2.0. Ver [`LICENSE`](LICENSE).

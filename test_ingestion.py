@@ -189,7 +189,7 @@ class IngestionTester:
     def run_tests(self):
         """Execute full test suite"""
         print("\n" + "=" * 70)
-        print("IA TEXT ORCHESTRATOR - INGESTION TEST")
+        print("TEXTFLOW - INGESTION TEST")
         print("=" * 70)
         print(f"Start time: {datetime.now().isoformat()}")
 

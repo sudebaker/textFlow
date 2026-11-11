@@ -12,9 +12,8 @@ from prometheus_client import Counter, Gauge, Histogram, start_http_server
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Backend-agnostic: any OpenAI-compatible server (vLLM prod, Ollama dev).
-# Prod default: vllm-minicpm compose service. Dev: mac-mini Ollama
-# (192.168.88.12:11434, model minicpm-v4.5:latest) — see A.3 verification.
+# Backend-agnostic: any OpenAI-compatible server (vLLM, Ollama, ...).
+# The default points at the optional vllm-minicpm compose service.
 VISION_LLM_BASE_URL = os.getenv("VISION_LLM_BASE_URL", "http://vllm-minicpm:8000").rstrip("/")
 VISION_MODEL = os.getenv("VISION_MODEL", "minicpm-v-4.5")
 VISION_TIMEOUT = float(os.getenv("VISION_TIMEOUT", "180"))

@@ -1,6 +1,6 @@
-# Worker Common Library - Quick Reference
+# Worker Common Library — Quick Reference
 
-Fast reference for using `worker_common` in Python workers.
+Shared utilities for the Python workers in `pkg/worker_common/`.
 
 ## Installation
 
@@ -8,151 +8,122 @@ Fast reference for using `worker_common` in Python workers.
 cd pkg/worker_common && pip install -e .
 ```
 
-## Basic Worker Template
+## Configuration
+
+`WorkerConfig` reads the standard environment variables and validates the
+required ones:
 
 ```python
-from worker_common.config import WorkerConfig, get_env, get_int_env
-from worker_common.rabbitmq import rabbitmq_connection
-from worker_common.metrics import create_worker_metrics
-from worker_common.signals import SignalHandler
+from pkg.worker_common.config import WorkerConfig, get_env, get_int_env, get_bool_env
 
-# 1. Configuration
-config = WorkerConfig(
-    rabbitmq_url=get_env("RABBITMQ_URL", "amqp://localhost:5672"),
-    queue_name=get_env("QUEUE_NAME", "my_queue"),
-    prefetch_count=get_int_env("PREFETCH_COUNT", 5),
-    worker_name="my-worker",
-    metrics_port=8001
-)
+config = WorkerConfig("embeddings")   # worker_name, not individual fields
 
-# 2. Setup
-signal_handler = SignalHandler()
-metrics = create_worker_metrics(config.worker_name)
-config.start_metrics_server()
+config.rabbitmq_url      # RABBITMQ_URL (required)
+config.redis_url         # REDIS_URL (required)
+config.queue_name        # QUEUE_NAME (default: worker_name)
+config.prefetch_count    # PREFETCH_COUNT (default: 5)
+config.metrics_port      # METRICS_PORT (default: 8000)
+config.log_level         # LOG_LEVEL (default: INFO)
+config.max_retries       # MAX_RETRIES (default: 3)
 
-# 3. Main loop
-with rabbitmq_connection(config.rabbitmq_url) as (connection, channel):
-    channel.basic_qos(prefetch_count=config.prefetch_count)
-    channel.queue_declare(queue=config.queue_name, durable=True)
-    
-    for method, properties, body in channel.consume(config.queue_name):
-        if signal_handler.should_shutdown:
-            break
-        
-        # Process message
-        try:
-            result = process(body)
-            metrics['messages_processed'].labels(
-                worker=config.worker_name, status="success"
-            ).inc()
-            channel.basic_ack(method.delivery_tag)
-        except Exception as e:
-            metrics['messages_processed'].labels(
-                worker=config.worker_name, status="error"
-            ).inc()
-            channel.basic_nack(method.delivery_tag, requeue=True)
+port = get_int_env("METRICS_PORT", 8001)
+debug = get_bool_env("DEBUG", False)
 ```
 
-## Common Patterns
+## RabbitMQ
 
-### Configuration Loading
 ```python
-from worker_common.config import get_env, get_int_env, get_bool_env
+from pkg.worker_common.rabbitmq import connect_rabbitmq, declare_queue
 
-# String
-redis_host = get_env("REDIS_HOST", "localhost")
-
-# Integer
-redis_port = get_int_env("REDIS_PORT", 6379)
-
-# Boolean
-use_gpu = get_bool_env("USE_GPU", False)
+with connect_rabbitmq(config.rabbitmq_url, prefetch_count=config.prefetch_count) as (conn, ch):
+    declare_queue(ch, config.queue_name)
+    ch.start_consuming()
 ```
 
-### Resource Manager (GPU/CPU)
+`declare_queue` uses the shared argument table
+(`pkg/worker_common/queue_args.py`), which mirrors
+`internal/broker/rabbitmq.go:declareQueue()`.
+
+For the full lifecycle (reconnection, DLQ, graceful shutdown) use
+`BaseWorker` instead of wiring pika by hand:
+
 ```python
-from worker_common.resource_manager import ResourceManagerClient
+from pkg.worker_common.base import BaseWorker
 
-client = ResourceManagerClient("http://localhost:8081")
+class MyWorker(BaseWorker):
+    def __init__(self):
+        super().__init__(worker_name="my-worker", queue_name="my_queue")
 
-resource = client.acquire_resource("gpu", worker_id="worker-1")
+    def process_message(self, message: dict):
+        ...
+```
+
+## Metrics
+
+```python
+from pkg.worker_common.metrics import create_worker_metrics, create_gpu_metrics
+
+metrics = create_worker_metrics("embeddings")
+metrics["jobs_total"].labels(status="success").inc()
+with metrics["job_duration"].time():
+    process_job()
+metrics["errors_total"].labels(error_type="timeout").inc()
+
+gpu_available = create_gpu_metrics("embeddings")
+gpu_available.labels(device="cuda:0").set(1)
+```
+
+## Graceful shutdown
+
+```python
+from pkg.worker_common.signals import SignalHandler
+
+handler = SignalHandler()
+handler.register(cleanup_callback=lambda: conn.close())
+
+while not handler.should_exit:
+    ...
+```
+
+## Resource manager
+
+```python
+from pkg.worker_common.resource_manager import ResourceManagerClient
+
+client = ResourceManagerClient("http://localhost:9090")
+resource = client.allocate_resource("gpu", worker_id="worker-1")
 try:
-    # Use resource["device"] - e.g., "cuda:0"
-    pass
+    use(resource["device"])
 finally:
     client.release_resource(resource["resource_id"])
 ```
 
-### Metrics
+## Artifact store
+
+Large values are stored on disk and referenced from Redis:
+
 ```python
-from worker_common.metrics import create_worker_metrics, create_gpu_metrics
+from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
 
-# Standard metrics
-metrics = create_worker_metrics("my-worker")
-metrics['messages_processed'].labels(worker="my-worker", status="success").inc()
-metrics['processing_time'].labels(worker="my-worker").observe(1.5)
-metrics['queue_size'].labels(worker="my-worker", queue="tasks").set(10)
-
-# GPU metrics
-gpu_metrics = create_gpu_metrics("my-worker")
-gpu_metrics['memory_used'].labels(worker="my-worker", device="cuda:0").set(8192)
-gpu_metrics['utilization'].labels(worker="my-worker", device="cuda:0").set(85.5)
+ref = STORE.put(b"...")
+payload = resolve(STORE, ref)
+text = resolve_text(STORE, ref)
 ```
 
-### Graceful Shutdown
-```python
-from worker_common.signals import SignalHandler
-
-handler = SignalHandler()
-
-while not handler.should_shutdown:
-    # Work
-    pass
-
-print("Shutting down...")
-```
-
-## Environment Variables
+## Environment variables
 
 ```bash
-# RabbitMQ
-RABBITMQ_URL="amqp://user:pass@host:5672/vhost"
+RABBITMQ_URL="amqp://user:pass@host:5672/"
+REDIS_URL="redis://localhost:6379"
 QUEUE_NAME="my_queue"
 PREFETCH_COUNT=5
-
-# Redis
-REDIS_HOST="localhost"
-REDIS_PORT=6379
-
-# Resource Manager
-RESOURCE_MANAGER_URL="http://localhost:8081"
-REQUIRES_GPU=true
-
-# Metrics
 METRICS_PORT=8001
-WORKER_NAME="my-worker"
+RESOURCE_MANAGER_URL="http://localhost:9090"
+MAX_RETRIES=3
 ```
 
-## Troubleshooting
+## More info
 
-### ModuleNotFoundError
-```bash
-cd pkg/worker_common && pip install -e .
-```
-
-### Port in use
-```python
-config = WorkerConfig(..., metrics_port=8002)
-```
-
-### Connection timeout
-```python
-with rabbitmq_connection(url, timeout=60) as (conn, ch):
-    pass
-```
-
-## More Info
-
-- Full docs: `pkg/worker_common/README.md`
-- Migration guide: `MIGRATION.md`
-- Example: `pkg/worker_common/example_worker.py`
+- Full package docs: `pkg/worker_common/README.md`
+- Example worker: `pkg/worker_common/example_worker.py`
+- Queue declaration parity: `pkg/worker_common/queue_args.py`

@@ -7,11 +7,18 @@ textFlow is an event-driven microservices platform for document processing, feat
 **Base URL:** `http://localhost:8080`  
 **API Version:** `v1`
 
+> This document is the canonical API reference. The interactive spec served at
+> `/swagger` (`docs/swagger/`) is generated from handler annotations and covers
+> only the endpoints that currently carry them.
+
 ---
 
 ## Authentication
 
-Currently, the API does not require authentication. All endpoints are publicly accessible.
+Authentication is disabled by default. When `API_KEY` is set in the
+orchestrator environment, every request must include it in the `X-API-Key`
+header; requests without a valid key receive `401 Unauthorized`. Enable it for
+any deployment reachable outside a trusted network.
 
 ---
 
@@ -319,27 +326,28 @@ All jobs follow the same pipeline stages regardless of file type (documents, aud
 1. `pending` — Job created, waiting for first stage
 2. `extracting` — Extracting content from file (PDF text, audio transcription, image analysis, spreadsheet parsing)
 3. `processing` — Not currently used; reserved for future compatibility
-4. `embedding` — Generating text embeddings (BAAI/bge-m3 model)
+4. `embedding` — Generating text embeddings via the configured OpenAI-compatible backend
 5. `entities` — Extracting named entities and PII (GLiNER model + regex patterns)
-6. `inferences` — *(Optional)* Generating inference results (only if `features: ["inferences"]` was set in request)
-7. `metadata` — Extracting and enriching document metadata
+6. `metadata` — Extracting and enriching document metadata
+7. `inferences` — Generating micro-inferences with the configured LLM backend (part of both `rag` and `full` profiles)
 8. `completed` — All processing complete, results available via `/download`
 9. `failed` — Job failed at any stage; check `error` field in response
+10. `cancelled` — Job cancelled through `POST /v1/documents/{job_id}/cancel`
 
 **Pipeline by File Type:**
 
 | File Type | Pipeline Stages | Notes |
 |-----------|-----------------|-------|
-| **Documents** (PDF, DOCX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Docling extracts text, then standard NLP pipeline |
-| **Audio** (MP3, WAV, etc.) | extracting (transcription) → embedding → entities → [inferences] → metadata → completed | Whisper transcribes audio (VAD applied). Diarization is NOT implemented (see §4b). |
-| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → [entities] → [inferences] → [metadata] → completed | image-analyzer extracts the visible TEXT (`/analyze`); `full` also requests a semantic description (`/describe`, single field, never embedded). Text is processed through the downstream stages. |
-| **Spreadsheets** (CSV, XLSX, etc.) | extracting → embedding → entities → [inferences] → metadata → completed | Rows flattened into text blocks (max 2,000 rows), then standard pipeline |
+| **Documents** (PDF, DOCX, etc.) | extracting → embedding → entities → metadata → inferences → completed | Docling extracts text, then standard NLP pipeline |
+| **Audio** (MP3, WAV, etc.) | extracting (transcription) → embedding → entities → metadata → inferences → completed | Whisper transcribes audio (VAD applied). Diarization is NOT implemented (see §4b). |
+| **Images** (JPG, PNG, etc.) | extracting (analysis) → embedding → entities → metadata → inferences → completed | image-analyzer extracts the visible TEXT (`/analyze`); `full` also requests a semantic description (`/describe`, single field, never embedded). Text is processed through the downstream stages. |
+| **Spreadsheets** (CSV, XLSX, etc.) | extracting → embedding → entities → metadata → inferences → completed | Rows flattened into text blocks (max 2,000 rows), then standard pipeline |
 
 > **Profiles compose stages.** The table above describes `full` (default). With `profile=rag`, `entities` and `metadata` are skipped; the entry stage and `embeddings`/`inferences` still run. See **§3b Processing Profiles**.
 
 **Status Transitions:**
 ```
-pending → extracting → embedding → entities → [inferences] → metadata → completed
+pending → extracting → embedding → entities → metadata → inferences → completed
                              ↓
                            failed (at any stage)
 ```
@@ -409,22 +417,24 @@ curl -X POST http://localhost:8080/v1/documents/process \
 
 ### 4a. Features Parameter
 
-**Overview:** The `features` parameter enables optional processing stages beyond the standard pipeline. It is passed during job creation (in both `/v1/documents/upload` and `/v1/documents/process` endpoints) and causes the job to transition through additional stages before completion.
+**Overview:** The `features` parameter carries optional extras. It is passed during job creation (in both `/v1/documents/upload` and `/v1/documents/process` endpoints). Stage composition is driven by the processing `profile`; `inferences` remains accepted for backward compatibility and `inference_embeddings` adds vectors to the inference results at finalization.
 
 **Currently Supported Features:**
 
 #### `inferences`
-Generates micro-inferences (short, actionable insights) from the extracted text using an inference model (typically vLLM).
+Enables micro-inferences (short, actionable insights) from the extracted text.
+The `inferences` step is already part of both `rag` and `full`, so this flag is
+kept for backward compatibility with older clients.
 
 **Requirements:**
 - `inference-worker` service must be running
-- vLLM with a suitable language model (e.g., Mistral-7B, Llama-2-13B)
+- An OpenAI-compatible inference backend configured via `INFERENCE_BASE_URL` / `INFERENCE_MODEL`
 - The orchestrator must be able to reach the inference-worker via RabbitMQ
 
 **Pipeline Impact:**
-- Adds `inferences` stage after `entities`
-- Job flow becomes: `extracting → embedding → entities → **inferences** → metadata → completed`
-- Increases total job time by 5–15 seconds depending on text length
+- The entry stage dispatches inference chunks independently of `entities`.
+- Stage order: `extraction → embeddings → entities → metadata → inferences → completed` (`entities` and `metadata` are absent under `profile=rag`).
+- Backend latency and text length determine the added time.
 
 **Output Format:**
 When job completes with `features: ["inferences"]`, the `/v1/documents/{job_id}/download` response includes an `inferences` array:
@@ -456,9 +466,8 @@ Generates vector embeddings for each micro-inference text using BGE-M3. This ena
 - No local model is loaded; a total backend failure fails the job (partial failure is reported as `embeddings_degraded: true`)
 
 **Pipeline Impact:**
-- Does NOT add a separate pipeline stage (embeddings are generated during job finalization)
-- Job flow remains: `extracting → embedding → entities → **inferences** → metadata → completed`
-- Increases finalization time by **10–15 minutes** depending on number of inferences
+- Does NOT add a separate pipeline stage (inference embeddings are generated during job finalization)
+- Increases finalization time depending on the number of inferences and backend throughput
 
 **Output Format:**
 When job completes with `features: ["inferences", "inference_embeddings"]`, each inference in the `inferences` array includes an `embedding` field:
@@ -477,16 +486,15 @@ When job completes with `features: ["inferences", "inference_embeddings"]`, each
 ```
 
 **Performance Note:**
-Embedding generation is CPU-intensive and runs during job finalization. For faster results without embeddings, use only `features=inferences`.
+Inference-embedding generation is backend-bound and runs during job finalization. For faster results without embeddings, use only `features=inferences`.
 
 **Feature Validation:**
-- Maximum **10 features per job** (configurable via `MAX_FEATURES_PER_JOB` env var)
-- Maximum **50 characters per feature name** (configurable via `MAX_FEATURE_NAME_LENGTH` env var)
-- Feature names are **normalized to lowercase** and automatically **deduplicated**
-- Invalid feature names (not in whitelist) are **silently ignored** with a warning logged + metric increment
-- If **all features are invalid**, job processes normally without the optional stages
-- If **feature limits are exceeded** (too many features or too long name), request returns **400 Bad Request**
-- Features are validated and stored in Redis **before** the job is marked as created (ensuring data consistency)
+- Only `inferences` and `inference_embeddings` are accepted.
+- Feature names are **normalized to lowercase** and automatically **deduplicated**.
+- Invalid and duplicate feature names are **silently ignored** with a warning logged + metric increment.
+- There is no count or name-length limit: unsupported values are simply dropped.
+- If **all features are invalid**, the job processes normally without the optional stages.
+- Features are validated and stored in Redis **before** the job is marked as created (ensuring data consistency).
 
 **Examples:**
 
@@ -512,34 +520,23 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 # Output: warning logged, job runs without extra stages
 ```
 
-**Feature Validation Errors:**
+Invalid feature names never cause a request failure: they are filtered out and
+the job proceeds with the remaining valid features. A request with only invalid
+features runs the standard pipeline.
 
-When feature validation fails, the API returns a **400 Bad Request** response:
+| Scenario | Behaviour |
+|----------|-----------|
+| Invalid feature name | Warning logged, feature ignored, job proceeds |
+| Duplicate features | Warning logged, feature included once |
+| Only invalid features | Job runs without optional stages |
 
-```json
-{
-  "error": "invalid_features",
-  "detail": "too many features: 15 requested, max 10 allowed"
-}
-```
-
-Common error scenarios:
-| Scenario | Response | Resolution |
-|----------|----------|-----------|
-| Too many features (>10) | `400 Bad Request` | Reduce number of features |
-| Feature name too long (>50 chars) | `400 Bad Request` | Use shorter feature names |
-| Invalid feature name | Warning logged, job proceeds | Feature is silently ignored; valid features are processed |
-| Duplicate features | Warning logged, feature deduplicated | Feature is included once (no duplicates) |
-
-**Monitoring:**
+**Feature Validation Metrics:**
 
 Invalid features are tracked in the Prometheus metric `ia_text_invalid_features_total`:
 
 ```
 ia_text_invalid_features_total{reason="unknown_feature"} 5
-ia_text_invalid_features_total{reason="too_long"} 2
 ia_text_invalid_features_total{reason="duplicate"} 3
-ia_text_invalid_features_total{reason="too_many"} 0
 ```
 
 ---
@@ -657,6 +654,69 @@ curl http://localhost:8080/v1/documents/job_xyz789abc/download?raw=true | jq .
 ```
 
 ---
+
+## Result sub-resources
+
+These endpoints read the finalized results file and require
+`status=completed` (otherwise `400 job_not_ready`).
+
+### 6. Cancel Job
+
+**Endpoint:** `POST /v1/documents/{job_id}/cancel`
+
+Marks a non-terminal job as `cancelled` and removes it from `active_jobs`.
+Workers check the status between stages and abort cooperatively; the job is not
+deleted.
+
+```bash
+curl -X POST http://localhost:8080/v1/documents/{job_id}/cancel
+```
+
+```json
+{"message": "job cancelled", "job_id": "…", "status": "cancelled"}
+```
+
+Terminal jobs return `409 job_not_cancellable`.
+
+### 7. Document graph
+
+**Endpoint:** `GET /v1/documents/{job_id}/graph`
+
+Returns `{job_id, nodes[], edges[]}` for graph-database ingestion.
+
+### 8. Vectors
+
+**Endpoint:** `GET /v1/documents/{job_id}/vectors`
+
+Returns chunks and inferences with optional embeddings.
+
+| Query | Default | Meaning |
+|---|---|---|
+| `embeddings` | `true` | Include embedding vectors |
+| `fields` | `chunks,inferences` | Comma-separated sections |
+| `page_chunks` / `limit_chunks` | `1` / `100` | Chunk pagination |
+| `page_inferences` / `limit_inferences` | `1` / `100` | Inference pagination |
+
+### 9. Entities
+
+**Endpoint:** `GET /v1/documents/{job_id}/entities`
+
+Returns `{job_id, entities[]}` with `entity_id`, `label`, `text` and
+`confidence`.
+
+### 10. Inferences
+
+**Endpoint:** `GET /v1/documents/{job_id}/inferences`
+
+Returns `{job_id, inferences[]}` with `inference_id`, `chunk_id`, `text`,
+`confidence` and resolved `entity_refs` / `entity_id_refs`.
+
+| Query | Default | Meaning |
+|---|---|---|
+| `page_inferences` / `limit_inferences` | `1` / `100` | Pagination |
+
+All four sub-resource endpoints return `400 invalid_job_id` for malformed IDs
+and `404 not_found` when results do not exist.
 
 ## Data Models
 
@@ -862,8 +922,6 @@ See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
 | Constraint | Limit | Configurable Via |
 |-----------|-------|------------------|
 | Spreadsheet rows | 2,000 rows | `MAX_SPREADSHEET_ROWS` |
-| Features per job | 10 features | `MAX_FEATURES_PER_JOB` |
-| Feature name length | 50 characters | `MAX_FEATURE_NAME_LENGTH` |
 | Job TTL (time to keep results) | 24 hours | `JOB_TTL` |
 | Job timeout | 60 minutes | `JOB_TIMEOUT` |
 | Concurrent jobs per orchestrator | 30 (default) | `MAX_CONCURRENT_JOBS` |
@@ -872,8 +930,9 @@ See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
 
 | Worker | Variable | Default | Notes |
 |--------|----------|---------|-------|
-| Embeddings (GPU) | `EMBEDDING_BATCH_SIZE_GPU` | 64 (code) / 32 (Dockerfile) | `EMBEDDINGS_BATCH_SIZE` is dead config — do not use |
-| Embeddings (CPU) | `EMBEDDING_BATCH_SIZE_CPU` | 2 | |
+| Embeddings (GPU) | `EMBEDDING_BATCH_SIZE_GPU` | 64 | Local chunk batching |
+| Embeddings (CPU) | `EMBEDDING_BATCH_SIZE_CPU` | 2 | Local chunk batching |
+| Embeddings (request) | `EMBEDDINGS_BATCH_SIZE` | 32 | Texts per backend request |
 | Entities (GLiNER) | `GLINER_BATCH_SIZE` | 16 | Default used by the batching loop in `entities_worker.py` |
 
 **Response Time Estimates** (rough, depends on file size and server load):
@@ -881,12 +940,7 @@ See `AGENTS.md` → "Air-Gapped Deployment" for detailed setup.
 - **Audio (1 hour):** 30–60 seconds (transcription time varies)
 - **Images (10MB):** 5–15 seconds
 - **Spreadsheets (500 rows):** 5–10 seconds
-- **With inferences:** Add 5–15 seconds
-- **Documents (10MB PDF):** 10–30 seconds
-- **Audio (1 hour):** 30–60 seconds (transcription time varies)
-- **Images (10MB):** 5–15 seconds
-- **Spreadsheets (500 rows):** 5–10 seconds
-- **With inferences:** Add 5–15 seconds
+- **With inferences:** Backend-dependent; adds LLM latency
 
 ---
 
@@ -900,7 +954,7 @@ Environment variables (set in `docker-compose.yml` or `.env`):
 |----------|---------|-------------|
 | `HTTP_PORT` | 8080 | HTTP server port |
 | `LOG_LEVEL` | info | Logging level (debug, info, warn, error) |
-| `JOB_TIMEOUT` | 5m | Maximum time to process a single job |
+| `JOB_TIMEOUT` | 60m | Maximum time to process a single job |
 | `JOB_TTL` | 24h | Time to keep completed job results in Redis |
 | `MAX_RETRIES` | 3 | Max retries for failed pipeline stages |
 | `RETRY_DELAY` | 1s | Delay between retries |
@@ -924,7 +978,9 @@ Environment variables (set in `docker-compose.yml` or `.env`):
 
 ## Webhook Notifications
 
-When a job completes, the orchestrator can notify a webhook endpoint with the final results.
+When a job completes or fails, the completion worker can notify a webhook
+endpoint. Per-job webhooks are read from the job metadata and fall back to the
+global `WEBHOOK_URL`.
 
 **Webhook Request:**
 ```
@@ -934,9 +990,15 @@ Content-Type: application/json
 {
   "job_id": "job_xyz789abc",
   "status": "completed",
-  "results": { ... }  // Full job results object
+  "download_url": "http://api/v1/documents/job_xyz789abc/download",
+  "completed_at": "2025-03-16T10:30:00Z",
+  "error": "..."   // only when status=failed
 }
 ```
+
+When a `webhook_secret` is configured, the request includes
+`X-Webhook-Signature` (HMAC-SHA256 of the JSON body) and
+`X-Webhook-Timestamp` headers.
 
 ---
 
@@ -969,9 +1031,9 @@ Content-Type: application/json
 | **425** | `too_early` | Job not yet completed | Attempting to download before job finishes |
 | **500** | `internal_error` | Server-side error | Unexpected exception in handler |
 | **500** | `extraction_error` | File extraction failed | Docling crashed on malformed PDF |
-| **500** | `embedding_error` | Embedding generation failed | BAAI model unavailable or crashed |
-| **500** | `entity_extraction_error` | Entity recognition failed | GLiNER service unreachable |
-| **500** | `inference_error` | Inference generation failed (if `features: ["inferences"]` set) | vLLM service down |
+| **500** | `embedding_error` | Embedding generation failed | Embeddings backend unavailable |
+| **500** | `entity_extraction_error` | Entity recognition failed | GLiNER runtime failure |
+| **500** | `inference_error` | Inference generation failed | LLM backend unavailable |
 | **500** | `storage_error` | Failed to save results | Disk full or permission denied |
 | **503** | `service_unavailable` | Infrastructure services unavailable | Redis/RabbitMQ down |
 

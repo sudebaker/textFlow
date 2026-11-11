@@ -82,7 +82,7 @@ services:
     - UPLOAD_PATH=/app/data/uploads
     - RESULTS_PATH=/app/data/results
     - EXTRACT_QUEUE=extract_text
-    # Admission control (docs/plan-adaptive-flow-control.md Fase 1)
+    # Admission control (docs/ARCHITECTURE.md §Admission)
     - INGESTION_RATE_LIMIT=${INGESTION_RATE_LIMIT:-10}
     - INGESTION_RATE_BURST=${INGESTION_RATE_BURST:-20}
     - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-30}
@@ -627,14 +627,14 @@ services:
       dockerfile: Dockerfile
     container_name: textflow-vision-ocr
     # docker_default lets the container reach the external vision LLM backend
-    # (vllm-minicpm via the GPU overlay, or the dev Ollama on the mac-mini).
+    # (vllm-minicpm via the GPU overlay, or any OpenAI-compatible server).
     networks:
     - backend
     - datastore
     - docker_default
     environment:
-    # VISION_MODEL maps from the .env-level VISION_LLM_MODEL name: dev override
-    # is minicpm-v4.5:latest (Ollama mac-mini), prod default minicpm-v-4.5 (vLLM).
+    # VISION_MODEL maps from the .env-level VISION_LLM_MODEL name.
+    # Default matches the vllm-minicpm serving model.
     - VISION_LLM_BASE_URL=${VISION_LLM_BASE_URL:-http://vllm-minicpm:8000}
     - VISION_MODEL=${VISION_LLM_MODEL:-minicpm-v-4.5}
     - VISION_TIMEOUT=${VISION_TIMEOUT:-180}

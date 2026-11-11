@@ -1,6 +1,6 @@
 """Worker exposes the docling document + requests to_formats=md,json (Task E.3).
 
-Fase A finding A.1 (docs/extraccion-visual-verificacion-A.md): the DEFAULT
+Fase A finding A.1: the DEFAULT
 docling-serve response has NO per-page data — requesting to_formats=json makes
 `document.json_content` (full DoclingDocument) available, whose
 `texts[].prov[].page_no` and `pages` map feed the vision slow path.

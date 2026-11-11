@@ -21,6 +21,22 @@ Los modelos se montan desde el volumen compartido `models-data`
 `whisper` `MODEL_PATH=/models/whisper` y `docling`
 `DOCLING_SERVE_ARTIFACTS_PATH=/models/docling`.
 
+## Admisión y límites
+
+| Variable | Default | Servicio | Efecto |
+|---|---|---|---|
+| `API_KEY` | vacío (auth off) | orchestrator | si se define, exige `X-API-Key` en cada request |
+| `INGESTION_RATE_LIMIT` / `INGESTION_RATE_BURST` | `10` / `20` | orchestrator | token bucket de admisión (429 al superar) |
+| `MAX_CONCURRENT_JOBS` | `30` | orchestrator | jobs activos máximos (503 al superar) |
+| `QUEUE_DEPTH_REJECT_THRESHOLD` | `500` | orchestrator | profundidad de cola que activa 503 |
+| `JOB_TIMEOUT` | `60m` | orchestrator | tiempo máximo por job |
+| `MAX_DOCUMENT_SIZE_MB` | `10` | orchestrator | tamaño máximo de documento |
+| `QUEUE_MAX_LENGTH` | `1000` | RabbitMQ | `x-max-length`; `0` = sin límite |
+| `UPLOAD_PATH` / `RESULTS_PATH` | `/app/data/...` | orchestrator | rutas de uploads y resultados |
+
+`ALLOW_LOCAL_URLS` está declarada en `internal/config` pero **no se aplica**:
+la validación SSRF bloquea rangos privados siempre.
+
 ## Docling / Extraction
 
 | Variable | Default | Servicio | Notas |
@@ -37,30 +53,30 @@ Los modelos se montan desde el volumen compartido `models-data`
 
 | Variable | Default | Servicio | Notas |
 |---|---|---|---|
-| `VISION_OCR_ENABLED` | `false` | extraction-worker | master switch del fallback (spec §14); until benchmark OFF |
+| `VISION_OCR_ENABLED` | `false` | extraction-worker | master switch del fallback; off hasta calibrar |
 | `VISION_GATE_ENABLED` | `true` | extraction-worker | gate log-only (observa/logs, no cambia salida) |
 | `VISION_OCR_URL` | `http://vision-ocr:8080` | extraction-worker | servicio vision-ocr (solo si enabled) |
 | `VISION_OCR_TIMEOUT` | `120` s | extraction-worker | timeout HTTP por página |
 | `VISION_OCR_MAX_PAGES_PER_DOCUMENT` | `50` | extraction-worker | presupuesto páginas Vision/doc |
 | `VISION_OCR_MAX_SECONDS_PER_DOCUMENT` | `900` s | extraction-worker | presupuesto segundos Vision/doc |
-| `VISION_OCR_MAX_CONCURRENCY` | `4` | extraction-worker | semáforo cliente (spec §20) |
+| `VISION_OCR_MAX_CONCURRENCY` | `4` | extraction-worker | semáforo cliente |
 | `VISION_OCR_IMAGE_DPI` | `200` | extraction-worker | DPI render pypdfium2 (bench: 120/200/300) |
 | `VISION_MIN_CHARS_PER_PAGE` | `100` | extraction-worker | threshold gate página/doc (calibrar F.3) |
 | `VISION_IMAGE_PLACEHOLDER_RATIO_MAX` | `0.3` | extraction-worker | ratio placeholders → suspect |
 | `VISION_GARBAGE_RATIO_MAX` | `0.2` | extraction-worker | ratio basura (cid:/ufffd) → suspect |
-| `VISION_LLM_BASE_URL` / `VISION_LLM_MODEL` | `http://vllm-minicpm:8000` / `minicpm-v-4.5` | vision-ocr | backend-agnóstico; dev: Ollama mac-mini `minicpm-v4.5:latest` |
+| `VISION_LLM_BASE_URL` / `VISION_LLM_MODEL` | `http://vllm-minicpm:8000` / `minicpm-v-4.5` | vision-ocr | backend-agnóstico; en dev puede apuntar a cualquier servidor OpenAI-compatible |
 
 ## Embeddings / Entities / Metadata
 
 | Variable | Default | Servicio | Notas |
 |---|---|---|---|
-| `EMBEDDINGS_DEVICE` | `cpu` | embeddings-worker | `cuda` si GPU |
+| `EMBEDDINGS_DEVICE` | `cpu` | legacy | solo lo usan los benchmarks; el worker remoto no carga modelo |
 | `EMBEDDING_BATCH_SIZE_GPU` | `64` | embeddings-worker | bench 32/64/96/128 (GPU); `*_CPU=2` |
 | `ENTITIES_DEVICE` | vacío (auto) | entities-worker | `cuda` explícito |
 | `GLINER_BATCH_SIZE` | `16` | entities-worker | `chunks/model call` — no confundir con `EXTRACTION_CONCURRENCY` |
 | `ENTITY_TYPES` / `ENTITY_THRESHOLD_*` | `PERSON,ORGANIZATION,…` | entities-worker | umbrales por label |
 | `DEDUPLICATION_ENABLED` | `false` | entities-worker | `FUZZY_MATCH_THRESHOLD=0.85` solo si `true` |
-| `REGEX_ENTITY_EXTRACTOR_URL` | `http://regex-entity-extractor:8081` | entities-worker | paralelizado con GLiNER (Fase 2) |
+| `REGEX_ENTITY_EXTRACTOR_URL` | `http://regex-entity-extractor:8081` | entities-worker | paralelizado con GLiNER |
 
 ## Inference (facts per chunk)
 
@@ -100,10 +116,9 @@ Los modelos se montan desde el volumen compartido `models-data`
 
 | Variable | Default | Notas |
 |---|---|---|
-| `EXTRACT_QUEUE / EMBEDDINGS_QUEUE / ENTITIES_QUEUE / METADATA_QUEUE / COMPLETION_QUEUE` | `extract_text …` | dummy `PIPELINE_CONFIG_PATH=/app/configs/pipeline.json` puede re-route |
+| `EXTRACT_QUEUE / EMBEDDINGS_QUEUE / ENTITIES_QUEUE / METADATA_QUEUE` | `extract_text …` | `PIPELINE_CONFIG_PATH=/app/configs/pipeline.json` define el routing real |
 | `PREFETCH_COUNT` | `5` | qos por worker |
 | `MAX_RETRIES` / `DELAYED_EXCHANGE_ENABLED` | `3 / true` | `document_processor_delayed` plugin vs `nack(requeue)` fallback |
-| `MESSAGE_TIMEOUT` | `30s` | handler timeout (orchestrator) |
 | `RESOURCE_MANAGER_PORT` / `GPU_MONITORING_ENABLED` | `9090 / false` | nvidia-smi opcional |
 
 **Verificación antes de publicar:** `make docs` o script CI que cruce `grep -n os.getenv .env.example` → envs en tablas. Variables marcadas *dead* en Compose/`make` pero no leídas desde código deben eliminarse o documentarse como `deprecated`.

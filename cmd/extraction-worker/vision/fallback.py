@@ -38,8 +38,8 @@ from .renderer import render_page_async
 
 logger = logging.getLogger(__name__)
 
-# Fase A decision (docs/extraccion-visual-verificacion-A.md A.1): per-page
-# text comes from the docling document JSON `texts[].prov[0].page_no`.
+# Per-page text comes from the docling document JSON
+# `texts[].prov[0].page_no`.
 PAGE_TEXT_MODE = "texts_prov"  # "texts_prov" | "none"
 
 

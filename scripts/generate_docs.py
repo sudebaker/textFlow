@@ -178,7 +178,7 @@ def generate_html_index() -> None:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IA Text Orchestrator - API Documentation</title>
+    <title>textFlow - API Documentation</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -287,7 +287,7 @@ def generate_html_index() -> None:
 </head>
 <body>
     <div class="container">
-        <h1>📚 IA Text Orchestrator API Documentation</h1>
+        <h1>📚 textFlow API Documentation</h1>
         <p class="subtitle">Event-driven microservices: Go orchestrator + Python workers</p>
         
         <div class="section">
@@ -426,7 +426,7 @@ def generate_html_index() -> None:
         </div>
         
         <footer>
-            <p>Generated on 2026-03-27 | <a href="https://github.com/anomalyco/textflow">Repository</a></p>
+            <p>Generated on 2026-03-27 | <a href="https://github.com/sudebaker/textFlow">Repository</a></p>
         </footer>
     </div>
 </body>

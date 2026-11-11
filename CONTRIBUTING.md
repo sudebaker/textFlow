@@ -4,7 +4,7 @@
 
 ## Requisitos de desarrollo
 
-- **Go** 1.22.5+
+- **Go** 1.23+
 - **Python** 3.11+
 - **Docker** + Docker Compose
 - **Make** (para usar el Makefile)
@@ -17,7 +17,15 @@
 git clone https://github.com/sudebaker/textFlow.git
 cd textFlow
 cp .env.example .env
+$EDITOR .env              # rellena el bloque BACKENDS (EMBEDDINGS_*, INFERENCE_*)
 
+make doctor               # valida env, staging de modelos y backends
+make bootstrap            # doctor → modelos → sync → build → up → smoke
+```
+
+Para trabajar solo con la infraestructura y compilar:
+
+```bash
 make infra-up
 make build
 ```

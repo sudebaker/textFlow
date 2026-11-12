@@ -6,7 +6,7 @@
 ## Pipeline
 
 ```
-API (POST /v1/documents)
+API (POST /v1/documents/process · /v1/documents/upload)
   ↓  validate + store pending + stage.queued
 RabbitMQ (extract_text | audio | image — entry)
   ↓  PipelineDefinition.queues_for (configs/pipeline.json)

@@ -7,6 +7,12 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Fixed
+- `docs/API.md` sincronizada con el código: nombres de evento SSE, campos inexistentes
+  (`results_url`, `error_detail`, `detail`), estados de job, tipos de fichero aceptados,
+  `DELETE /v1/documents/{id}` que no estaba documentado, tabla de errores y nombres de
+  métricas Prometheus (`ia_text_`).
+
 ### Added
 - API key authentication middleware para orchestrator (`X-API-Key` header)
 - `docker-compose.gpu.yml` override file para GPU opcional

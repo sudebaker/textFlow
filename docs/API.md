@@ -28,10 +28,14 @@ any deployment reachable outside a trusted network.
 ```json
 {
   "job_id": "job_abc123xyz",
-  "status": "pending|extracting|processing|embedding|entities|inferences|completed",
-  "created_at": "2025-03-16T10:30:00Z"
+  "status": "pending",
+  "status_url": "http://localhost:8080/v1/documents/job_abc123xyz"
 }
 ```
+
+That is the shape returned by both creation endpoints (`202 Accepted`). `status` takes the
+values listed in [Job Status Lifecycle](#4-get-job-status-polling); `status_url` is where to
+poll.
 
 ### Error Response (4xx, 5xx)
 ```json
@@ -86,7 +90,7 @@ curl http://localhost:8080/health
 ```json
 {
   "document_base64": "JVBERi0xLjQKJeLj...",  // Either this
-  "document_url": "https://example.com/doc.pdf",  // Or this (mutually exclusive)
+  "document_url": "https://example.com/doc.pdf",  // Or this (if both are sent, base64 wins)
   "filename": "document.pdf",  // Optional
   "profile": "full",  // Optional: rag | full (default: full)
   "features": ["inferences"],  // Optional: enable extra pipeline stages
@@ -115,7 +119,6 @@ curl http://localhost:8080/health
 
 **Error Examples:**
 - `400 Bad Request`: Missing required fields or invalid JSON
-- `400 Bad Request`: Both `document_base64` and `document_url` provided
 - `400 Bad Request`: Invalid URL or SSRF attempt detected
 - `400 Bad Request`: Document exceeds 10MB limit
 - `500 Internal Server Error`: Failed to queue job
@@ -152,8 +155,8 @@ curl -X POST http://localhost:8080/v1/documents/process \
 |----------|-----------|----------|-------|
 | **Documents** | `.pdf`, `.txt`, `.doc`, `.docx`, `.ppt`, `.pptx` | 10 MB | Text extraction via Docling |
 | **Spreadsheets** | `.xls`, `.xlsx`, `.csv`, `.json` | 5 MB | Flattened to text with max 2,000 rows |
-| **Images** | `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` | 10 MB | Analysis via Multimodal LLM |
-| **Audio** | `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` | 500 MB | Transcription via Whisper (diarization not implemented) |
+| **Images** | `.jpg`, `.jpeg`, `.png` | 10 MB | Analysis via Multimodal LLM |
+| **Audio** | `.mp3`, `.wav`, `.m4a`, `.ogg` | 500 MB | Transcription via Whisper (diarization not implemented) |
 
 **Request:**
 ```
@@ -187,7 +190,9 @@ https://example.com/webhook
    - `inferences` — Generate micro-inferences from extracted text (requires vLLM).
    - `inference_embeddings` — Generate vector embeddings for inferences (requires `inferences`).
    - Rich EXIF/XMP document metadata (author, title, page count, etc. via exiftool) is extracted for every job by default, on top of the fast metadata (filename, size, hash, MIME type).
-   - Max features per job and max characters per name are configurable (see **Data Constraints** section). Invalid features are silently ignored with a warning.
+   - Only those two names are accepted. Anything else is dropped with a warning and an
+     `invalid_features_total{reason="unknown_feature"}` metric; an empty or whitespace-only
+     entry is ignored. There is no separate cap on how many features a request may list.
 - `diarize` (boolean, optional): **Audio files only.** Accepted for API compatibility but **not implemented** — the whisper service ignores it. Speaker diarization is planned future work. Default: `false`. Ignored for non-audio files.
 - `notify_webhook` (string, optional): Webhook URL to notify when job completes. If not provided, uses `WEBHOOK_URL` from server config.
 
@@ -300,7 +305,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
   "job_id": "job_xyz789abc",
   "status": "failed",
   "current_step": "extracting",
-  "error": "extraction_error",
+  "error": "docling: unsupported PDF version",
   "created_at": "2025-03-16T10:30:00Z"
 }
 ```
@@ -323,16 +328,20 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 
 All jobs follow the same pipeline stages regardless of file type (documents, audio, images, spreadsheets):
 
-1. `pending` — Job created, waiting for first stage
-2. `extracting` — Extracting content from file (PDF text, audio transcription, image analysis, spreadsheet parsing)
-3. `processing` — Not currently used; reserved for future compatibility
-4. `embedding` — Generating text embeddings via the configured OpenAI-compatible backend
-5. `entities` — Extracting named entities and PII (GLiNER model + regex patterns)
-6. `metadata` — Extracting and enriching document metadata
-7. `inferences` — Generating micro-inferences with the configured LLM backend (part of both `rag` and `full` profiles)
-8. `completed` — All processing complete, results available via `/download`
-9. `failed` — Job failed at any stage; check `error` field in response
-10. `cancelled` — Job cancelled through `POST /v1/documents/{job_id}/cancel`
+1. `pending` — Job created, waiting for the first stage
+2. `extracting` — Extracting content from the file (PDF text, spreadsheet parsing)
+3. `transcribing` — Audio job being transcribed by the audio worker
+4. `analyzing_image` — Image job being analysed by the image worker (OCR, and description with `full`)
+5. `processing` — Reserved; not currently emitted
+6. `embedding` — Generating text embeddings via the configured OpenAI-compatible backend
+7. `entities` — Extracting named entities and PII (GLiNER model + regex patterns)
+8. `inferences` — Generating micro-inferences with the configured LLM backend (part of both `rag` and `full` profiles)
+9. `completed` — All processing complete, results available via `/download`
+10. `failed` — Job failed at any stage; check the `error` field in the response
+11. `cancelled` — Job cancelled through `POST /v1/documents/{job_id}/cancel`
+
+`metadata` is **not** a job status: metadata extraction is a pipeline *step* (it appears in
+`steps`) that runs between `entities` and `inferences`.
 
 **Pipeline by File Type:**
 
@@ -381,12 +390,17 @@ When job is completed:
 When job fails:
 ```json
 {
+  "job_id": "job_xyz789abc",
   "status": "failed",
   "current_step": "embedding",
   "error": "embedding_error",
-  "detail": "BAAI model failed to generate embeddings"
+  "created_at": "2025-03-16T10:30:00Z"
 }
 ```
+
+There is no `detail` field in this response: the failure reason goes in `error`. The
+`{"error": …, "detail": …}` envelope belongs to HTTP error responses, not to a job that
+completed the polling call successfully.
 
 **Example:**
 ```bash
@@ -569,7 +583,7 @@ curl -X POST http://localhost:8080/v1/documents/upload \
 
 **Endpoint:** `GET /v1/documents/{job_id}/download`
 
-**Description:** Download the full processing results for a completed job. Returns JSON containing text, chunks, embeddings, entities, metadata, and (for media jobs) the explicit media fields described below. Embeddings are compressed at the field level using gzip+base64 (see `embedding_compressed` field). **Only available when job status is `completed`.**
+**Description:** Download the full processing results for a completed job. Returns JSON containing text, chunks, embeddings, entities, metadata, and (for media jobs) the explicit media fields described below. Embeddings are compressed at the field level using gzip+base64 (see `embedding_compressed` field). **Available when the job is `completed` or `failed`** (a failed job still has partial results on disk). Otherwise the endpoint answers `400 job_not_ready`.
 
 > **Note:** This endpoint reads results from the filesystem. Always check job status via `GET /v1/documents/{job_id}` before calling this endpoint.
 
@@ -718,10 +732,38 @@ Returns `{job_id, inferences[]}` with `inference_id`, `chunk_id`, `text`,
 All four sub-resource endpoints return `400 invalid_job_id` for malformed IDs
 and `404 not_found` when results do not exist.
 
+### 11. Delete Job
+
+**Endpoint:** `DELETE /v1/documents/{job_id}`
+
+Removes the job from Redis and its results file from disk. **Only terminal jobs can be
+deleted**: `completed` or `failed`. Anything still running must be cancelled first.
+
+```bash
+curl -X DELETE http://localhost:8080/v1/documents/job_xyz789abc
+```
+
+Successful deletion answers `200 OK` with a small acknowledgement body:
+
+```json
+{"message": "job deleted", "job_id": "job_xyz789abc"}
+```
+
+- `200 OK`: the job and its results were removed.
+- `400 invalid_job_id`: malformed ID.
+- `404 job_not_found`: no such job (already deleted, or expired by TTL).
+- `409 job_in_progress`: the job is still running (`pending`, `extracting`, `transcribing`,
+  `analyzing_image`, `processing`, `embedding`, `entities`, `inferences`, `cancelled`).
+  Cancel it with `POST …/cancel` and let the workers stop before deleting.
+- `500 internal_error`: the datastore refused the deletion.
+
+> **Not idempotent**: a second `DELETE` on the same job returns `404 job_not_found`, not a
+> success. Treat 404 as "already gone" in your client.
+
 ## Data Models
 
 ### Job Status
-Possible values: `pending`, `extracting`, `processing`, `embedding`, `entities`, `completed`, `failed`
+Possible values: `pending`, `extracting`, `transcribing`, `analyzing_image`, `processing`, `embedding`, `entities`, `inferences`, `completed`, `failed`, `cancelled`
 
 ### Entity Object
 ```json
@@ -1022,20 +1064,31 @@ When a `webhook_secret` is configured, the request includes
 | **400** | `invalid_input` | Validation failed (e.g., SSRF attempt, invalid JSON) | Suspicious URL in `document_url` |
 | **400** | `invalid_file_type` | Uploaded file type not supported | Uploading `.exe` or `.zip` file |
 | **400** | `file_too_large` | File exceeds size limit (see constraints table) | 15MB PDF when limit is 10MB |
-| **400** | `csv_row_limit_exceeded` | CSV/Excel file exceeds row limit | 3,000 rows in spreadsheet when limit is 2,000 |
-| **400** | `both_inputs_provided` | Both `document_base64` and `document_url` supplied | Mutually exclusive parameters |
-| **400** | `missing_required_field` | Required field missing from request | `document_base64` and `document_url` both absent |
-| **413** | `payload_too_large` | Request body exceeds maximum size | Uploading massive base64 encoded file |
-| **429** | `rate_limit_exceeded` | Too many requests from this IP | More than 100 req/sec per IP |
+| **400** | `too_many_rows` | CSV/Excel file exceeds row limit | 3,000 rows in spreadsheet when limit is 2,000 |
+| **400** | `csv_parse_error` | Spreadsheet could not be parsed | Corrupt CSV or unreadable XLSX |
+| **400** | `invalid_filename` | Rejected filename | Path traversal or empty name |
+| **400** | `invalid_profile` | `profile` is neither `rag` nor `full` | `"profile": "fast"` |
+| **400** | `invalid_job_id` | Job ID does not match the expected format | `GET /v1/documents/abc` |
+| **409** | `job_in_progress` | Cannot delete a job that is still running | `DELETE` on a `processing` job |
+| **409** | `job_not_cancellable` | Cancelling a job that already reached a terminal state | `POST …/cancel` on a `completed` job |
+| **401** | `invalid_api_key` | `API_KEY` is set and the request has no valid `X-API-Key` | Missing header on a secured deployment |
+| **429** | `rate_limit_exceeded` | Global middleware limiter (100 req/s, burst 10 per IP) | More than 100 req/sec per IP |
+| **429** | `system_busy` | Admission control rejected the job: ingestion rate limit | Also carries `Retry-After: 5` |
+| **503** | `system_busy` | Admission control rejected the job: concurrent jobs or queue depth | `MAX_CONCURRENT_JOBS` / `QUEUE_DEPTH_REJECT_THRESHOLD` reached |
 | **404** | `not_found` | Job ID does not exist or has expired | Job TTL elapsed (24 hours default) |
-| **425** | `too_early` | Job not yet completed | Attempting to download before job finishes |
+| **404** | `job_not_found` | `GET /v1/documents/{id}` for an unknown ID | Polling a random ID |
+| **400** | `job_not_ready` | Results requested before the job finished | Sub-resources and `/download` on a `pending`/`processing` job |
 | **500** | `internal_error` | Server-side error | Unexpected exception in handler |
-| **500** | `extraction_error` | File extraction failed | Docling crashed on malformed PDF |
-| **500** | `embedding_error` | Embedding generation failed | Embeddings backend unavailable |
-| **500** | `entity_extraction_error` | Entity recognition failed | GLiNER runtime failure |
-| **500** | `inference_error` | Inference generation failed | LLM backend unavailable |
-| **500** | `storage_error` | Failed to save results | Disk full or permission denied |
-| **503** | `service_unavailable` | Infrastructure services unavailable | Redis/RabbitMQ down |
+| **400** | `invalid_path` | Unsafe path supplied (traversal) | `filename: "../../etc/passwd"` |
+| **400** | `invalid_webhook_url` | Batch `webhook_url` is not a valid URL | `"webhook_url": "ftp://x"` |
+| **400** | `read_error` | Uploaded file could not be read | Truncated multipart body |
+| **503** | `system_busy` | Admission control rejected the job: a downstream queue is full | Any worker queue at `QUEUE_DEPTH_REJECT_THRESHOLD` |
+
+Job-level failures are **not** a closed set of codes: when a pipeline stage fails, the
+worker's own message is stored verbatim and returned in the job's `error` field (for example
+`"docling: unsupported PDF version"` or `"embeddings backend returned 502"`). The table above
+lists HTTP-level error codes only.
+
 
 ### Error Response Examples
 
@@ -1079,7 +1132,7 @@ Retry-After: 1
 **500 Internal Error — Job failed at extraction:**
 ```json
 {
-  "error": "extraction_error",
+  "error": "docling: unsupported PDF version",
   "detail": "Document extraction failed: PDF appears corrupted or uses unsupported compression"
 }
 ```
@@ -1194,14 +1247,22 @@ curl -s http://localhost:8080/health | jq
 
 ### Metrics (Prometheus)
 
-Metrics are available at (when monitoring is enabled):
-- `/metrics` — Prometheus format
+Metrics are available at `/metrics` in Prometheus format. Every series carries the
+`ia_text_` prefix, which is easy to miss when you copy a dashboard from another service.
 
-Common metrics:
-- `jobs_total{status,type}` — Total jobs by status and type
-- `jobs_in_progress` — Currently processing jobs
-- `job_duration_seconds` — Job processing time
-- `queue_publish_total{queue}` — Messages published to queue
+Most useful ones:
+
+| Metric | What it tells you |
+|---|---|
+| `ia_text_jobs_total{status,type}` | Jobs created, by final status and content type |
+| `ia_text_jobs_in_progress` | Jobs currently running |
+| `ia_text_job_duration_seconds` | End-to-end job duration |
+| `ia_text_job_step_duration_seconds` | Duration per pipeline step |
+| `ia_text_queue_depth{queue}` | Messages waiting in each queue |
+| `ia_text_queue_publish_total{queue}` / `ia_text_queue_consume_total{queue}` | Throughput per queue |
+| `ia_text_admission_accepted_total` / `ia_text_admission_rejected_total{reason}` | Admission control decisions |
+| `ia_text_http_requests_total{method,endpoint,status}` / `ia_text_http_latency_seconds{method,endpoint}` | HTTP traffic |
+| `ia_text_circuit_breaker_state{name}` | State of each external dependency: `0` closed, `1` half-open, `2` open |
 
 ---
 
@@ -1336,20 +1397,20 @@ Content-Type: text/event-stream
 Cache-Control: no-cache
 Connection: keep-alive
 
-event: job_pending
-data: {"job_id":"job_abc123","status":"pending","timestamp":"2025-03-16T10:30:00Z"}
+event: job_created
+data: {"job_id":"job_abc123","status":"pending","progress":0,"timestamp":"2025-03-16T10:30:00Z"}
 
-event: job_extracting
-data: {"job_id":"job_abc123","status":"extracting","progress":0,"timestamp":"2025-03-16T10:30:05Z"}
+event: job_progress
+data: {"job_id":"job_abc123","status":"extracting","progress":10,"timestamp":"2025-03-16T10:30:05Z"}
 
-event: job_embedding
-data: {"job_id":"job_abc123","status":"embedding","progress":0.33,"timestamp":"2025-03-16T10:30:15Z"}
+event: stage.started
+data: {"job_id":"job_abc123","timestamp":"2025-03-16T10:30:06Z","metadata":{"stage":"extraction"}}
 
-event: job_entities
-data: {"job_id":"job_abc123","status":"entities","progress":0.66,"timestamp":"2025-03-16T10:30:25Z"}
+event: job_progress
+data: {"job_id":"job_abc123","status":"embedding","progress":60,"timestamp":"2025-03-16T10:30:15Z"}
 
 event: job_completed
-data: {"job_id":"job_abc123","status":"completed","progress":1.0,"timestamp":"2025-03-16T10:30:35Z","results_url":"http://localhost:8080/v1/documents/job_abc123/download"}
+data: {"job_id":"job_abc123","status":"completed","progress":100,"timestamp":"2025-03-16T10:30:35Z"}
 
 : heartbeat
 
@@ -1357,16 +1418,21 @@ data: {"job_id":"job_abc123","status":"completed","progress":1.0,"timestamp":"20
 
 **Event Types and Payloads:**
 
-| Event | Status | Meaning | Payload |
-|-------|--------|---------|---------|
-| `job_pending` | `pending` | Job created, queued for processing | `{job_id, status, timestamp}` |
-| `job_extracting` | `extracting` | Extracting content from file | `{job_id, status, progress, timestamp}` |
-| `job_embedding` | `embedding` | Generating text embeddings | `{job_id, status, progress, timestamp}` |
-| `job_entities` | `entities` | Extracting named entities | `{job_id, status, progress, timestamp}` |
-| `job_inferences` | `inferences` | Generating inferences (if requested) | `{job_id, status, progress, timestamp}` |
-| `job_metadata` | `metadata` | Extracting document metadata | `{job_id, status, progress, timestamp}` |
-| `job_completed` | `completed` | Job finished successfully | `{job_id, status, progress: 1.0, timestamp, results_url}` |
-| `job_failed` | `failed` | Job failed at some stage | `{job_id, status, error, error_detail, timestamp}` |
+There are **five** event names, not one per status. The status travels *inside* the payload.
+
+| Event | When | Payload |
+|-------|------|---------|
+| `job_created` | The job was accepted and queued | `{job_id, status:"pending", progress, timestamp}` |
+| `job_progress` | A worker reports a status or progress change | `{job_id, status, progress, timestamp, error?, metadata?}` |
+| `stage.queued` / `stage.started` / `stage.completed` / `stage.failed` | Per-stage bookkeeping for the pipeline | `{job_id, timestamp, metadata:{stage:"extraction"|"embeddings"|…}}` |
+| `job_completed` | The job finished and results are on disk | `{job_id, status:"completed", progress:100, timestamp, metadata?}` |
+| `job_failed` | The job failed | `{job_id, status:"failed", progress, timestamp, error, metadata?}` |
+
+- `progress` is an **integer from 0 to 100**, not a 0–1 fraction.
+- The payload never includes a download URL; build it yourself as
+  `/v1/documents/{job_id}/download` once `status` is `completed`.
+- `metadata` is an object and only appears when there is something to say (the stage name on
+  `stage.*` events, counts on completion if the worker supplies them).
 
 **Heartbeat:**
 The server sends a comment-only message (`: heartbeat\n\n`) every **30 seconds** to keep the connection alive and prevent client timeouts. Clients should ignore heartbeat messages (they're not events).
@@ -1404,19 +1470,19 @@ curl --max-time 300 -N http://localhost:8080/v1/jobs/job_abc123def456/stream
 ```javascript
 const eventSource = new EventSource('/v1/jobs/job_abc123def456/stream');
 
-eventSource.addEventListener('job_pending', (event) => {
+eventSource.addEventListener('job_created', (event) => {
   const data = JSON.parse(event.data);
-  console.log('Job pending:', data.job_id);
+  console.log('Job accepted:', data.job_id);
 });
 
-eventSource.addEventListener('job_extracting', (event) => {
+eventSource.addEventListener('job_progress', (event) => {
   const data = JSON.parse(event.data);
-  console.log('Extracting:', Math.round(data.progress * 100) + '%');
+  console.log(`${data.status}: ${data.progress}%`);
 });
 
 eventSource.addEventListener('job_completed', (event) => {
   const data = JSON.parse(event.data);
-  console.log('Job completed! Download results:', data.results_url);
+  console.log('Job completed:', `/v1/documents/${data.job_id}/download`);
   eventSource.close();
 });
 
@@ -1451,7 +1517,7 @@ def stream_job(job_id):
             print(f"Event: {event.event}, Status: {data['status']}")
             
             if event.event == 'job_completed':
-                print(f"Results ready at: {data['results_url']}")
+                print(f"Results ready at: /v1/documents/{data['job_id']}/download")
                 break
             elif event.event == 'job_failed':
                 print(f"Job failed: {data['error']}")
@@ -1689,6 +1755,19 @@ func decompressEmbeddings(encoded string) ([]float32, error) {
 ---
 
 ## Changelog
+
+### 2026-11 — Documentation sync with the code
+
+- SSE events corrected to the five names the server actually emits (`job_created`,
+  `job_progress`, `stage.*`, `job_completed`, `job_failed`); `progress` documented as 0-100.
+- Removed fields that never existed (`results_url`, `error_detail`, `detail` in the polling
+  response) and statuses that do not exist (`metadata`), added the real ones
+  (`transcribing`, `analyzing_image`).
+- Supported upload types corrected: no `.flac`, `.webp` or `.bmp`.
+- `DELETE /v1/documents/{id}` documented for the first time (200/404/409, not 204).
+- Error reference rebuilt from the codes the handlers actually return; job-level failures
+  documented as free text instead of an invented taxonomy.
+- Prometheus metric names fixed (the `ia_text_` prefix was missing throughout).
 
 ### v1.0.0 (2025-03-16)
 - Initial API release

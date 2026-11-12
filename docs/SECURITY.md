@@ -39,7 +39,7 @@
 
 ## Secrets y env
 
-- `RABBITMQ_PASS`, `WEBHOOK_SECRET` via `.env` (nunca commitear). `deploy/package/package.sh` copia `.env.example` como plantilla, no `.env`.
+- `RABBITMQ_PASS` via `.env` (nunca commitear). El secreto del webhook **no** es variable global: viaja por petición (`webhook_secret`) y firma cada callback con HMAC-SHA256. `deploy/package/package.sh` copia `.env.example` como plantilla, no `.env`.
 - `ARTIFACT_PATH` (`/app/data/artifacts`) con `0755`/`0644` en `FSStore` (downstream lee con UID distinto).
 
 ## Actualizaciones

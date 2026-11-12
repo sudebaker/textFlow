@@ -698,13 +698,16 @@ func getJobHandler(c *gin.Context) {
 }
 
 // deleteJobHandler handles DELETE /v1/documents/{id} requests and removes a job's data from Redis.
-// This endpoint is idempotent: repeated requests for the same job always return 204.
+// Only terminal jobs (completed or failed) can be deleted; anything still running answers
+// 409 job_in_progress, and a job that is already gone answers 404 job_not_found.
 //
 // @Summary Delete a job
 // @Description Remove a completed or failed job and its associated data.
 // @Param id path string true "Job ID"
-// @Success 204 "No Content"
+// @Success 200 {object} map[string]string "job deleted"
+// @Failure 400 {object} models.ErrorResponse
 // @Failure 404 {object} models.ErrorResponse
+// @Failure 409 {object} models.ErrorResponse
 // @Router /v1/documents/{id} [delete]
 func deleteJobHandler(c *gin.Context) {
 	jobID := c.Param("id")

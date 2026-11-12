@@ -93,7 +93,7 @@ func StreamJobHandler(c *gin.Context) {
 		for {
 			select {
 			case <-tick.C:
-				c.Writer.WriteString(": heartbeat\n\n")
+				_, _ = c.Writer.WriteString(": heartbeat\n\n")
 				c.Writer.Flush()
 			case <-done:
 				return

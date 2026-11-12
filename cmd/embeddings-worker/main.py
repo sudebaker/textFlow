@@ -11,20 +11,17 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
+from app.api.routes.embeddings import router as embeddings_router
+from app.config.settings import get_settings
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config.settings import get_settings
-from app.api.routes.embeddings import router as embeddings_router
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
 logger = logging.getLogger(__name__)
@@ -40,30 +37,29 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Embeddings Service...")
     logger.info(f"Configuration: {settings.dict()}")
-    
+
     try:
         # Initialize embedding service
         from app.services.embeddings import EmbeddingService
+
         global embedding_service
         embedding_service = EmbeddingService(
-            model_name=settings.model_name,
-            model_path=settings.model_path,
-            device=settings.get_model_device()
+            model_name=settings.model_name, model_path=settings.model_path, device=settings.get_model_device()
         )
-        
+
         # Preload model if possible
         if embedding_service.load_model():
             logger.info("Embedding model loaded successfully")
         else:
             logger.warning("Failed to preload embedding model")
-        
+
         logger.info("Embeddings Service started successfully")
         yield
-        
+
     except Exception as e:
         logger.error(f"Failed to start embeddings service: {e}")
         sys.exit(1)
-    
+
     # Shutdown
     logger.info("Shutting down Embeddings Service...")
     if embedding_service:
@@ -123,24 +119,13 @@ Generation) systems and Qdrant vector databases.
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_components={
-        "securitySchemes": {
-            "bearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT"
-            }
-        }
-    },
+    openapi_components={"securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}}},
     contact={
         "name": "textFlow",
         "url": "https://github.com/sudebaker/textFlow",
     },
-    license_info={
-        "name": "Apache-2.0",
-        "url": "https://www.apache.org/licenses/LICENSE-2.0"
-    },
-    terms_of_service="https://github.com/sudebaker/textFlow/blob/main/LICENSE"
+    license_info={"name": "Apache-2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},
+    terms_of_service="https://github.com/sudebaker/textFlow/blob/main/LICENSE",
 )
 
 # Add CORS middleware
@@ -158,23 +143,19 @@ app.add_middleware(
 async def log_requests(request: Request, call_next):
     """Log incoming requests."""
     start_time = time.time()
-    
+
     # Log request
     logger.info(
-        f"Request: {request.method} {request.url.path} "
-        f"from {request.client.host if request.client else 'unknown'}"
+        f"Request: {request.method} {request.url.path} " f"from {request.client.host if request.client else 'unknown'}"
     )
-    
+
     # Process request
     response = await call_next(request)
-    
+
     # Log response
     process_time = time.time() - start_time
-    logger.info(
-        f"Response: {response.status_code} "
-        f"in {process_time:.3f}s"
-    )
-    
+    logger.info(f"Response: {response.status_code} " f"in {process_time:.3f}s")
+
     return response
 
 
@@ -190,12 +171,7 @@ async def root():
         "service": "Embeddings Service",
         "version": "1.0.0",
         "status": "running",
-        "endpoints": {
-            "embed": "/api/v1/embed",
-            "health": "/api/v1/health",
-            "info": "/api/v1/info",
-            "docs": "/docs"
-        }
+        "endpoints": {"embed": "/api/v1/embed", "health": "/api/v1/health", "info": "/api/v1/info", "docs": "/docs"},
     }
 
 
@@ -203,11 +179,7 @@ async def root():
 @app.get("/health")
 async def simple_health():
     """Simple health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "embeddings-service",
-        "version": "1.0.0"
-    }
+    return {"status": "healthy", "service": "embeddings-service", "version": "1.0.0"}
 
 
 # Exception handlers
@@ -215,24 +187,18 @@ async def simple_health():
 async def global_exception_handler(request: Request, exc: Exception):
     """Handle unhandled exceptions."""
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "detail": str(exc)
-        }
-    )
+    return JSONResponse(status_code=500, content={"error": "Internal server error", "detail": str(exc)})
 
 
 def main():
     """Main function to run the application."""
     import uvicorn
-    
+
     logger.info(f"Starting Embeddings Service on {settings.api_host}:{settings.api_port}")
     logger.info(f"Environment: {os.environ.get('ENV', 'development')}")
     logger.info(f"Model: {settings.model_name}")
     logger.info(f"Device: {settings.get_model_device()}")
-    
+
     # Run uvicorn server
     uvicorn.run(
         "main:app",
@@ -240,7 +206,7 @@ def main():
         port=settings.api_port,
         reload=os.environ.get("ENV") == "development",
         log_level=settings.log_level.lower(),
-        access_log=True
+        access_log=True,
     )
 
 

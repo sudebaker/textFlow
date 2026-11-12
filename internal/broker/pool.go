@@ -103,8 +103,12 @@ func (pc *poolChannel) PublishWithConfirm(exchange, key string, mandatory, immed
 	}
 }
 
+// QueueInspect asks the broker for a queue's depth without creating it.
+//
+// amqp091-go deprecated Channel.QueueInspect in favour of a passive declaration,
+// which is what QueueInspect did underneath: it fails if the queue does not exist.
 func (pc *poolChannel) QueueInspect(name string) (amqp.Queue, error) {
-	return pc.ch.QueueInspect(name)
+	return pc.ch.QueueDeclarePassive(name, false, false, false, false, nil)
 }
 
 func (pc *poolChannel) close() {
@@ -218,8 +222,12 @@ func (p *ChannelPool) Return(pc *poolChannel) {
 		pc = pc2
 	}
 
+	// Push to the front: the channel that was just used is the warmest one and
+	// will be picked again first. Appending to the tail made reuse depend on how
+	// many other channels happened to be free, which is harder to reason about
+	// and shows up as flapping in tests.
 	p.mu.Lock()
-	p.available = append(p.available, pc)
+	p.available = append([]*poolChannel{pc}, p.available...)
 	p.mu.Unlock()
 	p.checkedOut.Add(-1)
 }
@@ -261,10 +269,12 @@ func (p *ChannelPool) Close() error {
 }
 
 // Size returns the total number of channels in the pool.
+// Size returns the total number of channels the pool owns, whether they are
+// free or checked out. Available() is the count that can be taken right now.
 func (p *ChannelPool) Size() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.available)
+	return p.size
 }
 
 // CheckedOut returns the number of channels currently checked out.

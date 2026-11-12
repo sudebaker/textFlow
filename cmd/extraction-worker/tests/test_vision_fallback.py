@@ -33,22 +33,25 @@ for _mod in (
 ):
     sys.modules.setdefault(_mod, MagicMock())
 
+# The stubs above are bare MagicMocks: their attributes only exist because
+# MagicMock invents them on access. When monkeypatch.undo() deletes one of those
+# invented attributes, the mock remembers the deletion and every later access
+# raises AttributeError, so the second test that patches "magic" fails. Pin the
+# attributes explicitly so undo() restores a value instead of deleting it.
+setattr(sys.modules["magic"], "from_buffer", MagicMock(return_value="application/pdf"))
+setattr(sys.modules["magic"], "from_file", MagicMock(return_value="application/pdf"))
+
 import asyncio  # noqa: E402
-
-import pytest  # noqa: E402
-
+from pathlib import Path  # noqa: E402
 from unittest.mock import AsyncMock  # noqa: E402
 
+import pytest  # noqa: E402
 import worker  # noqa: E402
 from fixtures import build_pdf  # noqa: E402
 from golden_utils import FakeExchange, FakeRedis, FakeStore  # noqa: E402
 from vision.config import VisionSettings  # noqa: E402
 
-from pathlib import Path  # noqa: E402
-
-PROJECT_ROOT = Path(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-)
+PROJECT_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 JOB_ID = "gate-test"
 
 DENSE_TEXT = (
@@ -90,11 +93,7 @@ class TestMetricsModule:
         import importlib
 
         for name in list(sys.modules):
-            if (
-                name == "prometheus_client"
-                or name.startswith("prometheus_client.")
-                or name == "vision.metrics"
-            ):
+            if name == "prometheus_client" or name.startswith("prometheus_client.") or name == "vision.metrics":
                 del sys.modules[name]
         try:
             importlib.import_module("prometheus_client")
@@ -102,7 +101,9 @@ class TestMetricsModule:
         except ImportError:
             pytest.skip("prometheus_client not available (air-gapped env)")
 
-        assert m.quality_gate_documents_total._name == "extraction_worker_quality_gate_documents"  # _total is a sample suffix
+        assert (
+            m.quality_gate_documents_total._name == "extraction_worker_quality_gate_documents"
+        )  # _total is a sample suffix
         assert tuple(m.quality_gate_documents_total._labelnames) == ("decision",)
         assert m.vision_documents_total._name == "extraction_worker_vision_documents"
         assert tuple(m.vision_documents_total._labelnames) == ("path",)
@@ -208,9 +209,7 @@ class TestMetricsAndLogging:
         # SAME child object for every Counter() call, so both counters alias.
         gate = MagicMock()
         docs = MagicMock()
-        with patch.object(fb, "quality_gate_documents_total", gate), patch.object(
-            fb, "vision_documents_total", docs
-        ):
+        with patch.object(fb, "quality_gate_documents_total", gate), patch.object(fb, "vision_documents_total", docs):
             ctx, _, _ = make_ctx()
             asyncio.run(run_quality_flow(ctx))
         gate.labels.assert_called_once_with(decision="pass")
@@ -225,9 +224,7 @@ class TestMetricsAndLogging:
 
         gate = MagicMock()
         docs = MagicMock()
-        with patch.object(fb, "quality_gate_documents_total", gate), patch.object(
-            fb, "vision_documents_total", docs
-        ):
+        with patch.object(fb, "quality_gate_documents_total", gate), patch.object(fb, "vision_documents_total", docs):
             ctx, _, _ = make_ctx(text="short")
             asyncio.run(run_quality_flow(ctx))
         gate.labels.assert_called_once_with(decision="suspect")
@@ -240,10 +237,7 @@ class TestMetricsAndLogging:
         ctx, _, _ = make_ctx()
         with caplog.at_level("INFO", logger="vision.fallback"):
             asyncio.run(run_quality_flow(ctx))
-        assert any(
-            "quality gate" in r.message and "job=gate-test" in r.message
-            for r in caplog.records
-        )
+        assert any("quality gate" in r.message and "job=gate-test" in r.message for r in caplog.records)
 
     def test_suspect_logs_decision_info(self, caplog):
         from vision.fallback import run_quality_flow
@@ -251,10 +245,7 @@ class TestMetricsAndLogging:
         ctx, _, _ = make_ctx(text="short")
         with caplog.at_level("INFO", logger="vision.fallback"):
             asyncio.run(run_quality_flow(ctx))
-        assert any(
-            "decision=suspect" in r.message and "job=gate-test" in r.message
-            for r in caplog.records
-        )
+        assert any("decision=suspect" in r.message and "job=gate-test" in r.message for r in caplog.records)
 
 
 class TestFlagEarlyReturn:
@@ -303,9 +294,7 @@ class TestFlagEarlyReturn:
 def _doc_json(texts_items, num_pages=3):
     """docling_response['document']['json_content']-shaped dict (A.1 shape)."""
     return {
-        "texts": [
-            {"text": t, "prov": [{"page_no": p}]} for (t, p) in texts_items
-        ],
+        "texts": [{"text": t, "prov": [{"page_no": p}]} for (t, p) in texts_items],
         "pages": {str(i): {"page_no": i, "image": None} for i in range(1, num_pages + 1)},
     }
 
@@ -400,10 +389,8 @@ def make_suspect_doc():
 # Realistic docling md blob for a suspect 3-page doc: all page text present in
 # markdown (as the real worker sees it), page 2 with only placeholder lines.
 SUSPECT_BLOB = (
-    "(Pagina uno con texto denso y suficiente) " * 4
-    + "\n\n![](img1.png)\n![](img2.png)\n"
-    "The scanned manuscript page shows handwritten notes.\n\n"
-    + "(Pagina tres con contenido abundante) " * 4
+    "(Pagina uno con texto denso y suficiente) " * 4 + "\n\n![](img1.png)\n![](img2.png)\n"
+    "The scanned manuscript page shows handwritten notes.\n\n" + "(Pagina tres con contenido abundante) " * 4
 )
 SUSPECT_TEXT = SUSPECT_BLOB
 
@@ -565,9 +552,7 @@ class TestSlowPath:
 
     def test_budget_seconds_zero_degrades_all(self, monkeypatch):
         case = SlowPathCase(monkeypatch, vision_text="V " * 60)
-        ctx = make_slow_ctx(
-            settings=_slow_settings(max_seconds_per_document=0.0)
-        )
+        ctx = make_slow_ctx(settings=_slow_settings(max_seconds_per_document=0.0))
         out = asyncio.run(case.fb.run_quality_flow(ctx))
         # No vision happened (budget exhausted before any render): the output
         # contract is ctx.text byte-exact, NOT re-assembled page text.
@@ -696,12 +681,8 @@ def _integration_worker(monkeypatch, docling_text="Hello world page one"):
     async def _fake_docling(self, document_bytes, filename):
         return {"document": {"md_content": docling_text, "pages": {"1": {}}}}
 
-    monkeypatch.setenv(
-        "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-    )
-    monkeypatch.setattr(
-        worker, "analyze_text", lambda t: {"language": "es", "char_count": len(t)}
-    )
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
+    monkeypatch.setattr(worker, "analyze_text", lambda t: {"language": "es", "char_count": len(t)})
     monkeypatch.setattr(worker, "tokenizer", None)
 
     async def _fake_metadata(*a, **k):
@@ -729,11 +710,7 @@ class TestWorkerHook:
         }
         w, fake_redis = _integration_worker(monkeypatch)
         with caplog.at_level("INFO", logger="vision.fallback"):
-            asyncio.run(
-                w._process_message_async(
-                    _IncomingMessage(json.dumps(body).encode()), _Channel()
-                )
-            )
+            asyncio.run(w._process_message_async(_IncomingMessage(json.dumps(body).encode()), _Channel()))
 
         assert any("quality gate" in r.message for r in caplog.records)
         assert any("job=gate-test" in r.message for r in caplog.records)
@@ -753,11 +730,7 @@ class TestWorkerHook:
         suspect_text = "![](img1.png)\n![](img2.png)"
         w, fake_redis = _integration_worker(monkeypatch, docling_text=suspect_text)
         with caplog.at_level("INFO", logger="vision.fallback"):
-            asyncio.run(
-                w._process_message_async(
-                    _IncomingMessage(json.dumps(body).encode()), _Channel()
-                )
-            )
+            asyncio.run(w._process_message_async(_IncomingMessage(json.dumps(body).encode()), _Channel()))
         assert any("decision=suspect" in r.message for r in caplog.records)
         # Byte-identical contract: the stored :text ref still resolvable to the
         # ORIGINAL docling text, unmodified by the gate.
@@ -775,9 +748,5 @@ class TestWorkerHook:
         body = {"job_id": JOB_ID, "document_path": str(doc)}
         w, fake_redis = _integration_worker(monkeypatch)
         with caplog.at_level("INFO", logger="vision.fallback"):
-            asyncio.run(
-                w._process_message_async(
-                    _IncomingMessage(json.dumps(body).encode()), _Channel()
-                )
-            )
+            asyncio.run(w._process_message_async(_IncomingMessage(json.dumps(body).encode()), _Channel()))
         assert any("quality gate" in r.message for r in caplog.records)

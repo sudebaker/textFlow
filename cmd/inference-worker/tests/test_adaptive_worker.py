@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Tests for the adaptive concurrency integration in the inference worker."""
 
-import pytest
 from unittest.mock import Mock, patch
 
+import pytest
 from inference_worker import (
-    InferenceWorker,
     ADAPTIVE_MAX_CONCURRENCY,
     ADAPTIVE_MIN_CONCURRENCY,
     BATCH_ENABLED,
     BATCH_SIZE,
+    InferenceWorker,
 )
 
 
@@ -59,9 +59,7 @@ class TestSemaphoreAcquireRelease:
             mock_sem.acquire.return_value = False
             with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
                 with patch("worker.CACHE_ENABLED", False):
-                    result = worker.extract_inferences(
-                        chunk_text="Some text", entities=[], source_type="generico"
-                    )
+                    result = worker.extract_inferences(chunk_text="Some text", entities=[], source_type="generico")
         assert result == []
         mock_sem.acquire.assert_called_once()
 
@@ -75,11 +73,9 @@ class TestSemaphoreAcquireRelease:
                         mock_response = Mock()
                         mock_response.raise_for_status = Mock()
                         mock_response.json.return_value = {
-                            "choices": [{
-                                "message": {
-                                    "content": '[{"text": "Fact", "confidence": 0.9, "entity_refs": []}]'
-                                }
-                            }],
+                            "choices": [
+                                {"message": {"content": '[{"text": "Fact", "confidence": 0.9, "entity_refs": []}]'}}
+                            ],
                             "usage": {"completion_tokens": 25},
                         }
                         mock_post.return_value = mock_response
@@ -214,9 +210,7 @@ class TestAdaptiveConcurrencyLoop:
 
         submitted = []
         with patch("worker.ADAPTIVE_ENABLED", True):
-            with patch.object(
-                w._executor, "submit", side_effect=lambda fn, *a: submitted.append((fn, a))
-            ):
+            with patch.object(w._executor, "submit", side_effect=lambda fn, *a: submitted.append((fn, a))):
                 w.process(
                     object(),  # legacy ch must NOT be touched in adaptive mode
                     type("M", (), {"delivery_tag": 7})(),
@@ -240,6 +234,7 @@ class TestAdaptiveConcurrencyLoop:
 
         # Not the last chunk: decr returns a positive remaining count.
         from unittest.mock import MagicMock as _MM
+
         redis = _MM()
         redis.decr.return_value = 1
         w.redis_client = redis
@@ -267,14 +262,10 @@ class TestAdaptiveConcurrencyLoop:
 
     def test_adaptive_task_error_nacks_with_requeue(self):
         w = _adaptive_worker()
-        body = _json.dumps(
-            {"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}
-        ).encode()
+        body = _json.dumps({"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}).encode()
 
         with patch.object(w, "_observe_queue_time"):
-            with patch.object(
-                w, "extract_inferences", side_effect=RuntimeError("boom")
-            ):
+            with patch.object(w, "extract_inferences", side_effect=RuntimeError("boom")):
                 w._adaptive_task(body, 5)
 
         _run_scheduled(w._connection)
@@ -294,18 +285,14 @@ class TestAdaptiveConcurrencyLoop:
 
     def test_process_rejects_dispatch_when_stopping(self):
         w = _adaptive_worker()
-        body = _json.dumps(
-            {"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}
-        ).encode()
+        body = _json.dumps({"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}).encode()
         submitted = []
         # Shutdown-reject acks directly on the pika thread (safe).
         ch = _FakeChannel()
 
         with patch("worker.ADAPTIVE_ENABLED", True):
             with patch("worker._stopping", True):
-                with patch.object(
-                    w._executor, "submit", side_effect=lambda *a: submitted.append(a)
-                ):
+                with patch.object(w._executor, "submit", side_effect=lambda *a: submitted.append(a)):
                     w.process(
                         ch,
                         type("M", (), {"delivery_tag": 4})(),
@@ -349,9 +336,7 @@ class TestAdaptiveConcurrencyLoop:
 
     def test_duplicate_delivery_is_idempotent(self):
         w = _adaptive_worker()
-        body = _json.dumps(
-            {"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}
-        ).encode()
+        body = _json.dumps({"job_id": "j", "chunk_id": 0, "chunk_text": "t", "total_chunks": 1}).encode()
 
         # First delivery stores; second delivery (redelivery) is a no-op.
         redis = _MM()

@@ -5,9 +5,8 @@ The inference worker must read `INFERENCE_BASE_URL`/`INFERENCE_MODEL` only.
 configuration fails at startup instead of silently disabling inferences.
 """
 
-import pytest
-
 import inference_worker
+import pytest
 
 
 class TestInferenceEnvContract:
@@ -30,19 +29,13 @@ class TestInferenceEnvContract:
 
     def test_single_missing_variable_still_fails(self):
         with pytest.raises(RuntimeError):
-            inference_worker.resolve_inference_config(
-                {"INFERENCE_BASE_URL": "http://vllm:8000"}
-            )
+            inference_worker.resolve_inference_config({"INFERENCE_BASE_URL": "http://vllm:8000"})
         with pytest.raises(RuntimeError):
-            inference_worker.resolve_inference_config(
-                {"INFERENCE_MODEL": "qwen3-coder"}
-            )
+            inference_worker.resolve_inference_config({"INFERENCE_MODEL": "qwen3-coder"})
 
     def test_blank_values_count_as_unset(self):
         with pytest.raises(RuntimeError):
-            inference_worker.resolve_inference_config(
-                {"INFERENCE_BASE_URL": "   ", "INFERENCE_MODEL": "  "}
-            )
+            inference_worker.resolve_inference_config({"INFERENCE_BASE_URL": "   ", "INFERENCE_MODEL": "  "})
 
     def test_returns_normalized_new_env_values(self):
         base_url, model = inference_worker.resolve_inference_config(

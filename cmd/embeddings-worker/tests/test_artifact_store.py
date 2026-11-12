@@ -43,7 +43,7 @@ def test_get_non_ref_returns_none(tmp_path):
 def test_sharding_layout(tmp_path):
     store = FSStore(str(tmp_path))
     ref = store.put(b"x" * 1000)
-    digest = ref[len(ARTIFACT_REF_PREFIX):]
+    digest = ref[len(ARTIFACT_REF_PREFIX) :]
 
     assert (tmp_path / digest[:2] / digest[2:4] / f"{digest}.bin").exists()
 

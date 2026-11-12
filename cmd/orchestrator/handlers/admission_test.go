@@ -20,22 +20,6 @@ func (m *mockRedisClient) GetActiveJobCount(ctx context.Context) (int64, error) 
 	return m.activeJobs, m.err
 }
 
-// mockBroker implements a minimal broker mock for queue depth testing.
-type mockBroker struct {
-	queueDepth int
-	err        error
-}
-
-func (m *mockBroker) GetQueueInfo(queue string) (*broker.QueueInfo, error) {
-	if m.err != nil {
-		return nil, m.err
-	}
-	return &broker.QueueInfo{
-		Name:     queue,
-		Messages: m.queueDepth,
-	}, nil
-}
-
 func TestAdmissionController_AcceptWhenHealthy(t *testing.T) {
 	cfg := &config.Config{
 		IngestionRateLimit:        10,

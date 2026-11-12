@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = Path(os.getenv("GLINER_MODEL_PATH", "/models/gliner_model"))
 

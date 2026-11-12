@@ -4,7 +4,25 @@ Prometheus metrics utilities for workers.
 
 from typing import Dict
 
-from prometheus_client import Counter, Histogram, Gauge
+from prometheus_client import REGISTRY, Counter, Histogram, Gauge
+
+
+def metric_or_existing(factory, name, *args, **kwargs):
+    """Create a metric, or return the one already registered under that name.
+
+    The Prometheus client keeps a process-wide registry that refuses to register
+    the same name twice. A worker is normally alone in its process, but tests (and
+    anyone embedding a worker) build several instances, and the second one used to
+    die with "Duplicated timeseries in CollectorRegistry". Reusing the existing
+    collector keeps one series per name, which is what /metrics expects anyway.
+    """
+    try:
+        return factory(name, *args, **kwargs)
+    except ValueError:
+        for registered, collector in list(REGISTRY._names_to_collectors.items()):
+            if registered == name or registered.startswith(name + "_"):
+                return collector
+        raise
 
 
 def create_worker_metrics(worker_name: str) -> Dict:

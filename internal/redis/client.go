@@ -794,8 +794,11 @@ func (c *RedisClient) expireStuckJobsViaScan(ctx context.Context, timeout time.D
 
 			createdAt, err := time.Parse(time.RFC3339, createdAtStr)
 			if err != nil {
+				// Older writers stored a unix timestamp instead of RFC3339.
 				unixSeconds := 0
-				fmt.Sscanf(createdAtStr, "%d", &unixSeconds)
+				if _, scanErr := fmt.Sscanf(createdAtStr, "%d", &unixSeconds); scanErr != nil {
+					unixSeconds = 0
+				}
 				if unixSeconds > 0 {
 					createdAt = time.Unix(int64(unixSeconds), 0)
 				} else {

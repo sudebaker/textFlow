@@ -31,10 +31,12 @@ for _mod in (
     sys.modules.setdefault(_mod, MagicMock())
 
 import pytest  # noqa: E402
-
-from vision.client import VisionHTTPError, VisionOCRClient, VisionSaturatedError  # noqa: E402
-
 from fixtures import build_pdf  # noqa: E402,F401  (ensures fixtures importable)
+from vision.client import (  # noqa: E402
+    VisionHTTPError,
+    VisionOCRClient,
+    VisionSaturatedError,
+)
 
 
 def make_settings(**overrides):
@@ -124,9 +126,7 @@ class TestTranscribeHappyPath:
         form = session.calls[0]["data"]
         # FormData is a MagicMock under stubs — the client must have registered
         # the file field (image bytes) and the dpi field.
-        form.add_field.assert_any_call(
-            "file", b"\x89PNG-fake", filename="page.png", content_type="image/png"
-        )
+        form.add_field.assert_any_call("file", b"\x89PNG-fake", filename="page.png", content_type="image/png")
         form.add_field.assert_any_call("dpi", "150")
 
 
@@ -203,9 +203,7 @@ class TestClientSideSemaphore:
         return results, session.peak, session.gate_peak, events
 
     def test_max_concurrency_one_serializes_calls(self):
-        results, post_peak, gate_peak, events = self._run_two(
-            make_settings(max_concurrency=1)
-        )
+        results, post_peak, gate_peak, events = self._run_two(make_settings(max_concurrency=1))
         assert results == ["t", "t"]
         # Serialized: never two requests in flight at once (observed at post
         # registration and inside the request coroutine).
@@ -218,8 +216,6 @@ class TestClientSideSemaphore:
     def test_semaphore_permits_configured_concurrency(self):
         # max_concurrency=2: two calls DO overlap (peak in-flight == 2) —
         # proves the gate exists and is calibrated, not accidentally serial.
-        _, post_peak, gate_peak, _ = self._run_two(
-            make_settings(max_concurrency=2), delay=0.02
-        )
+        _, post_peak, gate_peak, _ = self._run_two(make_settings(max_concurrency=2), delay=0.02)
         assert post_peak == 2
         assert gate_peak == 2

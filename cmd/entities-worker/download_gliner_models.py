@@ -13,33 +13,24 @@ Requirements:
 """
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
-import json
+from urllib.parse import urljoin
+
 import requests
 from tqdm import tqdm
-from urllib.parse import urljoin
+
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Download GLiNER models for container deployment")
-    parser.add_argument(
-        "--output-dir",
-        required=True,
-        help="Directory where models will be stored"
-    )
-    parser.add_argument(
-        "--model-name",
-        default="urchade/gliner_base",
-        help="HuggingFace model name to download"
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force re-download even if models exist"
-    )
+    parser.add_argument("--output-dir", required=True, help="Directory where models will be stored")
+    parser.add_argument("--model-name", default="urchade/gliner_base", help="HuggingFace model name to download")
+    parser.add_argument("--force", action="store_true", help="Force re-download even if models exist")
     return parser.parse_args()
+
 
 def download_file(url: str, local_path: Path, desc: str = "") -> bool:
     """Download a file with progress bar."""
@@ -47,12 +38,12 @@ def download_file(url: str, local_path: Path, desc: str = "") -> bool:
         response = requests.get(url, stream=True, timeout=30)
         response.raise_for_status()
 
-        total_size = int(response.headers.get('content-length', 0))
+        total_size = int(response.headers.get("content-length", 0))
 
-        with open(local_path, 'wb') as file, tqdm(
+        with open(local_path, "wb") as file, tqdm(
             desc=desc,
             total=total_size,
-            unit='iB',
+            unit="iB",
             unit_scale=True,
             unit_divisor=1024,
         ) as pbar:
@@ -64,6 +55,7 @@ def download_file(url: str, local_path: Path, desc: str = "") -> bool:
     except Exception as e:
         print(f"Failed to download {url}: {e}")
         return False
+
 
 def download_gliner_model(output_dir: str, model_name: str, force: bool = False) -> bool:
     """Download GLiNER model files."""
@@ -133,16 +125,17 @@ def download_gliner_model(output_dir: str, model_name: str, force: bool = False)
         "download_method": "simplified_http",
         "downloaded_files": downloaded_files,
         "model_downloaded": model_downloaded,
-        "note": "This is a basic model download. For full functionality, ensure GLiNER can download additional components."
+        "note": "This is a basic model download. For full functionality, ensure GLiNER can download additional components.",
     }
 
     metadata_file = Path(output_dir) / "model_metadata.json"
-    with open(metadata_file, 'w') as f:
+    with open(metadata_file, "w") as f:
         json.dump(metadata, f, indent=2)
 
     print(f"Downloaded {len(downloaded_files)} files successfully")
     print(f"Metadata saved to: {metadata_file}")
     return len(downloaded_files) > 0
+
 
 def create_requirements_file(output_dir: str) -> None:
     """Create a requirements.txt file for the container."""
@@ -155,10 +148,11 @@ def create_requirements_file(output_dir: str) -> None:
     ]
 
     requirements_file = Path(output_dir) / "requirements.txt"
-    with open(requirements_file, 'w') as f:
+    with open(requirements_file, "w") as f:
         f.write("\n".join(requirements))
 
     print(f"Requirements file created: {requirements_file}")
+
 
 def verify_download(output_dir: str) -> bool:
     """Verify that the download was successful."""
@@ -182,7 +176,7 @@ def verify_download(output_dir: str) -> bool:
             "num_attention_heads": 12,
             "intermediate_size": 3072,
         }
-        with open(config_file, 'w') as f:
+        with open(config_file, "w") as f:
             json.dump(basic_config, f, indent=2)
 
     # Check if we have at least the model file
@@ -198,9 +192,9 @@ def verify_download(output_dir: str) -> bool:
         metadata = {
             "model_name": "basic_download",
             "download_method": "manual",
-            "note": "Metadata created by verification process"
+            "note": "Metadata created by verification process",
         }
-        with open(metadata_file, 'w') as f:
+        with open(metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
 
     # Check metadata
@@ -213,6 +207,7 @@ def verify_download(output_dir: str) -> bool:
         return False
 
     return True
+
 
 def main():
     """Main function."""
@@ -247,6 +242,7 @@ def main():
     print("the container will download additional model components as needed.")
     print()
     print("You can now build the Docker container with these models mounted.")
+
 
 if __name__ == "__main__":
     main()

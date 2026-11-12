@@ -36,14 +36,10 @@ for _mod in (
     sys.modules.setdefault(_mod, MagicMock())
 
 import pytest  # noqa: E402
-
 import worker  # noqa: E402
-
 from fixtures import build_pdf  # noqa: E402
 
-PROJECT_ROOT = Path(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-)
+PROJECT_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
 DOC = {
     "filename": "doc.pdf",
@@ -67,9 +63,7 @@ async def _fake_docling(self, document_bytes, filename):
 
 
 def patched_worker(monkeypatch):
-    monkeypatch.setenv(
-        "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-    )
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
     monkeypatch.setattr(worker.ExtractionWorker, "_docling_convert_async", _fake_docling)
     return worker.ExtractionWorker()
 
@@ -78,11 +72,7 @@ class TestReturnDoclingDocument:
     def test_base64_returns_docling_document(self, monkeypatch):
         w = patched_worker(monkeypatch)
         pdf = build_pdf(["page one text here", "page two longer body"])
-        result = asyncio.run(
-            w.extract_text_from_base64(
-                __import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"
-            )
-        )
+        result = asyncio.run(w.extract_text_from_base64(__import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"))
         assert result["docling_document"] == DOC
         # existing keys intact
         assert "page one text here" in result["text"]
@@ -154,9 +144,7 @@ class TestToFormatsRequested:
         )
         monkeypatch.setattr(worker, "aiohttp", fake_aiohttp)
 
-        monkeypatch.setenv(
-            "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-        )
+        monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
         w = worker.ExtractionWorker()
         asyncio.run(w._docling_convert_async(b"%PDF-x", "doc.pdf"))
 
@@ -172,11 +160,7 @@ class TestPageCount:
     def test_docling_pages_prefers_json_content_pages(self, monkeypatch):
         w = patched_worker(monkeypatch)
         pdf = build_pdf(["p1", "p2"])
-        result = asyncio.run(
-            w.extract_text_from_base64(
-                __import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"
-            )
-        )
+        result = asyncio.run(w.extract_text_from_base64(__import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"))
         # A.1: document.pages does NOT exist in docling-serve latest; the page
         # count must come from json_content.pages (dict indexed by page_no).
         assert result["metadata"]["docling_pages"] == 2
@@ -185,34 +169,26 @@ class TestPageCount:
 class TestPageCountLegacyFallback:
     def test_legacy_document_pages_list_still_counts(self, monkeypatch):
         legacy = {"document": {"md_content": "x", "pages": [{"page_no": 1}, {"page_no": 2}]}}
+
         async def _fake_legacy(self, document_bytes, filename):
             return legacy
-        monkeypatch.setenv(
-            "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-        )
+
+        monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
         monkeypatch.setattr(worker.ExtractionWorker, "_docling_convert_async", _fake_legacy)
         w = worker.ExtractionWorker()
         pdf = build_pdf(["p1", "p2"])
-        result = asyncio.run(
-            w.extract_text_from_base64(
-                __import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"
-            )
-        )
+        result = asyncio.run(w.extract_text_from_base64(__import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"))
         assert result["metadata"]["docling_pages"] == 2
 
     def test_no_pages_at_all_Yields_none(self, monkeypatch):
         bare = {"document": {"md_content": "x"}}
+
         async def _fake_bare(self, document_bytes, filename):
             return bare
-        monkeypatch.setenv(
-            "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-        )
+
+        monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
         monkeypatch.setattr(worker.ExtractionWorker, "_docling_convert_async", _fake_bare)
         w = worker.ExtractionWorker()
         pdf = build_pdf(["p1"])
-        result = asyncio.run(
-            w.extract_text_from_base64(
-                __import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"
-            )
-        )
+        result = asyncio.run(w.extract_text_from_base64(__import__("base64").b64encode(pdf).decode("ascii"), "doc.pdf"))
         assert result["metadata"]["docling_pages"] is None

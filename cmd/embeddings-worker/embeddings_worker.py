@@ -8,16 +8,14 @@ the remote OpenAI-compatible embeddings backend (``POST /v1/embeddings``,
 no local fallback (remote-embeddings decision).
 """
 
+import json
 import os
 import sys
-
-import json
 import time
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 import msgpack
 import torch
-
 from prometheus_client import Counter, Histogram
 
 sys.path.insert(0, "/app")
@@ -66,35 +64,27 @@ class EmbeddingsWorker(BaseWorker):
 
         # Additional GPU memory metric (BaseWorker already has gpu_available)
         from prometheus_client import Gauge
-        self.gpu_memory_gb = Gauge(
-            "embeddings_worker_gpu_memory_gb", "GPU memory usage in GB"
-        )
+
+        self.gpu_memory_gb = Gauge("embeddings_worker_gpu_memory_gb", "GPU memory usage in GB")
 
     def configure(self):
         """Configure batching and connect the remote embeddings client."""
         use_gpu = detect_gpu()
-        self.batch_size = (
-            EMBEDDING_BATCH_SIZE_GPU if use_gpu else EMBEDDING_BATCH_SIZE_CPU
-        )
+        self.batch_size = EMBEDDING_BATCH_SIZE_GPU if use_gpu else EMBEDDING_BATCH_SIZE_CPU
 
         self.gpu_available.labels(device="cuda:0").set(1 if use_gpu else 0)
 
         if use_gpu:
-            gpu_name = (
-                torch.cuda.get_device_name() if torch.cuda.is_available() else "Unknown"
-            )
+            gpu_name = torch.cuda.get_device_name() if torch.cuda.is_available() else "Unknown"
             self.logger.info(f"GPU Mode detected: {gpu_name}")
             self.logger.info(f"   Batch size: {self.batch_size} (optimized for GPU)")
         else:
             self.logger.info(f"CPU Mode detected")
             self.logger.info(f"   Batch size: {self.batch_size} (conservative for CPU)")
 
-        self.embeddings_client = EmbeddingsClient(
-            redis_client=self.redis_client, batch_size=self.batch_size
-        )
+        self.embeddings_client = EmbeddingsClient(redis_client=self.redis_client, batch_size=self.batch_size)
         self.logger.info(
-            f"Remote embeddings backend: {self.embeddings_client.base_url} "
-            f"(model={self.embeddings_client.model})"
+            f"Remote embeddings backend: {self.embeddings_client.base_url} " f"(model={self.embeddings_client.model})"
         )
 
     def process_message(self, message: Dict) -> Any:
@@ -103,28 +93,20 @@ class EmbeddingsWorker(BaseWorker):
         # Chunks are always read from the artifact store (spec 3.4): workers no
         # longer carry chunks inline in the RabbitMQ message. The message only
         # carries the job_id and routing metadata.
-        chunks_json = resolve_text(
-            STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
-        )
+        chunks_json = resolve_text(STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks"))
         if chunks_json:
             chunks = json.loads(chunks_json)
         else:
-            self.logger.warning(
-                f"No chunks found in Redis for job: {job_id}"
-            )
+            self.logger.warning(f"No chunks found in Redis for job: {job_id}")
             self.jobs_total.labels(status="no_chunks").inc()
             return {"status": "no_chunks"}
 
-        self.logger.info(
-            f"Processing embeddings for job: {job_id} with {len(chunks)} chunks"
-        )
+        self.logger.info(f"Processing embeddings for job: {job_id} with {len(chunks)} chunks")
 
         embeddings_dict = {}
         total_chunks = len(chunks)
 
-        self.logger.info(
-            f"Processing {total_chunks} chunks with batch_size={self.batch_size}"
-        )
+        self.logger.info(f"Processing {total_chunks} chunks with batch_size={self.batch_size}")
 
         chunk_texts = [chunk.get("text", "") for chunk in chunks]
         chunk_ids = [chunk.get("chunk_id") for chunk in chunks]
@@ -132,24 +114,18 @@ class EmbeddingsWorker(BaseWorker):
         degraded_key = f"orchestrator:job:{job_id}:embeddings_degraded"
 
         def embed(texts: List[str]) -> List[List[float]]:
-            result = self.embeddings_client.embed_batch(
-                texts, batch_size=self.batch_size
-            )
+            result = self.embeddings_client.embed_batch(texts, batch_size=self.batch_size)
             if result.degraded:
                 # Media-style job key: it must expire with the job and a clean
                 # retry must clear a stale flag.
-                set_job_key(
-                    self.redis_client, job_id, "embeddings_degraded", "true"
-                )
+                set_job_key(self.redis_client, job_id, "embeddings_degraded", "true")
             else:
                 self.redis_client.delete(degraded_key)
             return result.vectors
 
         batch_start_time = time.time()
         batch_embeddings = embed(chunk_texts)
-        batch_duration.labels(batch_size=len(chunk_texts)).observe(
-            time.time() - batch_start_time
-        )
+        batch_duration.labels(batch_size=len(chunk_texts)).observe(time.time() - batch_start_time)
 
         for chunk_id, embedding in zip(chunk_ids, batch_embeddings):
             if chunk_id and embedding:
@@ -158,9 +134,7 @@ class EmbeddingsWorker(BaseWorker):
             elif chunk_id:
                 chunks_total.labels(status="degraded").inc()
 
-        self.logger.info(
-            f"Generated embeddings for {len(embeddings_dict)}/{total_chunks} chunks"
-        )
+        self.logger.info(f"Generated embeddings for {len(embeddings_dict)}/{total_chunks} chunks")
 
         if detect_gpu():
             self.gpu_memory_gb.set(torch.cuda.memory_allocated() / 1024**3)
@@ -169,9 +143,7 @@ class EmbeddingsWorker(BaseWorker):
         embeddings_ref = STORE.put(msgpack.packb(embeddings_dict, use_bin_type=True))
         self.redis_client.set(embeddings_key, embeddings_ref)
 
-        self.redis_client.hset(
-            f"orchestrator:job:{job_id}:steps", "embeddings", "completed"
-        )
+        self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "embeddings", "completed")
         self.event_bus.publish_stage_event(
             job_id,
             "stage.completed",
@@ -210,21 +182,15 @@ class EmbeddingsWorker(BaseWorker):
                             "inference_embeddings",
                             "completed",
                         )
-                        inference_count = sum(
-                            len(c.get("inferences", [])) for c in micro_inferences
-                        )
-                        self.logger.info(
-                            f"Generated inference embeddings for {inference_count} inferences"
-                        )
+                        inference_count = sum(len(c.get("inferences", [])) for c in micro_inferences)
+                        self.logger.info(f"Generated inference embeddings for {inference_count} inferences")
                         inference_progress = 40
             except Exception as e:
                 self.logger.warning(f"Failed to generate inference embeddings: {e}")
 
         self.event_bus.publish_job_progress(job_id, inference_progress, "embedding")
 
-        self.logger.info(
-            f"Embeddings completed for job: {job_id} ({total_chunks} chunks)"
-        )
+        self.logger.info(f"Embeddings completed for job: {job_id} ({total_chunks} chunks)")
 
         return {"status": "success", "job_id": job_id, "chunks": total_chunks}
 

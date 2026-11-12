@@ -8,9 +8,9 @@ before any test module is imported).
 
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
-from unittest.mock import Mock
 
 # --- sys.path setup ---
 WORKER_DIR = Path(__file__).resolve().parent.parent
@@ -109,5 +109,3 @@ def _mock_redis(monkeypatch):
             return Mock()
 
     monkeypatch.setattr(redis_module, "from_url", lambda *a, **k: _NoopClient())
-
-

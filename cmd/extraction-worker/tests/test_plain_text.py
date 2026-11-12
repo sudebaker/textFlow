@@ -44,9 +44,7 @@ def test_base64_plain_text_skips_docling():
     instance = _worker_without_docling()
     payload = base64.b64encode("Hola mundo\n".encode("utf-8")).decode()
 
-    result = asyncio.run(
-        instance.extract_text_from_base64(payload, filename="note.txt")
-    )
+    result = asyncio.run(instance.extract_text_from_base64(payload, filename="note.txt"))
 
     assert result["text"] == "Hola mundo\n"
     assert result["metadata"]["extraction_method"] == "plain_text"

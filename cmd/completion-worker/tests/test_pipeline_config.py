@@ -41,12 +41,20 @@ def test_default_profile_is_full(pd):
 
 
 def test_spreadsheet_no_longer_short_circuits(pd):
-    assert pd.steps_for(entry="extraction", features=[], profile="rag") == {
-        "extraction",
-    } | RAG
+    assert (
+        pd.steps_for(entry="extraction", features=[], profile="rag")
+        == {
+            "extraction",
+        }
+        | RAG
+    )
 
 
 def test_unknown_profile_falls_back_to_full(pd):
-    assert pd.steps_for(entry="audio", features=[], profile="fast") == {
-        "audio",
-    } | FULL
+    assert (
+        pd.steps_for(entry="audio", features=[], profile="fast")
+        == {
+            "audio",
+        }
+        | FULL
+    )

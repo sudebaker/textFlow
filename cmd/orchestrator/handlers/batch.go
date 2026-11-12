@@ -224,13 +224,13 @@ func CreateBatchHandler(c *gin.Context) {
 
 			jobID := uuid.New().String()
 
-			redisInst.SetJobStatus(ctx, jobID, models.StatusPending)
-			redisInst.SetJobCreated(ctx, jobID)
-			redisInst.SetJobProfile(ctx, jobID, profile)
+			_ = redisInst.SetJobStatus(ctx, jobID, models.StatusPending)
+			_ = redisInst.SetJobCreated(ctx, jobID)
+			_ = redisInst.SetJobProfile(ctx, jobID, profile)
 
 			// Store features in Redis for completion-worker
 			if len(validatedFeatures) > 0 {
-				redisInst.SetJobFeatures(ctx, jobID, validatedFeatures)
+				_ = redisInst.SetJobFeatures(ctx, jobID, validatedFeatures)
 			}
 
 			redisclient.GetClient().HSet(ctx, redisclient.Key("job", jobID, "meta"), "batch_id", batchID)
@@ -238,7 +238,7 @@ func CreateBatchHandler(c *gin.Context) {
 			redisclient.GetClient().Expire(ctx, batchJobsKey, 24*time.Hour)
 
 			if req.WebhookURL != "" {
-				redisInst.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret)
+				_ = redisInst.SetJobWebhook(ctx, jobID, req.WebhookURL, req.WebhookSecret)
 			}
 
 			jobMsg := buildBatchJobMessage(jobID, doc, validatedFeatures, profile)

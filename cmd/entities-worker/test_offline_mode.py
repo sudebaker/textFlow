@@ -10,9 +10,10 @@ os.environ["HF_HUB_OFFLINE"] = "0"
 os.environ["ALLOW_REMOTE_DOWNLOAD"] = "true"
 os.environ["GLINER_MODEL_NAME"] = "urchade/gliner_small-v2.1"
 
+from pathlib import Path
+
 from gliner import GLiNER
 from huggingface_hub import snapshot_download
-from pathlib import Path
 
 GLINER_MODEL_PATH = "/tmp/test_gliner_model"
 GLINER_MODEL_NAME = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_small-v2.1")
@@ -49,9 +50,7 @@ try:
             local_files_only=True,
         )
     else:
-        raise FileNotFoundError(
-            f"Model not found at {GLINER_MODEL_PATH} and remote download is disabled"
-        )
+        raise FileNotFoundError(f"Model not found at {GLINER_MODEL_PATH} and remote download is disabled")
 
     print(f"✅ GLiNER loaded successfully")
     print(f"   Model: {GLINER_MODEL_NAME}")
@@ -64,9 +63,7 @@ try:
 
     print(f"\n📝 Test prediction:")
     for entity in entities:
-        print(
-            f"   {entity['text']} => {entity['label']} (score: {entity['score']:.3f})"
-        )
+        print(f"   {entity['text']} => {entity['label']} (score: {entity['score']:.3f})")
 
 except Exception as e:
     print(f"❌ Model loading error: {e}")

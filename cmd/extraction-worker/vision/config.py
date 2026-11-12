@@ -1,6 +1,8 @@
 """Env-driven settings for the visual extraction flow (spec §22). os.getenv only."""
+
 import os
 from dataclasses import dataclass
+
 
 def _flag(name, default="false"):
     return os.getenv(name, default).lower() in ("1", "true", "yes")

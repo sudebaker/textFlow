@@ -9,7 +9,7 @@ import logging
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 # Configure logging
@@ -58,11 +58,7 @@ def extract_with_docling(file_path):
 
         doc_result = conv.convert(file_path)
         markdown_text = doc_result.document.export_to_markdown()
-        num_pages = (
-            len(doc_result.document.pages)
-            if hasattr(doc_result.document, "pages")
-            else 1
-        )
+        num_pages = len(doc_result.document.pages) if hasattr(doc_result.document, "pages") else 1
         return markdown_text, num_pages
     except Exception as e:
         logger.error(f"Docling extraction failed: {e}")
@@ -103,17 +99,13 @@ def extract_text_from_pdf_raw(file_path):
 
         # Fallback: look for any readable ASCII text in the file
         if not text_parts:
-            readable = "".join(
-                chr(b) for b in pdf_data if 32 <= b <= 126 or b in (9, 10, 13)
-            )
+            readable = "".join(chr(b) for b in pdf_data if 32 <= b <= 126 or b in (9, 10, 13))
             # Extract lines that look like content
             for line in readable.split("\n"):
                 if len(line.strip()) > 10:  # Only meaningful lines
                     text_parts.append(line.strip())
 
-        markdown_text = (
-            "\n".join(text_parts) if text_parts else "(Unable to extract text from PDF)"
-        )
+        markdown_text = "\n".join(text_parts) if text_parts else "(Unable to extract text from PDF)"
 
         # Estimate page count from PDF structure
         pages_match = re.search(r"/Count\s+(\d+)", decoded)
@@ -152,8 +144,8 @@ async def convert_document(file: UploadFile = File(...)):
         logger.info(f"Processing file: {file.filename} ({len(content)} bytes)")
 
         # Write to temp file (both Docling and fallback need file path)
-        import tempfile
         import os
+        import tempfile
         from pathlib import Path
 
         # Derive file suffix from actual filename
@@ -176,9 +168,7 @@ async def convert_document(file: UploadFile = File(...)):
                     logger.error(f"Both extraction methods failed")
                     raise fallback_error from docling_error
 
-            logger.info(
-                f"✓ Extracted {len(markdown_text)} chars using {extraction_method}"
-            )
+            logger.info(f"✓ Extracted {len(markdown_text)} chars using {extraction_method}")
 
             # Return response in format expected by extraction worker
             return JSONResponse(
@@ -201,9 +191,7 @@ async def convert_document(file: UploadFile = File(...)):
 
     except Exception as e:
         logger.error(f"Conversion failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Failed to convert document: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to convert document: {str(e)}")
 
 
 @app.get("/")

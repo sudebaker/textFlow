@@ -87,29 +87,21 @@ class AdaptiveSemaphore:
                 old_cwnd = self._cwnd
                 self._cwnd = max(self.min_concurrency, self._cwnd // self.decay_factor)
                 logger.info(
-                    f"cwnd decreased {old_cwnd} → {self._cwnd} "
-                    f"(consecutive errors: {self._consecutive_errors})"
+                    f"cwnd decreased {old_cwnd} → {self._cwnd} " f"(consecutive errors: {self._consecutive_errors})"
                 )
 
                 # Circuit breaker
                 if self._consecutive_errors >= self.consecutive_errors_for_cooldown:
-                    self._cooldown_until = (
-                        time.monotonic() + self.cooldown_seconds
-                    )
+                    self._cooldown_until = time.monotonic() + self.cooldown_seconds
                     self._consecutive_errors = 0
-                    logger.warning(
-                        f"Circuit breaker triggered, cooling down "
-                        f"for {self.cooldown_seconds}s"
-                    )
+                    logger.warning(f"Circuit breaker triggered, cooling down " f"for {self.cooldown_seconds}s")
             else:
                 self._consecutive_errors = 0
                 # Additive increase on success (TCP ACK semantics)
                 old_cwnd = self._cwnd
                 self._cwnd = min(self.max_concurrency, self._cwnd + 1)
                 if old_cwnd != self._cwnd:
-                    logger.info(
-                        f"cwnd increased {old_cwnd} → {self._cwnd}"
-                    )
+                    logger.info(f"cwnd increased {old_cwnd} → {self._cwnd}")
 
     @property
     def cwnd(self) -> int:

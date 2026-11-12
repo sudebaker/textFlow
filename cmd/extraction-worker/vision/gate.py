@@ -3,6 +3,7 @@
 Thresholds are INITIAL heuristics — calibrate with real traffic (Phase C metrics)
 before enabling fallback (Phase F).
 """
+
 import re
 from dataclasses import dataclass
 from typing import Optional

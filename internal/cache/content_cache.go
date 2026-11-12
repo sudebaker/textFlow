@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -23,7 +22,6 @@ import (
 // TTL window.
 type ContentCache struct {
 	client       *redis.Client
-	logger       zerolog.Logger
 	defaultTTL   time.Duration
 	stageVersion string
 	sf           singleflight.Group

@@ -102,11 +102,8 @@ func (rl *RateLimiter) cleanup() {
 		}
 	}
 
-	// Optional: log cleanup stats
-	if deleted > 0 {
-		// Could add logging here if logger is available
-		// logger.Debug().Msgf("RateLimiter cleanup: removed %d old entries, %d remaining", deleted, len(rl.limiters))
-	}
+	// Removed entries are garbage collected with the map; nothing else to do.
+	_ = deleted
 }
 
 // Stop stops the cleanup goroutine (call when shutting down)

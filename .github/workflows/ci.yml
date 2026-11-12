@@ -55,9 +55,13 @@ jobs:
       run: go test -v -race -coverprofile=coverage.out ./...
 
     - name: Install golangci-lint
+      # v1.55.2 is built with Go 1.21 and cannot typecheck a go.mod that says
+      # `go 1.23`: it reports "undefined: env/redis/msgpack" and even chokes on
+      # the standard library. Any v1.62+ release is built with a toolchain new
+      # enough for this module.
       run: |
         curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | \
-        sh -s -- -b $(go env GOPATH)/bin v1.55.2
+          sh -s -- -b $(go env GOPATH)/bin v1.62.2
 
     - name: Run golangci-lint
       run: $(go env GOPATH)/bin/golangci-lint run ./...
@@ -101,7 +105,10 @@ jobs:
       run: |
         find cmd/*/requirements-test.txt -exec pip install -r {} \; 2>/dev/null || true
         find cmd/*/dev-requirements.txt -exec pip install -r {} \; 2>/dev/null || true
-        pip install httpx pillow langdetect python-multipart
+        # pytest-asyncio only arrives today via cmd/entities-worker's
+        # requirements-test.txt; declaring the two plugins here keeps the suite
+        # from depending on which worker happens to list them.
+        pip install httpx pillow langdetect python-multipart pytest-asyncio pytest-mock
 
     - name: Run Python tests
       run: |

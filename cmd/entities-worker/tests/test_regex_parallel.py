@@ -104,11 +104,11 @@ def test_process_message_merges_regex_into_entities_raw():
     worker.redis_client.get.side_effect = lambda key: (
         json.dumps("Juan trabaja en Madrid")
         if key.endswith(":text")
-        else json.dumps(
-            [{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}]
+        else (
+            json.dumps([{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}])
+            if key.endswith(":chunks")
+            else None
         )
-        if key.endswith(":chunks")
-        else None
     )
     worker._extract_regex_entities = lambda text: [
         {
@@ -122,9 +122,7 @@ def test_process_message_merges_regex_into_entities_raw():
     ]
     message = {
         "job_id": "job-1",
-        "chunks": [
-            {"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}
-        ],
+        "chunks": [{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}],
     }
 
     result = worker.process_message(message)
@@ -142,11 +140,11 @@ def test_process_message_skips_regex_when_disabled():
     worker.redis_client.get.side_effect = lambda key: (
         json.dumps("Juan trabaja en Madrid")
         if key.endswith(":text")
-        else json.dumps(
-            [{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}]
+        else (
+            json.dumps([{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}])
+            if key.endswith(":chunks")
+            else None
         )
-        if key.endswith(":chunks")
-        else None
     )
     worker._extract_regex_entities = lambda text: [
         {
@@ -160,9 +158,7 @@ def test_process_message_skips_regex_when_disabled():
     ]
     message = {
         "job_id": "job-2",
-        "chunks": [
-            {"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}
-        ],
+        "chunks": [{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}],
     }
 
     worker.process_message(message)
@@ -185,11 +181,11 @@ def test_chunk_counter_increments_during_processing():
     worker.redis_client.get.side_effect = lambda key: (
         json.dumps("Juan trabaja en Madrid")
         if key.endswith(":text")
-        else json.dumps(
-            [{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}]
+        else (
+            json.dumps([{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}])
+            if key.endswith(":chunks")
+            else None
         )
-        if key.endswith(":chunks")
-        else None
     )
     worker._extract_regex_entities = lambda text: []
 
@@ -197,9 +193,7 @@ def test_chunk_counter_increments_during_processing():
     worker.process_message(
         {
             "job_id": "job-m",
-            "chunks": [
-                {"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}
-            ],
+            "chunks": [{"chunk_id": "c1", "text": "Juan trabaja en Madrid", "start_offset": 0}],
         }
     )
     after = ew.chunks_total.labels(status="success")._value.get()

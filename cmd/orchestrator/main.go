@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"net/http"
@@ -1076,7 +1075,7 @@ func uploadHandler(c *gin.Context) {
 
 		// For CSV, count rows
 		if ext == ".csv" {
-			fileContent, err := ioutil.ReadAll(file)
+			fileContent, err := io.ReadAll(file)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, models.ErrorResponse{
 					Error:  "read_error",
@@ -1111,7 +1110,7 @@ func uploadHandler(c *gin.Context) {
 			}
 
 			// Rewind file for later use
-			file.Seek(0, 0)
+			_, _ = file.Seek(0, 0)
 		}
 	}
 
@@ -1231,6 +1230,16 @@ func uploadHandler(c *gin.Context) {
 			logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to store features")
 		} else {
 			logger.Info().Str("job_id", jobID).Strs("features", validatedFeatures).Msg("Features stored from multipart")
+		}
+	}
+
+	// Persist the webhook for this job. The multipart field (and the configured
+	// fallback) used to be read and thrown away, so `notify_webhook` on the
+	// upload endpoint was documented but did nothing: the completion worker had
+	// no URL to call.
+	if notifyWebhook != "" {
+		if err := redis.SetJobWebhook(ctx, jobID, notifyWebhook, ""); err != nil {
+			logger.Error().Err(err).Str("job_id", jobID).Msg("Failed to store notify_webhook")
 		}
 	}
 

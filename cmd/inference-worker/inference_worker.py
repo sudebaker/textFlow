@@ -191,14 +191,11 @@ class InferenceWorker(BaseWorker):
 
         self.batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
 
-        # Queue wait time (spec 1.1): messages carry queued_at (unix ms)
-        from prometheus_client import Histogram
-
-        self.queue_time = Histogram(
-            "inference_worker_queue_time_seconds",
-            "Time messages spend waiting in the queue before consumption",
-            buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0, 60.0],
-        )
+        # Queue wait time (spec 1.1): messages carry queued_at (unix ms).
+        # base.py already registers inference_worker_queue_time_seconds with the
+        # same buckets, so registering it again here raised
+        # "Duplicated timeseries in CollectorRegistry" and killed the worker at
+        # startup. Use the inherited one.
 
         # LLM throughput (spec 1.3), from usage.completion_tokens / latency.
         from prometheus_client import Gauge as _Gauge

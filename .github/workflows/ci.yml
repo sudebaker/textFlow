@@ -105,7 +105,10 @@ jobs:
       run: |
         find cmd/*/requirements-test.txt -exec pip install -r {} \; 2>/dev/null || true
         find cmd/*/dev-requirements.txt -exec pip install -r {} \; 2>/dev/null || true
-        pip install httpx pillow langdetect python-multipart
+        # pytest-asyncio only arrives today via cmd/entities-worker's
+        # requirements-test.txt; declaring the two plugins here keeps the suite
+        # from depending on which worker happens to list them.
+        pip install httpx pillow langdetect python-multipart pytest-asyncio pytest-mock
 
     - name: Run Python tests
       run: |

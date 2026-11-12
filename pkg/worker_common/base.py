@@ -28,6 +28,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -47,6 +48,11 @@ from prometheus_client import (
     start_http_server,
     generate_latest,
 )
+
+try:  # imported as a package (pkg.worker_common.base) or flat (worker_common.base)
+    from .metrics import metric_or_existing
+except ImportError:  # pragma: no cover
+    from worker_common.metrics import metric_or_existing
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -245,23 +251,36 @@ class BaseWorker:
         # Flask app for health checks
         self._init_health_server()
 
+    def _metric_prefix(self) -> str:
+        """Worker name as a valid Prometheus metric prefix.
+
+        Prometheus only accepts [a-zA-Z0-9_] in a metric name, and worker names
+        come from the deployment as "inference-worker", "audio-worker"… A hyphen
+        there raised ValueError at import time and took the whole worker down.
+        """
+        return re.sub(r"[^a-zA-Z0-9_]", "_", self.worker_name)
+
     def _init_metrics(self) -> None:
         """Initialize Prometheus metrics."""
-        self.jobs_total = Counter(
-            f"{self.worker_name}_jobs_total",
+        prefix = self._metric_prefix()
+        self.jobs_total = metric_or_existing(
+            Counter,
+            f"{prefix}_jobs_total",
             "Total jobs processed",
             ["status"],
         )
-        self.job_duration = Histogram(
-            f"{self.worker_name}_job_duration_seconds",
+        self.job_duration = metric_or_existing(
+            Histogram,
+            f"{prefix}_job_duration_seconds",
             "Job duration in seconds",
             buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
         )
-        self.gpu_available = Gauge(
-            f"{self.worker_name}_gpu_available", "GPU availability", ["device"]
+        self.gpu_available = metric_or_existing(
+            Gauge, f"{prefix}_gpu_available", "GPU availability", ["device"]
         )
-        self.queue_time = Histogram(
-            f"{self.worker_name}_queue_time_seconds",
+        self.queue_time = metric_or_existing(
+            Histogram,
+            f"{prefix}_queue_time_seconds",
             "Time messages spend waiting in the queue before consumption",
             buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0, 60.0],
         )

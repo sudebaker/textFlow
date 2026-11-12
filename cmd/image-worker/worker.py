@@ -94,7 +94,6 @@ class ImageWorker(BaseAsyncWorker):
                         image_bytes=image_bytes,
                         filename=message.get("filename", "image"),
                     ),
-                    routing_key=queue_name,
                 )
 
             chunks = chunk_text(text)

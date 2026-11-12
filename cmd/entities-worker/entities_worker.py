@@ -23,18 +23,18 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
+from app.config.settings import Settings as AppSettings
 from prometheus_client import Counter, Histogram
+from sliding_window import (
+    estimate_tokens,
+    process_with_sliding_window,
+    requires_sliding_window,
+)
 
 from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
 from pkg.worker_common.entity_utils import entity_id
 from pkg.worker_common.rabbitmq import parse_rabbitmq_url
-from app.config.settings import Settings as AppSettings
-from sliding_window import (
-    process_with_sliding_window,
-    estimate_tokens,
-    requires_sliding_window,
-)
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "entities")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
@@ -50,6 +50,7 @@ def _resolve_device() -> str:
         return device_param
     try:
         import torch
+
         return "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
         return "cpu"
@@ -154,26 +155,18 @@ class EntitiesWorker(BaseWorker):
             if not config_file.exists():
                 raise FileNotFoundError(f"gliner_config.json not found in {model_path}")
 
-            model_files = list(model_path_obj.glob("*.bin")) + list(
-                model_path_obj.glob("*.safetensors")
-            )
+            model_files = list(model_path_obj.glob("*.bin")) + list(model_path_obj.glob("*.safetensors"))
             if not model_files:
-                raise FileNotFoundError(
-                    f"No model weight files (.bin or .safetensors) found in {model_path}"
-                )
+                raise FileNotFoundError(f"No model weight files (.bin or .safetensors) found in {model_path}")
 
             deberta_path_obj = Path(deberta_path)
             if not deberta_path_obj.exists():
-                raise FileNotFoundError(
-                    f"DeBERTa backbone directory not found at {deberta_path}"
-                )
+                raise FileNotFoundError(f"DeBERTa backbone directory not found at {deberta_path}")
 
             critical_files = ["spm.model", "tokenizer_config.json", "config.json"]
             missing_files = [f for f in critical_files if not (deberta_path_obj / f).exists()]
             if missing_files:
-                raise FileNotFoundError(
-                    f"Missing DeBERTa tokenizer files in {deberta_path}: {missing_files}"
-                )
+                raise FileNotFoundError(f"Missing DeBERTa tokenizer files in {deberta_path}: {missing_files}")
 
             self.model = GLiNER.from_pretrained(
                 model_path,
@@ -185,6 +178,7 @@ class EntitiesWorker(BaseWorker):
                 self.model = self.model.to(self.device)
                 try:
                     import torch
+
                     if torch.cuda.is_available():
                         mem_gb = torch.cuda.memory_allocated() / 1e9
                         self.logger.info(f"GPU memory allocated: {mem_gb:.2f} GB")
@@ -199,6 +193,7 @@ class EntitiesWorker(BaseWorker):
 
     def _extract_dates(self, text: str) -> List[Dict]:
         import re
+
         dates = []
         patterns = [
             r"\d{1,2}/\d{1,2}/\d{2,4}",
@@ -209,11 +204,20 @@ class EntitiesWorker(BaseWorker):
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
-                dates.append({"text": match.group(), "label": "DATE", "confidence": 0.75, "start": match.start(), "end": match.end()})
+                dates.append(
+                    {
+                        "text": match.group(),
+                        "label": "DATE",
+                        "confidence": 0.75,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
         return dates
 
     def _extract_money(self, text: str) -> List[Dict]:
         import re
+
         money = []
         patterns = [
             r"\$\d+(?:,\d{3})*(?:\.\d{2})?",
@@ -223,11 +227,20 @@ class EntitiesWorker(BaseWorker):
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
-                money.append({"text": match.group(), "label": "MONEY", "confidence": 0.8, "start": match.start(), "end": match.end()})
+                money.append(
+                    {
+                        "text": match.group(),
+                        "label": "MONEY",
+                        "confidence": 0.8,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
         return money
 
     def _extract_orgs(self, text: str) -> List[Dict]:
         import re
+
         orgs = []
         patterns = [
             r"(?:Inc\.|LLC|Corp\.|Ltd\.|S\.A\.|S\.L\.|B\.V\.|GmbH)",
@@ -235,11 +248,20 @@ class EntitiesWorker(BaseWorker):
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
-                orgs.append({"text": match.group(), "label": "ORG", "confidence": 0.6, "start": match.start(), "end": match.end()})
+                orgs.append(
+                    {
+                        "text": match.group(),
+                        "label": "ORG",
+                        "confidence": 0.6,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
         return orgs
 
     def _extract_locs(self, text: str) -> List[Dict]:
         import re
+
         locs = []
         patterns = [
             r"(?:New York|Los Angeles|Chicago|Houston|Phoenix)",
@@ -248,18 +270,29 @@ class EntitiesWorker(BaseWorker):
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
-                locs.append({"text": match.group(), "label": "LOC", "confidence": 0.65, "start": match.start(), "end": match.end()})
+                locs.append(
+                    {
+                        "text": match.group(),
+                        "label": "LOC",
+                        "confidence": 0.65,
+                        "start": match.start(),
+                        "end": match.end(),
+                    }
+                )
         return locs
 
     def _extract_persons(self, text: str) -> List[Dict]:
         import re
+
         persons = []
         pattern = r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b"
         exclude = {"The", "This", "That", "What", "When", "Where", "Which", "Who", "How", "There"}
         for match in re.finditer(pattern, text):
             name = match.group()
             if name not in exclude:
-                persons.append({"text": name, "label": "PER", "confidence": 0.5, "start": match.start(), "end": match.end()})
+                persons.append(
+                    {"text": name, "label": "PER", "confidence": 0.5, "start": match.start(), "end": match.end()}
+                )
         return persons
 
     def predict_entities(self, text: str, entity_types: List[str], threshold: float = 0.5) -> List[Dict]:
@@ -285,7 +318,16 @@ class EntitiesWorker(BaseWorker):
             for chunk_id_str, entities_in_chunk in entities_by_chunk.items():
                 if isinstance(entities_in_chunk, list):
                     for entity in entities_in_chunk:
-                        result.append({"text": entity.get("text", ""), "label": entity.get("label", ""), "confidence": 1.0, "start": 0, "end": 0, "chunk_id": chunk_id_str})
+                        result.append(
+                            {
+                                "text": entity.get("text", ""),
+                                "label": entity.get("label", ""),
+                                "confidence": 1.0,
+                                "start": 0,
+                                "end": 0,
+                                "chunk_id": chunk_id_str,
+                            }
+                        )
             self.logger.info(f"Extracted {len(result)} entities via regex service")
             return result
         except requests.RequestException as e:
@@ -304,9 +346,7 @@ class EntitiesWorker(BaseWorker):
 
         # Chunks are always read from the artifact store (spec 3.4): workers no
         # longer carry chunks inline in the RabbitMQ message.
-        chunks_json = resolve_text(
-            STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks")
-        )
+        chunks_json = resolve_text(STORE, self.redis_client.get(f"orchestrator:job:{job_id}:chunks"))
         if chunks_json:
             chunks = json.loads(chunks_json)
         else:
@@ -333,9 +373,7 @@ class EntitiesWorker(BaseWorker):
                 batch_chunks.append((chunk_id, chunk_text, chunk_offset))
 
         try:
-            text = resolve_text(
-                STORE, self.redis_client.get(f"orchestrator:job:{job_id}:text")
-            )
+            text = resolve_text(STORE, self.redis_client.get(f"orchestrator:job:{job_id}:text"))
         except Exception as e:
             self.logger.warning(f"Failed to read document text: {e}")
             text = None
@@ -344,29 +382,42 @@ class EntitiesWorker(BaseWorker):
             all_entities = []
             for chunk_id, chunk_text, chunk_offset in large_chunks:
                 try:
+
                     def predict_with_thresholds(text, entity_types, threshold=0.1):
                         return self.model.predict_entities(text, entity_types, threshold=threshold)
-                    entities_items = process_with_sliding_window(chunk_text, predict_with_thresholds, entity_types, threshold=0.1)
+
+                    entities_items = process_with_sliding_window(
+                        chunk_text, predict_with_thresholds, entity_types, threshold=0.1
+                    )
                     for e in entities_items:
                         label = e.get("label", "")
                         score = e.get("score", 0.0)
                         threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
                         if score >= threshold_val:
-                            g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
-                            all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                            g_start, g_end = self.calculate_global_position(
+                                chunk_offset, e.get("start", 0), e.get("end", 0)
+                            )
+                            all_entities.append(
+                                {
+                                    "text": e.get("text", ""),
+                                    "label": label,
+                                    "confidence": float(score),
+                                    "start": g_start,
+                                    "end": g_end,
+                                    "chunk_id": chunk_id,
+                                }
+                            )
                     chunks_total.labels(status="success").inc()
                 except Exception as e:
                     self.logger.warning(f"Error extracting entities from large chunk {chunk_id}: {e}")
 
             for batch_start in range(0, len(batch_chunks), GLINER_BATCH_SIZE):
-                batch = batch_chunks[batch_start:batch_start + GLINER_BATCH_SIZE]
+                batch = batch_chunks[batch_start : batch_start + GLINER_BATCH_SIZE]
                 texts = [c[1] for c in batch]
                 batch_start_time = time.time()
                 try:
                     batch_predictions = self.model.predict_entities(texts, entity_types, threshold=0.1)
-                    batch_duration.labels(batch_size=len(batch)).observe(
-                        time.time() - batch_start_time
-                    )
+                    batch_duration.labels(batch_size=len(batch)).observe(time.time() - batch_start_time)
                     for (chunk_id, chunk_text, chunk_offset), entities_items in zip(batch, batch_predictions):
                         if entities_items and isinstance(entities_items[0], list):
                             entities_items = entities_items[0]
@@ -375,8 +426,19 @@ class EntitiesWorker(BaseWorker):
                             score = e.get("score", 0.0)
                             threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
                             if score >= threshold_val:
-                                g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
-                                all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                                g_start, g_end = self.calculate_global_position(
+                                    chunk_offset, e.get("start", 0), e.get("end", 0)
+                                )
+                                all_entities.append(
+                                    {
+                                        "text": e.get("text", ""),
+                                        "label": label,
+                                        "confidence": float(score),
+                                        "start": g_start,
+                                        "end": g_end,
+                                        "chunk_id": chunk_id,
+                                    }
+                                )
                     chunks_total.labels(status="success").inc(len(batch))
                 except Exception as e:
                     self.logger.warning(f"Batch prediction failed: {e}")
@@ -390,8 +452,19 @@ class EntitiesWorker(BaseWorker):
                                 score = e.get("score", 0.0)
                                 threshold_val = ENTITY_THRESHOLDS.get(label, 0.5)
                                 if score >= threshold_val:
-                                    g_start, g_end = self.calculate_global_position(chunk_offset, e.get("start", 0), e.get("end", 0))
-                                    all_entities.append({"text": e.get("text", ""), "label": label, "confidence": float(score), "start": g_start, "end": g_end, "chunk_id": chunk_id})
+                                    g_start, g_end = self.calculate_global_position(
+                                        chunk_offset, e.get("start", 0), e.get("end", 0)
+                                    )
+                                    all_entities.append(
+                                        {
+                                            "text": e.get("text", ""),
+                                            "label": label,
+                                            "confidence": float(score),
+                                            "start": g_start,
+                                            "end": g_end,
+                                            "chunk_id": chunk_id,
+                                        }
+                                    )
                             chunks_total.labels(status="success").inc()
                         except Exception as inner_e:
                             self.logger.warning(f"Error extracting entities from chunk {chunk_id}: {inner_e}")
@@ -422,6 +495,7 @@ class EntitiesWorker(BaseWorker):
             del self.model
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:

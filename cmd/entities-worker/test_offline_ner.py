@@ -3,8 +3,8 @@
 Test script for offline NER heuristic-based extraction.
 """
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, "/app")
 
@@ -56,9 +56,7 @@ def test_offline_ner():
         print(f"\n--- Test {i + 1} ---")
         print(f"Text: {test['text']}")
 
-        entities = worker.predict_entities(
-            test["text"], test["entity_types"], threshold=0.5
-        )
+        entities = worker.predict_entities(test["text"], test["entity_types"], threshold=0.5)
 
         print(f"\nExtracted entities ({len(entities)}):")
         for e in entities:

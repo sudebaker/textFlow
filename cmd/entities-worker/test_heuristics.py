@@ -4,7 +4,7 @@ Simple test for heuristic-based NER functions.
 """
 
 import re
-from typing import List, Dict
+from typing import Dict, List
 
 
 class SimpleNER:
@@ -130,9 +130,7 @@ class SimpleNER:
                 )
         return persons
 
-    def predict_entities(
-        self, text: str, entity_types: List[str], threshold: float = 0.5
-    ) -> List[Dict]:
+    def predict_entities(self, text: str, entity_types: List[str], threshold: float = 0.5) -> List[Dict]:
         entities = []
         for entity_type in entity_types:
             if entity_type in self.ner_heuristics:
@@ -187,9 +185,7 @@ def test_offline_ner():
         print(f"\n--- Test {i + 1} ---")
         print(f"Text: {test['text']}")
 
-        entities = ner.predict_entities(
-            test["text"], test["entity_types"], threshold=0.5
-        )
+        entities = ner.predict_entities(test["text"], test["entity_types"], threshold=0.5)
 
         print(f"\nExtracted entities ({len(entities)}):")
         for e in entities:

@@ -42,9 +42,7 @@ sys.path.insert(0, "/app")
 from pkg.worker_common.artifact_store import STORE, resolve_text
 from pkg.worker_common.base import BaseWorker
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Language heuristic sampling (spec 16): the word-list scan is only
@@ -80,9 +78,7 @@ class MetadataWorker(BaseWorker):
         metadata_key = f"orchestrator:job:{job_id}:metadata"
         self.redis_client.set(metadata_key, json.dumps(metadata))
 
-        self.redis_client.hset(
-            f"orchestrator:job:{job_id}:steps", "metadata", "completed"
-        )
+        self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "metadata", "completed")
         self.event_bus.publish_stage_event(
             job_id,
             "stage.completed",
@@ -97,9 +93,7 @@ class MetadataWorker(BaseWorker):
 
         return metadata
 
-    def _extract_metadata(
-        self, text: str, document_url: Optional[str] = None
-    ) -> Dict:
+    def _extract_metadata(self, text: str, document_url: Optional[str] = None) -> Dict:
         """Extract lightweight, deterministic metadata from extracted text.
 
         Sample-insensitive fields, computed on the FULL text (deterministic
@@ -148,7 +142,16 @@ class MetadataWorker(BaseWorker):
     def _detect_language(self, text: str) -> str:
         spanish_words = ["el", "la", "de", "que", "y", "a", "en", "un", "ser", "se"]
         english_words = [
-            "the", "be", "to", "of", "and", "a", "in", "that", "have", "it",
+            "the",
+            "be",
+            "to",
+            "of",
+            "and",
+            "a",
+            "in",
+            "that",
+            "have",
+            "it",
         ]
 
         text_lower = text.lower()

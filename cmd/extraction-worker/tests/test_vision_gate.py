@@ -9,11 +9,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
-
-from vision.config import VisionSettings  # noqa: E402
-
 import dataclasses  # noqa: E402
+
+import pytest  # noqa: E402
+from vision.config import VisionSettings  # noqa: E402
 
 
 def make_settings(**overrides):

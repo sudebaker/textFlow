@@ -32,17 +32,18 @@ Pipeline variants:
   - With inferences: Adds 'inferences' to required_steps if feature was requested
 """
 
-import os
-import sys
-import json
 import hashlib
 import hmac
-import msgpack
+import json
+import os
+import sys
 import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import msgpack
 import redis
 import requests
-from datetime import datetime
-from typing import Dict, Any, Optional, List
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -50,9 +51,10 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.dirname(__file__))
 from app.config.settings import Settings
+
 from pkg.worker_common.artifact_store import STORE, resolve, resolve_text
-from pkg.worker_common.entity_utils import deduplicate_entities
 from pkg.worker_common.embeddings_client import EmbeddingsClient
+from pkg.worker_common.entity_utils import deduplicate_entities
 from pkg.worker_common.inference_embeddings import generate_inference_embeddings
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.pubsub_base import BasePubSubWorker
@@ -167,9 +169,7 @@ class CompletionWorker(BasePubSubWorker):
             self.logger.error(f"Failed to save results to file: {e}")
             return False
 
-    def send_webhook(
-        self, job_id: str, status: str, error: Optional[str] = None
-    ) -> bool:
+    def send_webhook(self, job_id: str, status: str, error: Optional[str] = None) -> bool:
         """Send webhook notification when job completes or fails.
 
         Posts a notification to the configured WEBHOOK_URL with job completion
@@ -241,11 +241,7 @@ class CompletionWorker(BasePubSubWorker):
             if webhook_secret:
                 timestamp = str(int(time.time()))
                 payload_json = json.dumps(payload, sort_keys=True)
-                signature = hmac.new(
-                    webhook_secret.encode(),
-                    payload_json.encode(),
-                    hashlib.sha256
-                ).hexdigest()
+                signature = hmac.new(webhook_secret.encode(), payload_json.encode(), hashlib.sha256).hexdigest()
                 headers["X-Webhook-Signature"] = signature
                 headers["X-Webhook-Timestamp"] = timestamp
 
@@ -264,9 +260,7 @@ class CompletionWorker(BasePubSubWorker):
 
     def _check_and_notify_batch(self, job_id: str, status: str):
         """Check if job is part of a batch and notify when batch completes."""
-        batch_id = self.redis_client.hget(
-            f"orchestrator:job:{job_id}:meta", "batch_id"
-        )
+        batch_id = self.redis_client.hget(f"orchestrator:job:{job_id}:meta", "batch_id")
         if not batch_id:
             return
 
@@ -280,18 +274,16 @@ class CompletionWorker(BasePubSubWorker):
         total = int(self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "total") or 0)
 
         if done >= total:
-            webhook_url = self.redis_client.hget(
-                f"orchestrator:batch:{batch_id}:meta", "webhook_url"
-            )
-            webhook_secret = self.redis_client.hget(
-                f"orchestrator:batch:{batch_id}:meta", "webhook_secret"
-            )
+            webhook_url = self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "webhook_url")
+            webhook_secret = self.redis_client.hget(f"orchestrator:batch:{batch_id}:meta", "webhook_secret")
             if webhook_url:
                 webhook_url = webhook_url.decode() if isinstance(webhook_url, bytes) else webhook_url
                 webhook_secret = webhook_secret.decode() if isinstance(webhook_secret, bytes) else webhook_secret
                 self._send_batch_webhook(batch_id, status, webhook_url, webhook_secret)
 
-    def _send_batch_webhook(self, batch_id: str, final_status: str, webhook_url: str, webhook_secret: Optional[str] = None):
+    def _send_batch_webhook(
+        self, batch_id: str, final_status: str, webhook_url: str, webhook_secret: Optional[str] = None
+    ):
         """Send batch completion webhook."""
         try:
             jobs = self.redis_client.smembers(f"orchestrator:batch:{batch_id}:jobs")
@@ -328,11 +320,7 @@ class CompletionWorker(BasePubSubWorker):
 
             headers = {"Content-Type": "application/json"}
             if webhook_secret:
-                signature = hmac.new(
-                    webhook_secret.encode(),
-                    json.dumps(payload).encode(),
-                    hashlib.sha256
-                ).hexdigest()
+                signature = hmac.new(webhook_secret.encode(), json.dumps(payload).encode(), hashlib.sha256).hexdigest()
                 headers["X-Webhook-Signature"] = f"sha256={signature}"
 
             response = requests.post(webhook_url, json=payload, timeout=10, headers=headers)
@@ -394,9 +382,7 @@ class CompletionWorker(BasePubSubWorker):
         """
         try:
             # Do not finalize a cancelled job.
-            job_status = self.redis_client.hget(
-                f"orchestrator:job:{job_id}:status", "status"
-            )
+            job_status = self.redis_client.hget(f"orchestrator:job:{job_id}:status", "status")
             if job_status == "cancelled":
                 self.logger.info(f"Job {job_id} cancelled, skipping finalization")
                 return
@@ -416,15 +402,9 @@ class CompletionWorker(BasePubSubWorker):
             is_image = "image" in completed_steps
             entry = "audio" if is_audio else "image" if is_image else "extraction"
 
-            image_metadata_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:image"
-            )
-            audio_metadata_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:audio"
-            )
-            audio_segments_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:audio_segments"
-            )
+            image_metadata_raw = self.redis_client.get(f"orchestrator:job:{job_id}:metadata:image")
+            audio_metadata_raw = self.redis_client.get(f"orchestrator:job:{job_id}:metadata:audio")
+            audio_segments_raw = self.redis_client.get(f"orchestrator:job:{job_id}:audio_segments")
 
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
@@ -442,9 +422,7 @@ class CompletionWorker(BasePubSubWorker):
                 profile=profile,
             )
 
-            self.logger.info(
-                f"Job {job_id} entry stage: {entry}, required steps: {required_steps}"
-            )
+            self.logger.info(f"Job {job_id} entry stage: {entry}, required steps: {required_steps}")
 
             if required_steps.issubset(completed_steps):
                 self.finalize_job(job_id)
@@ -542,9 +520,7 @@ class CompletionWorker(BasePubSubWorker):
             ) = pipe.execute()
 
             # Embeddings are stored as MsgPack binary — use raw client (no decode_responses)
-            embeddings_raw_bytes = resolve(
-                STORE, self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings")
-            )
+            embeddings_raw_bytes = resolve(STORE, self.redis_raw.get(f"orchestrator:job:{job_id}:embeddings"))
             inference_embeddings_raw = resolve(
                 STORE, self.redis_raw.get(f"orchestrator:job:{job_id}:inference_embeddings")
             )
@@ -559,9 +535,7 @@ class CompletionWorker(BasePubSubWorker):
 
             text = resolve_text(STORE, text) or ""
 
-            document_metadata = (
-                json.loads(document_metadata_json) if document_metadata_json else {}
-            )
+            document_metadata = json.loads(document_metadata_json) if document_metadata_json else {}
 
             text_metadata = json.loads(text_metadata_json) if text_metadata_json else {}
 
@@ -579,21 +553,13 @@ class CompletionWorker(BasePubSubWorker):
             inference_embeddings_by_chunk: dict = {}
             if inference_embeddings_raw:
                 raw = msgpack.unpackb(inference_embeddings_raw, raw=False)
-                inference_embeddings_by_chunk = {
-                    k: v for k, v in raw.items() if isinstance(v, dict)
-                }
+                inference_embeddings_by_chunk = {k: v for k, v in raw.items() if isinstance(v, dict)}
 
             # --- Entities: deduplicate → global dict {entity_id: {label, text, confidence}} ---
             entities_raw = json.loads(entities_raw_json) if entities_raw_json else []
-            entities_dict = (
-                deduplicate_entities(entities_raw, threshold=FUZZY_MATCH_THRESHOLD)
-                if entities_raw
-                else {}
-            )
+            entities_dict = deduplicate_entities(entities_raw, threshold=FUZZY_MATCH_THRESHOLD) if entities_raw else {}
 
-            self.logger.info(
-                f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)"
-            )
+            self.logger.info(f"Entities: {len(entities_raw)} raw → {len(entities_dict)} unique (by entity_id)")
 
             # --- Build per-chunk entity_ids index (from deduplicated dict) ---
             entity_ids_by_chunk: dict = {}  # {chunk_id: [entity_id]}
@@ -623,23 +589,15 @@ class CompletionWorker(BasePubSubWorker):
                             if cid:
                                 inferences_by_chunk[cid] = item.get("inferences", [])
                     else:
-                        self.logger.warning(
-                            f"micro_inferences is not a list, got {type(micro_inferences_list)}"
-                        )
+                        self.logger.warning(f"micro_inferences is not a list, got {type(micro_inferences_list)}")
             except json.JSONDecodeError as e:
                 self.logger.warning(f"Failed to parse micro_inferences JSON: {e}")
 
             # --- Generate inference embeddings ONLY if feature is enabled ---
             # Read features from Redis to check if inference_embeddings is enabled
-            image_metadata_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:image"
-            )
-            audio_metadata_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:metadata:audio"
-            )
-            audio_segments_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:audio_segments"
-            )
+            image_metadata_raw = self.redis_client.get(f"orchestrator:job:{job_id}:metadata:image")
+            audio_metadata_raw = self.redis_client.get(f"orchestrator:job:{job_id}:metadata:audio")
+            audio_segments_raw = self.redis_client.get(f"orchestrator:job:{job_id}:audio_segments")
 
             features_json = self.redis_client.get(f"orchestrator:job:{job_id}:features")
             features = []
@@ -689,8 +647,7 @@ class CompletionWorker(BasePubSubWorker):
                     actual = len(chunk_inf_emb)
                     if expected != actual:
                         self.logger.warning(
-                            f"Embedding count mismatch for chunk {cid}: "
-                            f"expected {expected}, got {actual}"
+                            f"Embedding count mismatch for chunk {cid}: " f"expected {expected}, got {actual}"
                         )
 
                 enriched["inferences"] = inferences
@@ -712,12 +669,7 @@ class CompletionWorker(BasePubSubWorker):
             if source_classification is not None:
                 results["source_classification"] = source_classification
 
-            if (
-                self.redis_client.get(
-                    f"orchestrator:job:{job_id}:embeddings_degraded"
-                )
-                == "true"
-            ):
+            if self.redis_client.get(f"orchestrator:job:{job_id}:embeddings_degraded") == "true":
                 results["embeddings_degraded"] = True
 
             # --- Media fields (image-ocr-description / job-result-format) ---
@@ -745,13 +697,9 @@ class CompletionWorker(BasePubSubWorker):
                 log_message += f", source_type={source_classification.get('document_type', 'unknown')}"
             self.logger.info(log_message)
 
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:meta", "completed_at", str(int(time.time()))
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:meta", "completed_at", str(int(time.time())))
 
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:status", "status", "completed"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "completed")
 
             self.save_results_to_file(job_id, results)
             self.send_webhook(job_id, "completed", None)
@@ -765,12 +713,8 @@ class CompletionWorker(BasePubSubWorker):
 
         except Exception as e:
             self.logger.error(f"Error finalizing job: {e}", exc_info=True)
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:status", "status", "failed"
-            )
-            self.redis_client.set(
-                f"orchestrator:job:{job_id}:error", f"Finalization error: {str(e)}"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "failed")
+            self.redis_client.set(f"orchestrator:job:{job_id}:error", f"Finalization error: {str(e)}")
             self.send_webhook(job_id, "failed", str(e))
             self.event_bus.publish_job_failed(job_id, str(e))
 

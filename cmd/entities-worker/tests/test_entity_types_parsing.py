@@ -8,6 +8,7 @@ This test ensures that entity types are correctly parsed whether they come as:
 """
 
 import json
+
 import pytest
 
 

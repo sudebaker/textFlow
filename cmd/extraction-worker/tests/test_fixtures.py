@@ -1,7 +1,6 @@
 """Deterministic minimal-PDF builder (no binary fixtures in git)."""
 
 import pytest
-
 from fixtures import build_pdf  # noqa: F401  (tests add their dir to sys.path)
 
 

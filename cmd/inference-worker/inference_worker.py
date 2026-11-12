@@ -60,34 +60,34 @@ Key Features:
     - Prompt safety: Chunk text is trusted internal source (notariado, catastro, etc.)
 """
 
-import os
-import sys
-import json
-import time
-import re
 import hashlib
+import json
+import os
+import re
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
-import redis
 import pika
+import redis
 import requests
 
 sys.path.insert(0, "/app")
-from pkg.worker_common.base import BaseWorker
-from pkg.worker_common.rabbitmq import parse_rabbitmq_url
-
 # Note: adaptive_semaphore lives in the same directory as this worker.
 from adaptive_semaphore import AdaptiveSemaphore
+
+from pkg.worker_common.base import BaseWorker
+from pkg.worker_common.rabbitmq import parse_rabbitmq_url
 
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inferences")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8006"))
 INFERENCE_BASE_URL = os.getenv("INFERENCE_BASE_URL", "")
 INFERENCE_MODEL = os.getenv("INFERENCE_MODEL", "")
-MAX_INFERENCES_SHORT   = int(os.getenv("MAX_INFERENCES_SHORT",   "1"))  # chunks < 200 words
-MAX_INFERENCES_MEDIUM  = int(os.getenv("MAX_INFERENCES_MEDIUM",  "2"))  # chunks 200-499 words
-MAX_INFERENCES_LONG    = int(os.getenv("MAX_INFERENCES_LONG",    "3"))  # chunks >= 500 words
+MAX_INFERENCES_SHORT = int(os.getenv("MAX_INFERENCES_SHORT", "1"))  # chunks < 200 words
+MAX_INFERENCES_MEDIUM = int(os.getenv("MAX_INFERENCES_MEDIUM", "2"))  # chunks 200-499 words
+MAX_INFERENCES_LONG = int(os.getenv("MAX_INFERENCES_LONG", "3"))  # chunks >= 500 words
 MIN_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.7"))
 CACHE_TTL_SECONDS = int(os.getenv("INFERENCE_CACHE_TTL", "86400"))
 CACHE_ENABLED = os.getenv("INFERENCE_CACHE_ENABLED", "true").lower() == "true"
@@ -115,9 +115,7 @@ def resolve_inference_config(
     missing = [name for name in required if not (env.get(name) or "").strip()]
     if missing:
         raise RuntimeError(
-            "inference-worker requires "
-            + " and ".join(missing)
-            + " (LLM_URL/LLM_MODEL are no longer supported)"
+            "inference-worker requires " + " and ".join(missing) + " (LLM_URL/LLM_MODEL are no longer supported)"
         )
     return (
         env["INFERENCE_BASE_URL"].strip().rstrip("/"),
@@ -190,10 +188,12 @@ class InferenceWorker(BaseWorker):
 
         # Batch-specific metric
         from prometheus_client import Counter
+
         self.batch_counter = Counter("inference_worker_batch_total", "Batch operations", ["type"])
 
         # Queue wait time (spec 1.1): messages carry queued_at (unix ms)
         from prometheus_client import Histogram
+
         self.queue_time = Histogram(
             "inference_worker_queue_time_seconds",
             "Time messages spend waiting in the queue before consumption",
@@ -202,6 +202,7 @@ class InferenceWorker(BaseWorker):
 
         # LLM throughput (spec 1.3), from usage.completion_tokens / latency.
         from prometheus_client import Gauge as _Gauge
+
         self.llm_tokens_per_sec = _Gauge(
             "inference_worker_llm_tokens_per_sec",
             "LLM completion tokens per second (last call)",
@@ -232,9 +233,7 @@ class InferenceWorker(BaseWorker):
             # Full-concurrent design (W6): the executor runs per-chunk
             # processing tasks; pika's thread only schedules and acks via
             # connection.add_callback_threadsafe.
-            self._executor = ThreadPoolExecutor(
-                max_workers=ADAPTIVE_MAX_CONCURRENCY
-            )
+            self._executor = ThreadPoolExecutor(max_workers=ADAPTIVE_MAX_CONCURRENCY)
             # Live pika objects, set by main() on each (re)connect. Worker
             # threads must never touch them directly — only through
             # add_callback_threadsafe callbacks.
@@ -244,15 +243,12 @@ class InferenceWorker(BaseWorker):
             self._tasks_lock = threading.Lock()
             self._tasks_in_flight = 0
             from prometheus_client import Gauge
+
             self._cwnd_gauge = Gauge("inference_worker_cwnd", "Current congestion window")
             self._in_flight_gauge = Gauge("inference_worker_in_flight", "LLM calls currently in flight")
             self._cooldown_gauge = Gauge("inference_worker_cooldown", "1 if circuit breaker is active")
-            self._llm_requests_counter = Counter(
-                "inference_worker_llm_requests_total", "Total LLM requests"
-            )
-            self._llm_timeouts_counter = Counter(
-                "inference_worker_llm_timeouts_total", "Total LLM timeouts"
-            )
+            self._llm_requests_counter = Counter("inference_worker_llm_requests_total", "Total LLM requests")
+            self._llm_timeouts_counter = Counter("inference_worker_llm_timeouts_total", "Total LLM timeouts")
             self.logger.info(
                 f"Adaptive LLM concurrency ENABLED: min={ADAPTIVE_MIN_CONCURRENCY}, "
                 f"max={ADAPTIVE_MAX_CONCURRENCY}, binary AIMD (success/error)"
@@ -262,9 +258,7 @@ class InferenceWorker(BaseWorker):
         if INFERENCE_BASE_URL:
             self.llm_model_id, self.llm_max_model_len = self._discover_model(INFERENCE_BASE_URL)
             if not self.llm_model_id and INFERENCE_MODEL:
-                self.logger.info(
-                    f"Model discovery failed, falling back to INFERENCE_MODEL env var: {INFERENCE_MODEL}"
-                )
+                self.logger.info(f"Model discovery failed, falling back to INFERENCE_MODEL env var: {INFERENCE_MODEL}")
                 self.llm_model_id = INFERENCE_MODEL
                 self.llm_max_model_len = None
         else:
@@ -327,9 +321,7 @@ class InferenceWorker(BaseWorker):
             model_id = model_info.get("id")
             max_model_len = model_info.get("max_model_len", 4096)
 
-            self.logger.info(
-                f"Discovered model '{model_id}' with max_model_len={max_model_len}"
-            )
+            self.logger.info(f"Discovered model '{model_id}' with max_model_len={max_model_len}")
             return (model_id, max_model_len)
 
         except requests.RequestException as e:
@@ -399,20 +391,20 @@ class InferenceWorker(BaseWorker):
         input_hash = hashlib.sha256(f"{chunk_text}:{source_type}".encode()).hexdigest()
         return f"artifact:inference:{stage_version}:{input_hash}"
 
-    def _validate_cached_inferences(
-        self, cached: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def _validate_cached_inferences(self, cached: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Validate and filter cached inferences by confidence threshold."""
         validated = []
         for inf in cached:
             if isinstance(inf, dict) and "text" in inf:
                 conf = float(inf.get("confidence", 0.5))
                 if conf >= MIN_CONFIDENCE_THRESHOLD:
-                    validated.append({
-                        "text": inf.get("text", ""),
-                        "confidence": conf,
-                        "entity_refs": inf.get("entity_refs", []),
-                    })
+                    validated.append(
+                        {
+                            "text": inf.get("text", ""),
+                            "confidence": conf,
+                            "entity_refs": inf.get("entity_refs", []),
+                        }
+                    )
         return validated
 
     def _get_cached(self, cache_key: str) -> Optional[List[Dict[str, Any]]]:
@@ -481,9 +473,7 @@ class InferenceWorker(BaseWorker):
         try:
             if self._adaptive is not None:
                 if not self._adaptive.acquire(timeout=timeout + 10):
-                    self.logger.warning(
-                        "Adaptive semaphore acquire timeout, returning empty"
-                    )
+                    self.logger.warning("Adaptive semaphore acquire timeout, returning empty")
                     return _EmptyLlmResponse()
                 acquired = True
 
@@ -501,16 +491,13 @@ class InferenceWorker(BaseWorker):
                 except (requests.Timeout, requests.ConnectionError) as e:
                     last_error = e
                     if attempt < retries - 1:
-                        wait = retry_backoff * (2 ** attempt)
+                        wait = retry_backoff * (2**attempt)
                         self.logger.warning(
-                            f"LLM call attempt {attempt + 1}/{retries} failed: {e}, "
-                            f"retrying in {wait:.1f}s"
+                            f"LLM call attempt {attempt + 1}/{retries} failed: {e}, " f"retrying in {wait:.1f}s"
                         )
                         time.sleep(wait)
                     else:
-                        self.logger.error(
-                            f"LLM call failed after {retries} attempts: {e}"
-                        )
+                        self.logger.error(f"LLM call failed after {retries} attempts: {e}")
                         raise
             if response is None:
                 raise last_error
@@ -532,9 +519,7 @@ class InferenceWorker(BaseWorker):
                 # Live congestion-window metrics (not just at shutdown).
                 self._export_adaptive_metrics()
 
-    def _tokens_per_sec_from(
-        self, response: Optional[requests.Response], latency_ms: float, is_error: bool
-    ) -> float:
+    def _tokens_per_sec_from(self, response: Optional[requests.Response], latency_ms: float, is_error: bool) -> float:
         if is_error or response is None or latency_ms <= 0:
             return 0.0
         try:
@@ -636,9 +621,7 @@ class InferenceWorker(BaseWorker):
             - Falls back to 4096 if max_model_len unknown
         """
         if not INFERENCE_BASE_URL or not self.llm_model_id:
-            self.logger.warning(
-                "No LLM configured or model discovery failed, skipping inferences"
-            )
+            self.logger.warning("No LLM configured or model discovery failed, skipping inferences")
             return []
 
         # Check cache before calling LLM
@@ -702,9 +685,7 @@ Respond with ONLY the JSON array:"""
             response = self._call_llm(payload, timeout=LLM_TIMEOUT)
 
             result = response.json()
-            completion_text = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
+            completion_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
 
             self.logger.debug(f"Raw LLM response (first 500 chars): {completion_text[:500]}")
 
@@ -712,38 +693,24 @@ Respond with ONLY the JSON array:"""
             completion_text = re.sub(r"```.*?\n", "", completion_text, flags=re.DOTALL)
             completion_text = re.sub(r"```", "", completion_text)
             # Remove thinking tags: complete blocks first, then any dangling closing tag
-            completion_text = re.sub(
-                r"<think>.*?</think>", "", completion_text, flags=re.DOTALL
-            )
-            completion_text = re.sub(
-                r"</think>.*", "", completion_text, flags=re.DOTALL
-            )
+            completion_text = re.sub(r"<think>.*?</think>", "", completion_text, flags=re.DOTALL)
+            completion_text = re.sub(r"</think>.*", "", completion_text, flags=re.DOTALL)
 
             # Extract the outermost JSON array (handles nested arrays correctly)
             json_str = self._extract_outermost_array(completion_text)
             if not json_str:
-                response_preview = (
-                    completion_text[:300].replace("\n", " ")
-                    if completion_text
-                    else "(empty)"
-                )
-                self.logger.warning(
-                    f"No JSON array found in LLM response. Response preview: {response_preview}"
-                )
+                response_preview = completion_text[:300].replace("\n", " ") if completion_text else "(empty)"
+                self.logger.warning(f"No JSON array found in LLM response. Response preview: {response_preview}")
                 return []
 
             self.logger.debug(f"Extracted JSON array (first 400 chars): {json_str[:400]}")
 
             try:
                 inferences = json.loads(json_str)
-                self.logger.debug(
-                    f"Successfully parsed {len(inferences)} inferences from LLM response"
-                )
+                self.logger.debug(f"Successfully parsed {len(inferences)} inferences from LLM response")
             except json.JSONDecodeError as e:
                 response_preview = completion_text[:500].replace("\n", " ")
-                self.logger.warning(
-                    f"Failed to parse LLM response JSON: {e.msg}. Response: {response_preview}"
-                )
+                self.logger.warning(f"Failed to parse LLM response JSON: {e.msg}. Response: {response_preview}")
                 return []
 
             # Validate and annotate
@@ -756,8 +723,7 @@ Respond with ONLY the JSON array:"""
                         entity_refs_value = inf.get("entities", [])
                         if entity_refs_value:
                             self.logger.debug(
-                                "LLM response used deprecated 'entities' key; "
-                                "mapped to 'entity_refs' via fallback"
+                                "LLM response used deprecated 'entities' key; " "mapped to 'entity_refs' via fallback"
                             )
                     validated.append(
                         {
@@ -804,9 +770,7 @@ Respond with ONLY the JSON array:"""
         if not INFERENCE_BASE_URL or not self.llm_model_id:
             return {c["chunk_id"]: [] for c in chunks_data}
 
-        results: Dict[str, List[Dict[str, Any]]] = {
-            c["chunk_id"]: [] for c in chunks_data
-        }
+        results: Dict[str, List[Dict[str, Any]]] = {c["chunk_id"]: [] for c in chunks_data}
         if not chunks_data:
             return results
 
@@ -820,15 +784,16 @@ Respond with ONLY the JSON array:"""
                     max_facts = MAX_INFERENCES_MEDIUM
                 else:
                     max_facts = MAX_INFERENCES_LONG
-                passages.append({
-                    "passage_id": str(chunk["chunk_id"]),
-                    "text": chunk["text"],
-                    "max_facts": max_facts,
-                })
+                passages.append(
+                    {
+                        "passage_id": str(chunk["chunk_id"]),
+                        "text": chunk["text"],
+                        "max_facts": max_facts,
+                    }
+                )
 
             passages_text = "\n\n---\n\n".join(
-                f'PASSAGE {p["passage_id"]} (extract up to {p["max_facts"]} facts):\n{p["text"]}'
-                for p in passages
+                f'PASSAGE {p["passage_id"]} (extract up to {p["max_facts"]} facts):\n{p["text"]}' for p in passages
             )
 
             system_prompt = """You are a precise fact-extraction engine. You will receive multiple text passages, each identified by a passage_id.
@@ -868,13 +833,9 @@ Respond with ONLY the JSON array:"""
             response = self._call_llm(payload, timeout=batch_timeout)
 
             result = response.json()
-            completion_text = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
+            completion_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-            batch_results = self._parse_batch_response(
-                completion_text, [c["chunk_id"] for c in chunks_data]
-            )
+            batch_results = self._parse_batch_response(completion_text, [c["chunk_id"] for c in chunks_data])
             results.update(batch_results)
             return results
 
@@ -882,17 +843,13 @@ Respond with ONLY the JSON array:"""
             self.logger.error(f"Batch extraction failed ({len(chunks_data)} chunks): {e}")
             raise
 
-    def _parse_batch_response(
-        self, content: str, expected_chunk_ids: List
-    ) -> Dict[str, List[Dict[str, Any]]]:
+    def _parse_batch_response(self, content: str, expected_chunk_ids: List) -> Dict[str, List[Dict[str, Any]]]:
         """
         Parse batch LLM response and map results to individual chunk_ids.
 
         Returns dict mapping chunk_id -> list of validated inferences.
         """
-        results: Dict[str, List[Dict[str, Any]]] = {
-            str(cid): [] for cid in expected_chunk_ids
-        }
+        results: Dict[str, List[Dict[str, Any]]] = {str(cid): [] for cid in expected_chunk_ids}
 
         try:
             # Clean markdown code blocks
@@ -938,17 +895,17 @@ Respond with ONLY the JSON array:"""
                         conf = float(fact.get("confidence", 0.5))
                         entity_refs = fact.get("entity_refs", fact.get("entities", []))
                         if conf >= MIN_CONFIDENCE_THRESHOLD:
-                            validated.append({
-                                "text": fact["text"],
-                                "confidence": conf,
-                                "entity_refs": entity_refs if isinstance(entity_refs, list) else [],
-                            })
+                            validated.append(
+                                {
+                                    "text": fact["text"],
+                                    "confidence": conf,
+                                    "entity_refs": entity_refs if isinstance(entity_refs, list) else [],
+                                }
+                            )
                 results[passage_id] = validated
 
             found = [cid for cid in results if results[cid]]
-            self.logger.info(
-                f"Batch parsed: {len(found)}/{len(expected_chunk_ids)} chunks have results"
-            )
+            self.logger.info(f"Batch parsed: {len(found)}/{len(expected_chunk_ids)} chunks have results")
             return results
 
         except Exception as e:
@@ -1014,12 +971,14 @@ Respond with ONLY the JSON array:"""
 
             batch_to_process = None
             with self._batch_lock:
-                self._batch_buffer.append({
-                    "ch": ch,
-                    "method": method,
-                    "body": body,
-                    "message": message,
-                })
+                self._batch_buffer.append(
+                    {
+                        "ch": ch,
+                        "method": method,
+                        "body": body,
+                        "message": message,
+                    }
+                )
 
                 if len(self._batch_buffer) >= BATCH_SIZE:
                     batch_to_process = self._batch_buffer[:]
@@ -1049,18 +1008,14 @@ Respond with ONLY the JSON array:"""
         already requeued its unacked messages, so dropping is correct.
         """
         if conn is None or not conn.is_open or ch is None:
-            self.logger.warning(
-                "callback dropped: connection epoch closed (broker will redeliver)"
-            )
+            self.logger.warning("callback dropped: connection epoch closed (broker will redeliver)")
             return
         try:
             conn.add_callback_threadsafe(callback)
         except Exception as e:
             self.logger.warning(f"add_callback_threadsafe failed: {e}")
 
-    def _persist_chunk_result_once(
-        self, job_id, chunk_id, chunk_result: Dict[str, Any]
-    ) -> tuple:
+    def _persist_chunk_result_once(self, job_id, chunk_id, chunk_result: Dict[str, Any]) -> tuple:
         """Persist a chunk result exactly once across redeliveries.
 
         Returns ``(stored: bool, remaining: Optional[int])``. ``remaining`` is
@@ -1082,9 +1037,7 @@ Respond with ONLY the JSON array:"""
 
     def _request_consumer_stop(self, conn, ch) -> None:
         """Ask the pika thread to stop consuming (last task on shutdown)."""
-        self._schedule_on_pika(
-            conn, ch, lambda: ch.stop_consuming() if ch is not None else None
-        )
+        self._schedule_on_pika(conn, ch, lambda: ch.stop_consuming() if ch is not None else None)
 
     def _adaptive_task(self, body: bytes, delivery_tag: int) -> None:
         """
@@ -1102,18 +1055,14 @@ Respond with ONLY the JSON array:"""
 
         def ack():
             if ch is not None:
-                self._schedule_on_pika(
-                    conn, ch, lambda: ch.basic_ack(delivery_tag=delivery_tag)
-                )
+                self._schedule_on_pika(conn, ch, lambda: ch.basic_ack(delivery_tag=delivery_tag))
 
         def nack(requeue: bool):
             if ch is not None:
                 self._schedule_on_pika(
                     conn,
                     ch,
-                    lambda: ch.basic_nack(
-                        delivery_tag=delivery_tag, requeue=requeue
-                    ),
+                    lambda: ch.basic_nack(delivery_tag=delivery_tag, requeue=requeue),
                 )
 
         try:
@@ -1145,8 +1094,7 @@ Respond with ONLY the JSON array:"""
             word_count = len(chunk_text.split())
             if word_count > MAX_CHUNK_WORDS:
                 self.logger.warning(
-                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
-                    f"job={job_id}, chunk={chunk_id}"
+                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), " f"job={job_id}, chunk={chunk_id}"
                 )
                 self.jobs_total.labels(status="chunk_too_large").inc()
                 self._store_empty_result_data(job_id, chunk_id, total_chunks)
@@ -1160,15 +1108,11 @@ Respond with ONLY the JSON array:"""
             )
 
             chunk_result = {"chunk_id": chunk_id, "inferences": inferences}
-            stored, remaining = self._persist_chunk_result_once(
-                job_id, chunk_id, chunk_result
-            )
+            stored, remaining = self._persist_chunk_result_once(job_id, chunk_id, chunk_result)
             if not stored:
                 # Already processed on a previous delivery (dropped ack
                 # triggered redelivery). Do not double-write/decrement.
-                self.logger.info(
-                    f"Duplicate delivery ignored job={job_id} chunk={chunk_id}"
-                )
+                self.logger.info(f"Duplicate delivery ignored job={job_id} chunk={chunk_id}")
                 self.jobs_total.labels(status="chunk_processed").inc()
                 ack()
                 return
@@ -1217,10 +1161,7 @@ Respond with ONLY the JSON array:"""
                 self.logger.error(f"Timer flush failed: {e}")
                 for item in batch:
                     try:
-                        item["ch"].basic_nack(
-                            delivery_tag=item["method"].delivery_tag,
-                            requeue=True
-                        )
+                        item["ch"].basic_nack(delivery_tag=item["method"].delivery_tag, requeue=True)
                     except Exception as nack_error:
                         self.logger.warning(f"Failed to NACK message: {nack_error}")
 
@@ -1231,19 +1172,13 @@ Respond with ONLY the JSON array:"""
             "inferences": [],
         }
 
-        stored, remaining = self._persist_chunk_result_once(
-            job_id, chunk_id, chunk_result
-        )
+        stored, remaining = self._persist_chunk_result_once(job_id, chunk_id, chunk_result)
         if not stored:
-            self.logger.info(
-                f"Duplicate empty result ignored job={job_id} chunk={chunk_id}"
-            )
+            self.logger.info(f"Duplicate empty result ignored job={job_id} chunk={chunk_id}")
             self.jobs_total.labels(status="chunk_processed").inc()
             return
 
-        self.logger.info(
-            f"Inference skipped for job: {job_id}, chunk: {chunk_id}, remaining: {remaining}"
-        )
+        self.logger.info(f"Inference skipped for job: {job_id}, chunk: {chunk_id}, remaining: {remaining}")
 
         if remaining <= 0:
             self._assemble_final_results(job_id)
@@ -1296,12 +1231,14 @@ Respond with ONLY the JSON array:"""
                 cached_results[str(chunk_id)] = validated
                 self.batch_counter.labels(type="cache_hit").inc()
             else:
-                uncached_chunks.append({
-                    "chunk_id": str(chunk_id),
-                    "text": chunk_text,
-                    "source_type": source_type,
-                    "entities": msg.get("entities", []),
-                })
+                uncached_chunks.append(
+                    {
+                        "chunk_id": str(chunk_id),
+                        "text": chunk_text,
+                        "source_type": source_type,
+                        "entities": msg.get("entities", []),
+                    }
+                )
                 uncached_indices.append(i)
 
         # Process uncached chunks via batch LLM call
@@ -1396,22 +1333,17 @@ Respond with ONLY the JSON array:"""
         # Defensive validation: if expected total is known and assembled is short,
         # defer — another worker still holds rpushes in flight (Fix 2).
         try:
-            expected_raw = self.redis_client.get(
-                f"orchestrator:job:{job_id}:inferences:total"
-            )
+            expected_raw = self.redis_client.get(f"orchestrator:job:{job_id}:inferences:total")
             expected = int(expected_raw) if expected_raw is not None else 0
         except Exception:
             expected = 0
 
         if expected and len(assembled) < expected:
             self.logger.warning(
-                f"Assembly deferred for job {job_id}: "
-                f"{len(assembled)}/{expected} chunks in raw, releasing lock"
+                f"Assembly deferred for job {job_id}: " f"{len(assembled)}/{expected} chunks in raw, releasing lock"
             )
             # Release lock so the last worker can retry assembly
-            self.redis_client.delete(
-                f"orchestrator:job:{job_id}:inferences:assembly_lock"
-            )
+            self.redis_client.delete(f"orchestrator:job:{job_id}:inferences:assembly_lock")
             return False
 
         final_key = f"orchestrator:job:{job_id}:micro_inferences"
@@ -1422,9 +1354,7 @@ Respond with ONLY the JSON array:"""
         self.redis_client.delete(remaining_key)
         self.redis_client.delete(f"orchestrator:job:{job_id}:inferences:total")
 
-        self.redis_client.hset(
-            f"orchestrator:job:{job_id}:steps", "inferences", "completed"
-        )
+        self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "inferences", "completed")
         self.event_bus.publish_stage_event(
             job_id,
             "stage.completed",
@@ -1455,9 +1385,7 @@ Respond with ONLY the JSON array:"""
             self._do_assemble_locked(job_id)
         except Exception as e:
             self.logger.error(f"Error assembling final inferences: {e}")
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:steps", "inferences", "failed"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "inferences", "failed")
             self.jobs_total.labels(status="assembly_error").inc()
 
     def cleanup(self) -> None:
@@ -1491,17 +1419,11 @@ Respond with ONLY the JSON array:"""
             while self._tasks_in_flight > 0 and time.monotonic() < deadline:
                 time.sleep(0.1)
             if self._tasks_in_flight > 0:
-                self.logger.warning(
-                    f"Force shutdown: {self._tasks_in_flight} tasks still in-flight"
-                )
+                self.logger.warning(f"Force shutdown: {self._tasks_in_flight} tasks still in-flight")
             elif self._adaptive.in_flight > 0:
-                self.logger.warning(
-                    f"Force shutdown: {self._adaptive.in_flight} LLM calls still in-flight"
-                )
+                self.logger.warning(f"Force shutdown: {self._adaptive.in_flight} LLM calls still in-flight")
             else:
-                self.logger.info(
-                    "All in-flight LLM calls completed, shutting down"
-                )
+                self.logger.info("All in-flight LLM calls completed, shutting down")
             self._export_adaptive_metrics()
 
     def _export_adaptive_metrics(self) -> None:
@@ -1622,9 +1544,7 @@ Respond with ONLY the JSON array:"""
             self.logger.info(f"Processing inferences for job: {job_id}, chunk: {chunk_id}")
 
             if not chunk_text:
-                self.logger.warning(
-                    f"No text in message for job: {job_id}, chunk: {chunk_id}"
-                )
+                self.logger.warning(f"No text in message for job: {job_id}, chunk: {chunk_id}")
                 self.jobs_total.labels(status="no_text").inc()
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
@@ -1632,17 +1552,14 @@ Respond with ONLY the JSON array:"""
             word_count = len(chunk_text.split())
             if word_count > MAX_CHUNK_WORDS:
                 self.logger.warning(
-                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), "
-                    f"job={job_id}, chunk={chunk_id}"
+                    f"Chunk too large: {word_count} words (max {MAX_CHUNK_WORDS}), " f"job={job_id}, chunk={chunk_id}"
                 )
                 self.jobs_total.labels(status="chunk_too_large").inc()
                 self._store_empty_result(ch, method, message)
                 return
 
             # Extract inferences with entity context (no truncation)
-            inferences = self.extract_inferences(
-                chunk_text=chunk_text, entities=entities, source_type=source_type
-            )
+            inferences = self.extract_inferences(chunk_text=chunk_text, entities=entities, source_type=source_type)
 
             # Build result for this chunk
             chunk_result = {
@@ -1667,20 +1584,14 @@ Respond with ONLY the JSON array:"""
 
             # If this is the last chunk (remaining <= 0), assemble final result
             if remaining <= 0:
-                self.logger.info(
-                    f"All inferences complete for job {job_id}, assembling results..."
-                )
+                self.logger.info(f"All inferences complete for job {job_id}, assembling results...")
 
-                assembly_lock_key = (
-                    f"orchestrator:job:{job_id}:inferences:assembly_lock"
-                )
+                assembly_lock_key = f"orchestrator:job:{job_id}:inferences:assembly_lock"
                 acquired = self.redis_client.setnx(assembly_lock_key, "1")
                 self.redis_client.expire(assembly_lock_key, 3600)
 
                 if not acquired:
-                    self.logger.warning(
-                        f"Assembly lock already held for job {job_id}, skipping duplicate assembly"
-                    )
+                    self.logger.warning(f"Assembly lock already held for job {job_id}, skipping duplicate assembly")
                     self.jobs_total.labels(status="chunk_processed").inc()
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                     return
@@ -1694,9 +1605,7 @@ Respond with ONLY the JSON array:"""
                         self.jobs_total.labels(status="assembly_deferred").inc()
                 except Exception as e:
                     self.logger.error(f"Error assembling final inferences: {e}")
-                    self.redis_client.hset(
-                        f"orchestrator:job:{job_id}:steps", "inferences", "failed"
-                    )
+                    self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "inferences", "failed")
                     self.jobs_total.labels(status="assembly_error").inc()
             else:
                 # Not the last chunk — publish incremental progress so clients see activity
@@ -1776,6 +1685,7 @@ def main():
             worker.logger.info(f"Consuming from queue: {QUEUE_NAME}")
 
             from pkg.worker_common.rabbitmq import declare_queue
+
             declare_queue(channel, QUEUE_NAME)
 
             if ADAPTIVE_ENABLED:
@@ -1809,6 +1719,7 @@ def main():
                 connection.call_later(1.0, _shutdown_watchdog)
 
             if BATCH_ENABLED:
+
                 def _schedule_flush():
                     if _stopping:
                         # Graceful shutdown: leave start_consuming() with a
@@ -1825,17 +1736,13 @@ def main():
                         worker.logger.error(f"Error in flush callback: {e}")
                     if not _stopping:
                         try:
-                            connection.call_later(
-                                BATCH_TIMEOUT_MS / 1000.0, _schedule_flush
-                            )
+                            connection.call_later(BATCH_TIMEOUT_MS / 1000.0, _schedule_flush)
                         except Exception:
                             pass
 
                 connection.call_later(BATCH_TIMEOUT_MS / 1000.0, _schedule_flush)
 
-            channel.basic_consume(
-                queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False
-            )
+            channel.basic_consume(queue=QUEUE_NAME, on_message_callback=worker.process, auto_ack=False)
 
             channel.start_consuming()
 

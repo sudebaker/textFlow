@@ -12,13 +12,15 @@ def _simple_chunk(text: str, max_chars: int) -> List[dict]:
     chunk_num = 0
     while start < len(text):
         end = min(start + max_chars, len(text))
-        chunks.append({
-            "chunk_id": f"chunk_{chunk_num:03d}",
-            "text": text[start:end],
-            "start_offset": start,
-            "end_offset": end,
-            "token_count": (end - start) // CHARS_PER_TOKEN,
-        })
+        chunks.append(
+            {
+                "chunk_id": f"chunk_{chunk_num:03d}",
+                "text": text[start:end],
+                "start_offset": start,
+                "end_offset": end,
+                "token_count": (end - start) // CHARS_PER_TOKEN,
+            }
+        )
         if end >= len(text):
             break
         start = end
@@ -28,7 +30,7 @@ def _simple_chunk(text: str, max_chars: int) -> List[dict]:
 
 class SegmentChunker:
     """Groups diarized segments by speaker turn into text chunks.
-    
+
     Output format matches chunk_text() in extraction-worker so downstream
     workers receive identical chunk structures regardless of content type.
     """
@@ -64,9 +66,7 @@ class SegmentChunker:
                 chunk_num += 1
 
         for i, seg in enumerate(segments):
-            if seg.speaker != buffer_speaker or (
-                sum(len(t) for t in buffer_texts) + len(seg.text) > self.max_chars
-            ):
+            if seg.speaker != buffer_speaker or (sum(len(t) for t in buffer_texts) + len(seg.text) > self.max_chars):
                 _flush(i)
                 buffer_speaker = seg.speaker
                 buffer_texts = [seg.text]

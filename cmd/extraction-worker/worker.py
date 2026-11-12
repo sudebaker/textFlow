@@ -60,6 +60,8 @@ import tiktoken
 from prometheus_client import Counter, Histogram, start_http_server
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from vision.fallback import FallbackContext, run_quality_flow
+
 from pkg.events_python import EventBus
 from pkg.worker_common.artifact_store import STORE
 from pkg.worker_common.inference_dispatch import (
@@ -73,18 +75,12 @@ from pkg.worker_common.inference_dispatch import (
 from pkg.worker_common.pipeline_config import PipelineDefinition
 from pkg.worker_common.rabbitmq_async import declare_queue_async
 
-from vision.fallback import FallbackContext, run_quality_flow
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Prometheus metrics
 jobs_total = Counter("extraction_worker_jobs_total", "Total jobs processed", ["status"])
-job_duration = Histogram(
-    "extraction_worker_job_duration_seconds", "Job processing duration in seconds"
-)
+job_duration = Histogram("extraction_worker_job_duration_seconds", "Job processing duration in seconds")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://localhost:5672/")
@@ -191,9 +187,7 @@ def compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def extract_metadata_fast(
-    file_path: str, filename: str, *, precomputed_bytes: bytes | None = None
-) -> Dict[str, Any]:
+def extract_metadata_fast(file_path: str, filename: str, *, precomputed_bytes: bytes | None = None) -> Dict[str, Any]:
     """Extract cheap, deterministic document-level metadata.
 
     Computes file size, SHA-256 hash, and MIME type (libmagic). Deep EXIF/XMP
@@ -320,9 +314,7 @@ def extract_metadata_deep(file_path: str, metadata: Dict[str, Any]) -> Dict[str,
                 metadata["encrypted"] = exif.get("Encrypted", False)
 
                 metadata["exif_data"] = {
-                    k: v
-                    for k, v in exif.items()
-                    if k not in ["SourceFile", "File:FileSize", "File:MIMEType"]
+                    k: v for k, v in exif.items() if k not in ["SourceFile", "File:FileSize", "File:MIMEType"]
                 }
     except Exception as e:
         logger.warning(f"exiftool extraction failed: {e}")
@@ -717,9 +709,7 @@ class ExtractionWorker:
             )
 
         def set_counter(suffix: str, value: int) -> None:
-            self.redis_client.setex(
-                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
-            )
+            self.redis_client.setex(inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value)
 
         return await dispatch_inference_chunks(
             publish=publish,
@@ -803,8 +793,7 @@ class ExtractionWorker:
                 remaining = poll_deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     raise TimeoutError(
-                        f"Docling conversion timed out after {DOCLING_CONVERSION_TIMEOUT}s"
-                        f" (task_id={task_id})"
+                        f"Docling conversion timed out after {DOCLING_CONVERSION_TIMEOUT}s" f" (task_id={task_id})"
                     )
 
                 wait_secs = min(30, remaining)
@@ -822,9 +811,7 @@ class ExtractionWorker:
                 if task_status == "success":
                     break
                 if task_status in ("failure", "error"):
-                    raise RuntimeError(
-                        f"Docling conversion failed (task_id={task_id}): {status_data}"
-                    )
+                    raise RuntimeError(f"Docling conversion failed (task_id={task_id}): {status_data}")
                 # Still pending/processing — yield control to other coroutines
                 await asyncio.sleep(2)
 
@@ -836,9 +823,7 @@ class ExtractionWorker:
                 resp.raise_for_status()
                 return await resp.json()
 
-    async def extract_text_from_base64(
-        self, document_base64: str, filename: str = "document"
-    ) -> Dict[str, Any]:
+    async def extract_text_from_base64(self, document_base64: str, filename: str = "document") -> Dict[str, Any]:
         """Extract text from base64-encoded document.
 
         Decodes base64 content and passes to Docling. Auto-detects PDF format
@@ -894,9 +879,7 @@ class ExtractionWorker:
             logger.error(f"Failed to extract text from base64: {e}")
             raise
 
-    async def extract_text_from_file(
-        self, file_path: str, filename: str = "document"
-    ) -> Dict[str, Any]:
+    async def extract_text_from_file(self, file_path: str, filename: str = "document") -> Dict[str, Any]:
         """Extract text from document file on disk.
 
         Reads file from disk and passes to Docling for text extraction.
@@ -973,9 +956,7 @@ class ExtractionWorker:
             /app directory tree. Prevents accessing files outside container.
         """
         try:
-            if document_url.startswith("http://docling:") or document_url.startswith(
-                "http://docling/"
-            ):
+            if document_url.startswith("http://docling:") or document_url.startswith("http://docling/"):
                 if "://docling:" in document_url:
                     url_path = document_url.split("/data/uploads/")[-1]
                     local_path = Path("/app/data/uploads") / url_path
@@ -1166,17 +1147,17 @@ class ExtractionWorker:
                     return base64.b64decode(body.get("document_base64", ""))
 
                 docling_pages_result = (result.get("metadata") or {}).get("docling_pages")
-                text = await run_quality_flow(FallbackContext(
-                    job_id=job_id,
-                    text=text,
-                    docling_document=result.get("docling_document", {}),
-                    page_count=docling_pages_result
-                    if isinstance(docling_pages_result, int)
-                    else None,
-                    get_document_bytes=_get_document_bytes,
-                    redis_client=self.redis_client,
-                    raise_if_cancelled=self._raise_if_cancelled,
-                ))
+                text = await run_quality_flow(
+                    FallbackContext(
+                        job_id=job_id,
+                        text=text,
+                        docling_document=result.get("docling_document", {}),
+                        page_count=docling_pages_result if isinstance(docling_pages_result, int) else None,
+                        get_document_bytes=_get_document_bytes,
+                        redis_client=self.redis_client,
+                        raise_if_cancelled=self._raise_if_cancelled,
+                    )
+                )
 
                 # Cooperative cancellation: abort before metadata (expensive exiftool)
                 self._raise_if_cancelled(job_id)
@@ -1218,9 +1199,7 @@ class ExtractionWorker:
 
                 chunks = chunk_text(text)
 
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:status", "status", "processing"
-                )
+                self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "processing")
 
                 text_ref = STORE.put(text.encode("utf-8"))
                 self.redis_client.set(f"orchestrator:job:{job_id}:text", text_ref)
@@ -1230,13 +1209,9 @@ class ExtractionWorker:
                     f"orchestrator:job:{job_id}:metadata:document",
                     json.dumps(document_metadata),
                 )
-                self.redis_client.set(
-                    f"orchestrator:job:{job_id}:metadata:text", json.dumps(text_metadata)
-                )
+                self.redis_client.set(f"orchestrator:job:{job_id}:metadata:text", json.dumps(text_metadata))
 
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:steps", "extraction", "completed"
-                )
+                self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "extraction", "completed")
                 self.event_bus.publish_stage_event(
                     job_id,
                     "stage.completed",
@@ -1291,8 +1266,7 @@ class ExtractionWorker:
                     profile=body.get("profile", "full"),
                 )
                 logger.info(
-                    f"Detected {body.get('mime_type') or 'document'} pipeline, "
-                    f"routing to queues: {target_queues}"
+                    f"Detected {body.get('mime_type') or 'document'} pipeline, " f"routing to queues: {target_queues}"
                 )
 
                 # Inference dispatch is owned by the entry stage (D3): a `rag`
@@ -1301,16 +1275,12 @@ class ExtractionWorker:
                 if INFERENCES_QUEUE in target_queues:
                     dispatched = await self._dispatch_inferences(channel, job_id, chunks)
                     if dispatched == 0:
-                        target_queues = skip_empty_inference_stage(
-                            target_queues, self.redis_client, job_id
-                        )
+                        target_queues = skip_empty_inference_stage(target_queues, self.redis_client, job_id)
 
                 # Chunk messages already went to `inferences`; never publish the
                 # job envelope there (it lacks chunk_id/chunk_text and the
                 # inference consumer rejects it).
-                envelope_queues = [
-                    queue for queue in target_queues if queue != INFERENCES_QUEUE
-                ]
+                envelope_queues = [queue for queue in target_queues if queue != INFERENCES_QUEUE]
 
                 # stage.queued contract: emit per-stage before the RabbitMQ publish (best-effort)
                 for qs in target_queues:
@@ -1351,9 +1321,7 @@ class ExtractionWorker:
                     pass
                 logger.error(f"Error processing extraction: {e}")
                 if job_id:
-                    self.redis_client.hset(
-                        f"orchestrator:job:{job_id}:status", "status", "failed"
-                    )
+                    self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "failed")
                     self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
                     self.event_bus.publish_job_failed(job_id, str(e))
 
@@ -1406,10 +1374,7 @@ async def _run() -> None:
                 await channel.set_qos(prefetch_count=PREFETCH_COUNT)
 
                 queue = await declare_queue_async(channel, QUEUE_NAME)
-                logger.info(
-                    f"Consuming from queue: {QUEUE_NAME} "
-                    f"(concurrency={PREFETCH_COUNT})"
-                )
+                logger.info(f"Consuming from queue: {QUEUE_NAME} " f"(concurrency={PREFETCH_COUNT})")
 
                 async with queue.iterator() as q_iter:
                     async for message in q_iter:
@@ -1418,9 +1383,7 @@ async def _run() -> None:
 
                         # Dispatch concurrently — each Docling poll yields the
                         # event loop so other tasks progress in parallel.
-                        task = asyncio.create_task(
-                            worker._process_message_async(message, channel)
-                        )
+                        task = asyncio.create_task(worker._process_message_async(message, channel))
                         pending_tasks.add(task)
                         task.add_done_callback(pending_tasks.discard)
 

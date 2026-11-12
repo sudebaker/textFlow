@@ -52,7 +52,7 @@ class FakeStore:
         return f"sha256:{digest}"
 
     def get(self, ref):
-        return self.blobs.get(ref[len("sha256:"):]) if isinstance(ref, str) and ref.startswith("sha256:") else None
+        return self.blobs.get(ref[len("sha256:") :]) if isinstance(ref, str) and ref.startswith("sha256:") else None
 
 
 class FakeExchange:

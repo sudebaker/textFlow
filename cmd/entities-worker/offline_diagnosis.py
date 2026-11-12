@@ -6,8 +6,8 @@ import sys
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 
-from gliner import GLiNER
 import transformers
+from gliner import GLiNER
 from transformers import AutoConfig, AutoTokenizer
 
 # Ruta del modelo

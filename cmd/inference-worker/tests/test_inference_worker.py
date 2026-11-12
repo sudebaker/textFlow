@@ -1,8 +1,8 @@
-import pytest
 import json
-from unittest.mock import Mock, patch, MagicMock
-import requests
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
+import requests
 from inference_worker import InferenceWorker
 
 
@@ -15,7 +15,7 @@ class TestInferenceWorker:
     def test_extract_inferences_success(self, worker):
         """Test successful inference extraction returns new schema fields"""
         text = "The property has a value of 500,000 EUR and was built in 2010."
-        
+
         # Set up discovered model info on the worker instance
         worker.llm_model_id = "qwen3.5-2b"
         worker.llm_max_model_len = 4096
@@ -26,11 +26,13 @@ class TestInferenceWorker:
                 mock_response.raise_for_status = Mock()
                 # Match /v1/chat/completions response format
                 mock_response.json.return_value = {
-                    "choices": [{
-                        "message": {
-                            "content": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entity_refs": ["500000 EUR"]}]'
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '[{"text": "Property value is 500000 EUR", "confidence": 0.95, "entity_refs": ["500000 EUR"]}]'
+                            }
                         }
-                    }]
+                    ]
                 }
                 mock_post.return_value = mock_response
 
@@ -54,15 +56,17 @@ class TestInferenceWorker:
         with patch("requests.get") as mock_get:
             mock_response = Mock()
             mock_response.json.return_value = {
-                "data": [{
-                    "id": "qwen3.5-2b",
-                    "max_model_len": 16384,
-                }]
+                "data": [
+                    {
+                        "id": "qwen3.5-2b",
+                        "max_model_len": 16384,
+                    }
+                ]
             }
             mock_get.return_value = mock_response
-            
+
             model_id, max_len = InferenceWorker()._discover_model("http://localhost:8000")
-            
+
             assert model_id == "qwen3.5-2b"
             assert max_len == 16384
             mock_get.assert_called_once_with(
@@ -83,9 +87,7 @@ class TestInferenceWorker:
             mock_get.return_value = mock_response
 
             with patch("worker.INFERENCE_MODEL", "gemma4:e2b-mlx"):
-                model_id, max_len = InferenceWorker()._discover_model(
-                    "http://localhost:8000"
-                )
+                model_id, max_len = InferenceWorker()._discover_model("http://localhost:8000")
 
             assert model_id == "gemma4:e2b-mlx"
             assert max_len == 8192
@@ -94,9 +96,9 @@ class TestInferenceWorker:
         """Test graceful fallback when vLLM is unreachable"""
         with patch("requests.get") as mock_get:
             mock_get.side_effect = requests.RequestException("Connection refused")
-            
+
             model_id, max_len = InferenceWorker()._discover_model("http://localhost:8000")
-            
+
             assert model_id is None
             assert max_len is None
 
@@ -104,26 +106,24 @@ class TestInferenceWorker:
         """Test that extract_inferences uses discovered model and dynamic max_tokens"""
         worker.llm_model_id = "qwen3.5-2b"
         worker.llm_max_model_len = 2048
-        
+
         with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("requests.post") as mock_post:
                 mock_response = Mock()
                 mock_response.raise_for_status = Mock()
                 mock_response.json.return_value = {
-                    "choices": [{
-                        "message": {
-                            "content": '[{"text": "Test fact", "confidence": 0.95, "entity_refs": []}]'
-                        }
-                    }]
+                    "choices": [
+                        {"message": {"content": '[{"text": "Test fact", "confidence": 0.95, "entity_refs": []}]'}}
+                    ]
                 }
                 mock_post.return_value = mock_response
-                
+
                 inferences = worker.extract_inferences(
                     chunk_text="Some text",
                     entities=[],
                     source_type="catastro",
                 )
-                
+
                 # Verify POST payload uses discovered model
                 call_kwargs = mock_post.call_args[1]
                 assert call_kwargs["json"]["model"] == "qwen3.5-2b"
@@ -132,9 +132,7 @@ class TestInferenceWorker:
 
     def test_extract_inferences_no_base_url(self, worker):
         with patch("worker.INFERENCE_BASE_URL", ""):
-            inferences = worker.extract_inferences(
-                chunk_text="Some text", entities=[], source_type="generico"
-            )
+            inferences = worker.extract_inferences(chunk_text="Some text", entities=[], source_type="generico")
             assert inferences == []
 
     def test_extract_inferences_llm_failure(self, worker):
@@ -142,13 +140,11 @@ class TestInferenceWorker:
         # Set up discovered model so the method actually tries to call LLM
         worker.llm_model_id = "qwen3.5-2b"
         worker.llm_max_model_len = 4096
-        
+
         with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("requests.post") as mock_post:
                 mock_post.side_effect = Exception("Connection failed")
-                inferences = worker.extract_inferences(
-                    chunk_text="Some text", entities=[], source_type="generico"
-                )
+                inferences = worker.extract_inferences(chunk_text="Some text", entities=[], source_type="generico")
                 assert inferences == []
 
     def test_process_non_last_chunk_publishes_progress(self, worker):
@@ -180,7 +176,7 @@ class TestInferenceWorker:
 
         worker.event_bus.publish_job_inference_chunk_progress.assert_called_once_with(
             "job-123",
-            chunks_done=2,   # total_chunks(3) - remaining(1)
+            chunks_done=2,  # total_chunks(3) - remaining(1)
             chunks_total=3,
         )
         ch.basic_ack.assert_called_once()
@@ -199,7 +195,13 @@ class TestInferenceWorker:
                             mock_response = Mock()
                             mock_response.raise_for_status = Mock()
                             mock_response.json.return_value = {
-                                "choices": [{"message": {"content": '[{"text": "Fact A", "confidence": 0.9, "entity_refs": []}]'}}]
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": '[{"text": "Fact A", "confidence": 0.9, "entity_refs": []}]'
+                                        }
+                                    }
+                                ]
                             }
                             mock_post.return_value = mock_response
 
@@ -223,7 +225,13 @@ class TestInferenceWorker:
                             mock_response = Mock()
                             mock_response.raise_for_status = Mock()
                             mock_response.json.return_value = {
-                                "choices": [{"message": {"content": '[{"text": "Fact B", "confidence": 0.9, "entity_refs": []}]'}}]
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": '[{"text": "Fact B", "confidence": 0.9, "entity_refs": []}]'
+                                        }
+                                    }
+                                ]
                             }
                             mock_post.return_value = mock_response
 
@@ -247,7 +255,13 @@ class TestInferenceWorker:
                             mock_response = Mock()
                             mock_response.raise_for_status = Mock()
                             mock_response.json.return_value = {
-                                "choices": [{"message": {"content": '[{"text": "Fact C", "confidence": 0.9, "entity_refs": []}]'}}]
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": '[{"text": "Fact C", "confidence": 0.9, "entity_refs": []}]'
+                                        }
+                                    }
+                                ]
                             }
                             mock_post.return_value = mock_response
 
@@ -269,7 +283,13 @@ class TestInferenceWorker:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
                     mock_response.json.return_value = {
-                        "choices": [{"message": {"content": '[{"text": "Low confidence fact", "confidence": 0.5, "entity_refs": []}, {"text": "High confidence fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '[{"text": "Low confidence fact", "confidence": 0.5, "entity_refs": []}, {"text": "High confidence fact", "confidence": 0.9, "entity_refs": []}]'
+                                }
+                            }
+                        ]
                     }
                     mock_post.return_value = mock_response
 
@@ -290,7 +310,13 @@ class TestInferenceWorker:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
                     mock_response.json.return_value = {
-                        "choices": [{"message": {"content": '[{"text": "Exact threshold fact", "confidence": 0.7, "entity_refs": []}]'}}]
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '[{"text": "Exact threshold fact", "confidence": 0.7, "entity_refs": []}]'
+                                }
+                            }
+                        ]
                     }
                     mock_post.return_value = mock_response
 
@@ -314,9 +340,7 @@ class TestInferenceWorker:
             with patch("worker.CACHE_ENABLED", True):
                 with patch("worker.MIN_CONFIDENCE_THRESHOLD", 0.7):
                     with patch("requests.post") as mock_post:
-                        result = worker.extract_inferences(
-                            chunk_text="Some text", entities=[], source_type="generico"
-                        )
+                        result = worker.extract_inferences(chunk_text="Some text", entities=[], source_type="generico")
 
                         mock_post.assert_not_called()
                         assert len(result) == 1
@@ -336,7 +360,9 @@ class TestInferenceWorker:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
                     mock_response.json.return_value = {
-                        "choices": [{"message": {"content": '[{"text": "New fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                        "choices": [
+                            {"message": {"content": '[{"text": "New fact", "confidence": 0.9, "entity_refs": []}]'}}
+                        ]
                     }
                     mock_post.return_value = mock_response
 
@@ -361,7 +387,9 @@ class TestInferenceWorker:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
                     mock_response.json.return_value = {
-                        "choices": [{"message": {"content": '[{"text": "Fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                        "choices": [
+                            {"message": {"content": '[{"text": "Fact", "confidence": 0.9, "entity_refs": []}]'}}
+                        ]
                     }
                     mock_post.return_value = mock_response
 
@@ -427,19 +455,25 @@ class TestBatchProcessing:
             {"chunk_id": "chunk_002", "text": "Text about bank accounts.", "source_type": "bancario", "entities": []},
         ]
 
-        batch_response_content = json.dumps([
-            {"passage_id": "chunk_001", "facts": [{"text": "Property worth 500k", "confidence": 0.9, "entity_refs": ["500k"]}]},
-            {"passage_id": "chunk_002", "facts": [{"text": "Bank account details", "confidence": 0.85, "entity_refs": []}]},
-        ])
+        batch_response_content = json.dumps(
+            [
+                {
+                    "passage_id": "chunk_001",
+                    "facts": [{"text": "Property worth 500k", "confidence": 0.9, "entity_refs": ["500k"]}],
+                },
+                {
+                    "passage_id": "chunk_002",
+                    "facts": [{"text": "Bank account details", "confidence": 0.85, "entity_refs": []}],
+                },
+            ]
+        )
 
         with patch("worker.INFERENCE_BASE_URL", "http://localhost:8000"):
             with patch("worker.CACHE_ENABLED", False):
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
-                    mock_response.json.return_value = {
-                        "choices": [{"message": {"content": batch_response_content}}]
-                    }
+                    mock_response.json.return_value = {"choices": [{"message": {"content": batch_response_content}}]}
                     mock_post.return_value = mock_response
 
                     results = worker.extract_inferences_batch(chunks)
@@ -501,14 +535,16 @@ class TestBatchProcessing:
                 ch = Mock()
                 method = Mock()
                 method.delivery_tag = "tag1"
-                message = json.dumps({
-                    "job_id": "test-job",
-                    "chunk_id": 1,
-                    "chunk_text": "Test text",
-                    "entities": [],
-                    "source_type": "generico",
-                    "total_chunks": 1,
-                }).encode()
+                message = json.dumps(
+                    {
+                        "job_id": "test-job",
+                        "chunk_id": 1,
+                        "chunk_text": "Test text",
+                        "entities": [],
+                        "source_type": "generico",
+                        "total_chunks": 1,
+                    }
+                ).encode()
 
                 worker.process(ch, method, None, message)
                 mock_single.assert_called_once()
@@ -524,14 +560,16 @@ class TestBatchProcessing:
                 ch = Mock()
                 method = Mock()
                 method.delivery_tag = "tag1"
-                message = json.dumps({
-                    "job_id": "test-job",
-                    "chunk_id": 1,
-                    "chunk_text": "Test text for accumulation",
-                    "entities": [],
-                    "source_type": "generico",
-                    "total_chunks": 5,
-                }).encode()
+                message = json.dumps(
+                    {
+                        "job_id": "test-job",
+                        "chunk_id": 1,
+                        "chunk_text": "Test text for accumulation",
+                        "entities": [],
+                        "source_type": "generico",
+                        "total_chunks": 5,
+                    }
+                ).encode()
 
                 initial_len = len(worker._batch_buffer)
                 worker.process(ch, method, None, message)
@@ -549,14 +587,16 @@ class TestBatchProcessing:
                 method = Mock()
                 method.delivery_tag = "tag1"
 
-                msg = json.dumps({
-                    "job_id": "test-job",
-                    "chunk_id": 1,
-                    "chunk_text": "First text",
-                    "entities": [],
-                    "source_type": "generico",
-                    "total_chunks": 2,
-                }).encode()
+                msg = json.dumps(
+                    {
+                        "job_id": "test-job",
+                        "chunk_id": 1,
+                        "chunk_text": "First text",
+                        "entities": [],
+                        "source_type": "generico",
+                        "total_chunks": 2,
+                    }
+                ).encode()
 
                 # Send first message - fills buffer to BATCH_SIZE
                 with patch.object(worker, "_process_batch") as mock_process:
@@ -589,7 +629,7 @@ class TestBatchProcessing:
                 {
                     "ch": ch1,
                     "method": method1,
-                    "body": b'{}',
+                    "body": b"{}",
                     "message": {
                         "job_id": "j1",
                         "chunk_id": 1,
@@ -600,7 +640,7 @@ class TestBatchProcessing:
                 {
                     "ch": ch2,
                     "method": method2,
-                    "body": b'{}',
+                    "body": b"{}",
                     "message": {
                         "job_id": "j1",
                         "chunk_id": 2,
@@ -647,9 +687,7 @@ class TestBatchProcessing:
                 with patch("requests.post") as mock_post:
                     mock_response = Mock()
                     mock_response.raise_for_status = Mock()
-                    mock_response.json.return_value = {
-                        "choices": [{"message": {"content": "[]"}}]
-                    }
+                    mock_response.json.return_value = {"choices": [{"message": {"content": "[]"}}]}
                     mock_post.return_value = mock_response
 
                     worker.extract_inferences_batch(chunks)
@@ -686,14 +724,16 @@ class TestBatchProcessing:
                     method.delivery_tag = "tag1"
 
                     large_text = "word " * 20
-                    message = json.dumps({
-                        "job_id": "job-1",
-                        "chunk_id": 1,
-                        "chunk_text": large_text,
-                        "entities": [],
-                        "source_type": "generico",
-                        "total_chunks": 1,
-                    }).encode()
+                    message = json.dumps(
+                        {
+                            "job_id": "job-1",
+                            "chunk_id": 1,
+                            "chunk_text": large_text,
+                            "entities": [],
+                            "source_type": "generico",
+                            "total_chunks": 1,
+                        }
+                    ).encode()
 
                     worker.process(ch, method, None, message)
                     mock_store.assert_called_once()
@@ -711,14 +751,16 @@ class TestBatchProcessing:
                         method.delivery_tag = "tag1"
 
                         large_text = "word " * 20
-                        message = json.dumps({
-                            "job_id": "job-1",
-                            "chunk_id": 1,
-                            "chunk_text": large_text,
-                            "entities": [],
-                            "source_type": "generico",
-                            "total_chunks": 1,
-                        }).encode()
+                        message = json.dumps(
+                            {
+                                "job_id": "job-1",
+                                "chunk_id": 1,
+                                "chunk_text": large_text,
+                                "entities": [],
+                                "source_type": "generico",
+                                "total_chunks": 1,
+                            }
+                        ).encode()
 
                         worker.process(ch, method, None, message)
                         mock_store.assert_called_once()
@@ -731,10 +773,12 @@ class TestBatchProcessing:
             method = Mock()
             method.delivery_tag = "tag1"
 
-            message = json.dumps({
-                "job_id": "job-1",
-                "chunk_text": "Valid text",
-            }).encode()
+            message = json.dumps(
+                {
+                    "job_id": "job-1",
+                    "chunk_text": "Valid text",
+                }
+            ).encode()
 
             worker.process(ch, method, None, message)
             ch.basic_nack.assert_called_once_with(delivery_tag="tag1", requeue=False)
@@ -753,7 +797,13 @@ class TestBatchProcessing:
                                 mock_response = Mock()
                                 mock_response.raise_for_status = Mock()
                                 mock_response.json.return_value = {
-                                    "choices": [{"message": {"content": '[{"text": "fact", "confidence": 0.9, "entity_refs": []}]'}}]
+                                    "choices": [
+                                        {
+                                            "message": {
+                                                "content": '[{"text": "fact", "confidence": 0.9, "entity_refs": []}]'
+                                            }
+                                        }
+                                    ]
                                 }
                                 mock_post.side_effect = [
                                     requests.Timeout("Connection timed out"),
@@ -780,9 +830,7 @@ class TestBatchProcessing:
                         with patch("requests.post") as mock_post:
                             mock_response = Mock()
                             mock_response.raise_for_status = Mock()
-                            mock_response.json.return_value = {
-                                "choices": [{"message": {"content": "[]"}}]
-                            }
+                            mock_response.json.return_value = {"choices": [{"message": {"content": "[]"}}]}
                             mock_post.side_effect = [
                                 requests.Timeout("Connection timed out"),
                                 mock_response,

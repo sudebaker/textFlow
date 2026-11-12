@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from typing import Dict, Any
+from typing import Any, Dict
 
 import aio_pika
 
@@ -49,9 +49,7 @@ class ImageWorker(BaseAsyncWorker):
             )
 
         def set_counter(suffix: str, value: int) -> None:
-            self.redis_client.setex(
-                inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value
-            )
+            self.redis_client.setex(inference_counter_key(job_id, suffix), INFERENCES_TTL_SECONDS, value)
 
         return await dispatch_inference_chunks(
             publish=publish,
@@ -64,9 +62,7 @@ class ImageWorker(BaseAsyncWorker):
         job_id = message.get("job_id")
 
         try:
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:status", "status", "analyzing_image"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "analyzing_image")
             self.event_bus.publish_stage_event(job_id, "stage.started", "image")
 
             document_path = validate_upload_path(message["document_path"], UPLOAD_PATH)
@@ -119,9 +115,7 @@ class ImageWorker(BaseAsyncWorker):
                 json.dumps(image_metadata),
             )
 
-            self.redis_client.hset(
-                f"orchestrator:job:{job_id}:steps", "image", "completed"
-            )
+            self.redis_client.hset(f"orchestrator:job:{job_id}:steps", "image", "completed")
             self.event_bus.publish_stage_event(
                 job_id,
                 "stage.completed",
@@ -140,23 +134,17 @@ class ImageWorker(BaseAsyncWorker):
                 job_message["features"] = features
 
             self._raise_if_cancelled(job_id)
-            target_queues = self.pipeline.queues_for(
-                entry="image", features=features, profile=profile
-            )
+            target_queues = self.pipeline.queues_for(entry="image", features=features, profile=profile)
 
             # Inference dispatch is owned by the entry stage (D3).
             if INFERENCES_QUEUE in target_queues:
                 if await self._dispatch_inferences(job_id, chunks) == 0:
-                    target_queues = skip_empty_inference_stage(
-                        target_queues, self.redis_client, job_id
-                    )
+                    target_queues = skip_empty_inference_stage(target_queues, self.redis_client, job_id)
 
             # Chunk messages already went to `inferences`; never publish the
             # job envelope there (it lacks chunk_id/chunk_text and the
             # inference consumer rejects it).
-            envelope_queues = [
-                queue for queue in target_queues if queue != INFERENCES_QUEUE
-            ]
+            envelope_queues = [queue for queue in target_queues if queue != INFERENCES_QUEUE]
 
             for qs in target_queues:
                 try:
@@ -179,9 +167,7 @@ class ImageWorker(BaseAsyncWorker):
 
         except Exception as e:
             if job_id:
-                self.redis_client.hset(
-                    f"orchestrator:job:{job_id}:status", "status", "failed"
-                )
+                self.redis_client.hset(f"orchestrator:job:{job_id}:status", "status", "failed")
                 self.redis_client.set(f"orchestrator:job:{job_id}:error", str(e))
                 self.event_bus.publish_job_failed(job_id, str(e))
                 self.jobs_total.labels(status="failed").inc()

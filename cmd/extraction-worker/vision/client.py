@@ -35,14 +35,10 @@ class VisionOCRClient:
             self._timeout_obj = aiohttp.ClientTimeout(total=self.settings.ocr_timeout)
         return self._timeout_obj
 
-    async def transcribe(
-        self, session: aiohttp.ClientSession, image_bytes: bytes, *, dpi: int
-    ) -> str:
+    async def transcribe(self, session: aiohttp.ClientSession, image_bytes: bytes, *, dpi: int) -> str:
         async with self._sem:
             form = aiohttp.FormData()
-            form.add_field(
-                "file", image_bytes, filename="page.png", content_type="image/png"
-            )
+            form.add_field("file", image_bytes, filename="page.png", content_type="image/png")
             form.add_field("dpi", str(dpi))
             async with session.post(
                 f"{self.settings.ocr_url}/transcribe",

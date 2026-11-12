@@ -7,8 +7,8 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import dataclasses  # noqa: E402
-import pytest  # noqa: E402
 
+import pytest  # noqa: E402
 from vision.config import SETTINGS, VisionSettings  # noqa: E402
 
 

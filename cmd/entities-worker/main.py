@@ -15,13 +15,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import uvicorn
+from app.config.settings import Settings as AppSettings
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-
-from app.config.settings import Settings as AppSettings
-
+from pydantic import BaseModel, Field
 
 SERVICE_NAME = "gliner-service"
 SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
@@ -36,14 +34,11 @@ class Settings:
         self.app_settings = AppSettings()
         self.port = int(os.getenv("PORT", "8080"))
         self.model_path = self.app_settings.gliner_model_path
-        self.model_name = os.getenv(
-            "GLINER_MODEL_NAME", "urchade/gliner_small-v2.1")
+        self.model_name = os.getenv("GLINER_MODEL_NAME", "urchade/gliner_small-v2.1")
         self.allow_remote_download = self.app_settings.allow_remote_download
 
         # Legacy threshold (fallback if per-type not specified)
-        self.confidence_threshold = float(
-            os.getenv("GLINER_CONFIDENCE_THRESHOLD", "0.5")
-        )
+        self.confidence_threshold = float(os.getenv("GLINER_CONFIDENCE_THRESHOLD", "0.5"))
 
         # Use per-type thresholds from app settings
         self.threshold_per = self.app_settings.entity_threshold_per
@@ -55,8 +50,7 @@ class Settings:
         self.batch_size = int(os.getenv("GLINER_BATCH_SIZE", "16"))
         self.max_length = int(os.getenv("GLINER_MAX_LENGTH", "512"))
         self.default_entity_types = self._parse_entity_types(
-            os.getenv("GLINER_DEFAULT_ENTITY_TYPES",
-                      ",".join(DEFAULT_ENTITY_TYPES))
+            os.getenv("GLINER_DEFAULT_ENTITY_TYPES", ",".join(DEFAULT_ENTITY_TYPES))
         )
         self.use_mock = os.getenv("GLINER_USE_MOCK", "false").lower() in {
             "1",
@@ -199,15 +193,14 @@ class GLiNERAdapter:
             return device_param
         try:
             import torch
+
             return "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
             return "cpu"
 
     def _resolve_entity_types(self, options: Optional[ExtractOptions]) -> List[str]:
         if options and options.entity_types:
-            return [
-                item.strip().upper() for item in options.entity_types if item.strip()
-            ]
+            return [item.strip().upper() for item in options.entity_types if item.strip()]
         return self.settings.default_entity_types
 
     def _resolve_threshold(
@@ -236,18 +229,14 @@ class GLiNERAdapter:
         if self.settings.use_mock:
             self.model = MockGLiNER()
             self.model_status = "mock"
-            self.logger.warning(
-                "Starting GLiNER service in mock mode; set GLINER_USE_MOCK=false to use the real model"
-            )
+            self.logger.warning("Starting GLiNER service in mock mode; set GLINER_USE_MOCK=false to use the real model")
             return
 
         try:
             from gliner import GLiNER
         except Exception as exc:  # pragma: no cover - defensive import guard
             self.model_status = "unavailable"
-            raise RuntimeError(
-                "GLiNER package is not installed; install requirements first"
-            ) from exc
+            raise RuntimeError("GLiNER package is not installed; install requirements first") from exc
 
         model_path = Path(self.settings.model_path)
         config_file = model_path / "config.json"
@@ -271,6 +260,7 @@ class GLiNERAdapter:
                     self.model = self.model.to(self._device)
                     try:
                         import torch
+
                         if torch.cuda.is_available():
                             mem_gb = torch.cuda.memory_allocated() / 1e9
                             self.logger.info(f"GPU memory allocated: {mem_gb:.2f} GB")
@@ -296,14 +286,11 @@ class GLiNERAdapter:
                 return
             except Exception as e:
                 self.model_status = "unavailable"
-                self.logger.error(
-                    f"Failed to load model from HuggingFace: {e}")
+                self.logger.error(f"Failed to load model from HuggingFace: {e}")
                 raise
         else:
             self.model_status = "missing_model"
-            raise FileNotFoundError(
-                f"Model not found at {model_path} and remote download is disabled"
-            )
+            raise FileNotFoundError(f"Model not found at {model_path} and remote download is disabled")
 
     def extract(self, text: str, options: Optional[ExtractOptions]) -> ExtractResponse:
         if not text.strip():
@@ -354,9 +341,7 @@ class GLiNERAdapter:
             error=None,
         )
 
-    def extract_batch(
-        self, chunks: List[str], options: Optional[ExtractOptions]
-    ) -> BatchExtractResponse:
+    def extract_batch(self, chunks: List[str], options: Optional[ExtractOptions]) -> BatchExtractResponse:
         if not chunks:
             raise ValueError("chunks must contain at least one text entry")
 
@@ -419,9 +404,7 @@ class GLiNERAdapter:
     def health(self) -> Dict[str, str]:
         checks: Dict[str, str] = {}
 
-        checks["model_path"] = (
-            "ok" if Path(self.settings.model_path).exists() else "missing"
-        )
+        checks["model_path"] = "ok" if Path(self.settings.model_path).exists() else "missing"
         checks["model"] = self.model_status
         checks["mode"] = "mock" if self.settings.use_mock else "gliner"
         checks["python"] = platform.python_version()
@@ -430,8 +413,7 @@ class GLiNERAdapter:
 
 
 settings = Settings()
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(SERVICE_NAME)
 
 adapter = GLiNERAdapter(settings, logger)
@@ -452,13 +434,8 @@ app = FastAPI(
 )
 
 
-REQUEST_COUNT = Counter(
-    "gliner_requests_total", "Total GLiNER requests", ["endpoint", "status"]
-)
-REQUEST_LATENCY = Histogram(
-    "gliner_request_latency_ms", "Request latency in milliseconds", [
-        "endpoint"]
-)
+REQUEST_COUNT = Counter("gliner_requests_total", "Total GLiNER requests", ["endpoint", "status"])
+REQUEST_LATENCY = Histogram("gliner_request_latency_ms", "Request latency in milliseconds", ["endpoint"])
 
 
 @app.middleware("http")
@@ -472,8 +449,7 @@ async def add_metrics(request: Request, call_next):
         raise
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        REQUEST_COUNT.labels(endpoint=request.url.path,
-                             status=str(status_code)).inc()
+        REQUEST_COUNT.labels(endpoint=request.url.path, status=str(status_code)).inc()
         REQUEST_LATENCY.labels(endpoint=request.url.path).observe(elapsed_ms)
     return response
 
@@ -528,8 +504,7 @@ async def extract_entities_batch(payload: BatchExtractRequest):
 )
 async def health():
     checks = adapter.health()
-    status = "healthy" if checks.get(
-        "model") in {"ready", "mock"} else "degraded"
+    status = "healthy" if checks.get("model") in {"ready", "mock"} else "degraded"
 
     return HealthResponse(
         status=status,

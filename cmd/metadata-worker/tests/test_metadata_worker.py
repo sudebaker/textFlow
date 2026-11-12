@@ -1,8 +1,8 @@
-import pytest
-import json
 import hashlib
-from unittest.mock import Mock, patch, MagicMock
+import json
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 from worker import MetadataWorker
 
 
@@ -156,12 +156,8 @@ class TestProcessMessage(TestMetadataWorker):
 
         assert result["word_count"] == 6
         mock_worker.redis_client.set.assert_called_once()
-        mock_worker.redis_client.hset.assert_called_once_with(
-            "orchestrator:job:job-123:steps", "metadata", "completed"
-        )
-        mock_worker._event_bus.publish_job_progress.assert_called_once_with(
-            "job-123", 100, "metadata"
-        )
+        mock_worker.redis_client.hset.assert_called_once_with("orchestrator:job:job-123:steps", "metadata", "completed")
+        mock_worker._event_bus.publish_job_progress.assert_called_once_with("job-123", 100, "metadata")
 
     def test_process_message_stores_correct_key(self, mock_worker):
         mock_worker.redis_client.get.return_value = "Some text"

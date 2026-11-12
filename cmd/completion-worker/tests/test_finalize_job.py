@@ -1,10 +1,12 @@
 """Unit tests for the new finalize_job() output structure."""
+
 import json
 import time
-import msgpack
 from unittest.mock import MagicMock, patch
 
+import msgpack
 from completion_worker import CompletionWorker
+
 from pkg.worker_common.entity_utils import deduplicate_entities
 
 
@@ -20,16 +22,22 @@ def _make_redis_pipeline(chunks, entities_raw, micro_inferences=None):
     source_classification_json = None
     micro_inferences_json = json.dumps(micro_inferences) if micro_inferences else None
     return (
-        meta, status_data, text, doc_meta, txt_meta,
-        chunks_json, entities_raw_json,
-        source_classification_json, micro_inferences_json,
+        meta,
+        status_data,
+        text,
+        doc_meta,
+        txt_meta,
+        chunks_json,
+        entities_raw_json,
+        source_classification_json,
+        micro_inferences_json,
     )
 
 
 def _make_worker():
-    with patch("redis.from_url"), \
-         patch("pkg.worker_common.pubsub_base.Counter", return_value=MagicMock()), \
-         patch("pkg.worker_common.pubsub_base.Histogram", return_value=MagicMock()):
+    with patch("redis.from_url"), patch("pkg.worker_common.pubsub_base.Counter", return_value=MagicMock()), patch(
+        "pkg.worker_common.pubsub_base.Histogram", return_value=MagicMock()
+    ):
         w = CompletionWorker()
         w._redis_client = MagicMock()
         w._redis_raw = MagicMock()
@@ -49,9 +57,9 @@ def test_embeddings_nested_inside_chunks():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -62,6 +70,7 @@ def test_embeddings_nested_inside_chunks():
 def test_finalize_text_resolves_artifact_ref(monkeypatch, tmp_path):
     """finalize_job() resolves a sha256 ref in :text via the artifact store."""
     import completion_worker as cw
+
     from pkg.worker_common.artifact_store import FSStore
 
     store = FSStore(str(tmp_path))
@@ -80,9 +89,9 @@ def test_finalize_text_resolves_artifact_ref(monkeypatch, tmp_path):
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -105,9 +114,9 @@ def test_entities_dict_with_ids():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -122,9 +131,7 @@ def test_inferences_nested_in_chunks():
     worker = _make_worker()
     chunks = [{"chunk_id": "chunk_000", "text": "hello"}]
     micro_inferences = [
-        {"chunk_id": "chunk_000", "inferences": [
-            {"text": "fact one", "confidence": 0.9, "entity_refs": ["María"]}
-        ]}
+        {"chunk_id": "chunk_000", "inferences": [{"text": "fact one", "confidence": 0.9, "entity_refs": ["María"]}]}
     ]
 
     pipe = MagicMock()
@@ -134,9 +141,9 @@ def test_inferences_nested_in_chunks():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -161,9 +168,9 @@ def test_entity_ids_in_chunks():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -183,9 +190,9 @@ def test_no_top_level_embeddings_or_micro_inferences():
     worker.redis_client.set = MagicMock()
     worker.redis_client.hset = MagicMock()
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -209,6 +216,7 @@ def test_deduplicate_entities_fallback_without_entity_id():
 # ---------------------------------------------------------------------------
 # Fuzzy deduplication tests
 # ---------------------------------------------------------------------------
+
 
 def test_deduplicate_entities_fuzzy_identical_text():
     """Entities with identical text and same label must merge into one."""
@@ -239,7 +247,7 @@ def test_deduplicate_entities_fuzzy_different_text():
     """Entities with clearly different text must remain separate."""
     entities = [
         {"label": "PER", "text": "María García", "confidence": 0.9, "entity_id": "ccc000000001"},
-        {"label": "PER", "text": "Juan López",   "confidence": 0.8, "entity_id": "ccc000000002"},
+        {"label": "PER", "text": "Juan López", "confidence": 0.8, "entity_id": "ccc000000002"},
     ]
     result = deduplicate_entities(entities)
     assert len(result) == 2, "clearly different texts → must stay separate"
@@ -309,13 +317,11 @@ def test_inference_embeddings_fallback_uses_remote_client():
 
     worker.redis_client.get.side_effect = _get
     worker._embeddings_client = MagicMock()
-    worker._embeddings_client.embed.return_value = EmbeddingsResult(
-        vectors=[[0.5, 0.6]], degraded=True
-    )
+    worker._embeddings_client.embed.return_value = EmbeddingsResult(vectors=[[0.5, 0.6]], degraded=True)
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_abc")
         saved = mock_save.call_args[0][1]
 
@@ -341,16 +347,12 @@ def test_image_full_emits_media_fields():
     pipe = MagicMock()
     pipe.execute.return_value = _make_redis_pipeline(chunks, [])
     worker.redis_client.pipeline.return_value = pipe
-    worker.redis_raw.get.return_value = msgpack.packb(
-        {"chunk_000": [0.1, 0.2]}, use_bin_type=True
-    )
-    worker.redis_client.get.side_effect = _media_getter(
-        {"metadata:image": json.dumps(image_meta)}
-    )
+    worker.redis_raw.get.return_value = msgpack.packb({"chunk_000": [0.1, 0.2]}, use_bin_type=True)
+    worker.redis_client.get.side_effect = _media_getter({"metadata:image": json.dumps(image_meta)})
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_img")
         saved = mock_save.call_args[0][1]
 
@@ -367,16 +369,12 @@ def test_image_rag_emits_null_description():
     pipe = MagicMock()
     pipe.execute.return_value = _make_redis_pipeline(chunks, [])
     worker.redis_client.pipeline.return_value = pipe
-    worker.redis_raw.get.return_value = msgpack.packb(
-        {"chunk_000": [0.1, 0.2]}, use_bin_type=True
-    )
-    worker.redis_client.get.side_effect = _media_getter(
-        {"metadata:image": json.dumps(image_meta)}
-    )
+    worker.redis_raw.get.return_value = msgpack.packb({"chunk_000": [0.1, 0.2]}, use_bin_type=True)
+    worker.redis_client.get.side_effect = _media_getter({"metadata:image": json.dumps(image_meta)})
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_img_rag")
         saved = mock_save.call_args[0][1]
 
@@ -398,9 +396,7 @@ def test_audio_emits_metadata_and_segments():
     pipe = MagicMock()
     pipe.execute.return_value = _make_redis_pipeline(chunks, [])
     worker.redis_client.pipeline.return_value = pipe
-    worker.redis_raw.get.return_value = msgpack.packb(
-        {"chunk_000": [0.1, 0.2]}, use_bin_type=True
-    )
+    worker.redis_raw.get.return_value = msgpack.packb({"chunk_000": [0.1, 0.2]}, use_bin_type=True)
     worker.redis_client.get.side_effect = _media_getter(
         {
             "metadata:audio": json.dumps(audio_meta),
@@ -408,9 +404,9 @@ def test_audio_emits_metadata_and_segments():
         }
     )
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_audio")
         saved = mock_save.call_args[0][1]
 
@@ -425,14 +421,12 @@ def test_document_has_no_media_fields():
     pipe = MagicMock()
     pipe.execute.return_value = _make_redis_pipeline(chunks, [])
     worker.redis_client.pipeline.return_value = pipe
-    worker.redis_raw.get.return_value = msgpack.packb(
-        {"chunk_000": [0.1, 0.2]}, use_bin_type=True
-    )
+    worker.redis_raw.get.return_value = msgpack.packb({"chunk_000": [0.1, 0.2]}, use_bin_type=True)
     worker.redis_client.get.return_value = None
 
-    with patch.object(worker, "save_results_to_file") as mock_save, \
-         patch.object(worker, "send_webhook"), \
-         patch.object(worker.event_bus, "publish_job_completed"):
+    with patch.object(worker, "save_results_to_file") as mock_save, patch.object(worker, "send_webhook"), patch.object(
+        worker.event_bus, "publish_job_completed"
+    ):
         worker.finalize_job("job_doc")
         saved = mock_save.call_args[0][1]
 

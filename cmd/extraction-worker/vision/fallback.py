@@ -139,8 +139,7 @@ def extract_page_texts(docling_document: dict, page_count: int) -> list:
         idx = prov.get("page_no") if isinstance(prov, dict) else None
         if isinstance(idx, int) and 1 <= idx <= page_count:
             pages[idx].append(item.get("text") or "")
-    return ["\n".join(parts).strip() or None for parts in
-            (pages[i] for i in range(1, page_count + 1))]
+    return ["\n".join(parts).strip() or None for parts in (pages[i] for i in range(1, page_count + 1))]
 
 
 async def run_quality_flow(ctx: FallbackContext) -> str:
@@ -183,8 +182,9 @@ async def run_quality_flow(ctx: FallbackContext) -> str:
         return ctx.text  # §16: vision NEVER kills the job
 
 
-def _write_report(ctx: FallbackContext, decision: str, signals, report: list,
-                  budget: _Budget, duration_s: float, whole_fallback: bool) -> None:
+def _write_report(
+    ctx: FallbackContext, decision: str, signals, report: list, budget: _Budget, duration_s: float, whole_fallback: bool
+) -> None:
     write_provenance(
         ctx.redis_client,
         ctx.job_id,
@@ -223,8 +223,7 @@ async def _slow_path(ctx: FallbackContext, signals, decision: str) -> str:
                 continue
             if not budget.allow():
                 final.append(page_text or "")  # §19: keep available text
-                report.append(_page_provenance(page_no, "docling", "degraded",
-                                               reason="budget_exhausted"))
+                report.append(_page_provenance(page_no, "docling", "degraded", reason="budget_exhausted"))
                 vision_pages_total.labels(backend="degraded").inc()
                 continue
             t0 = time.monotonic()
@@ -235,8 +234,7 @@ async def _slow_path(ctx: FallbackContext, signals, decision: str) -> str:
                 if vision_text.strip():  # §15: replacement, never fusion
                     final.append(vision_text)
                     any_vision = True
-                    report.append(_page_provenance(page_no, "vision", "fallback",
-                                                   reason="quality_gate"))
+                    report.append(_page_provenance(page_no, "vision", "fallback", reason="quality_gate"))
                     vision_pages_total.labels(backend="vision").inc()
                     budget.spend()
                 else:  # empty transcription: keep docling text
@@ -246,28 +244,23 @@ async def _slow_path(ctx: FallbackContext, signals, decision: str) -> str:
             except Exception as e:
                 vision_page_seconds.observe(time.monotonic() - t0)
                 final.append(page_text or "")
-                report.append(_page_provenance(page_no, "vision_error", "vision_error",
-                                               reason=str(e)[:200]))
+                report.append(_page_provenance(page_no, "vision_error", "vision_error", reason=str(e)[:200]))
                 vision_pages_total.labels(backend="vision_error").inc()
     assembled = "\n\n".join(final).strip()
     whole_fallback = False
     if not assembled:
         assembled = ctx.text  # §16 last defense: intact docling blob
         whole_fallback = True
-    slow_engaged = any_vision or any(
-        entry["status"] != "pass" for entry in report
-    )
+    slow_engaged = any_vision or any(entry["status"] != "pass" for entry in report)
     if slow_engaged:
         # Provenance records slow-path outcomes: replaced pages, vision
         # errors (§16: provenance vision_error even when text is kept) and
         # degraded pages. Text output: replaced -> assembled; otherwise
         # byte-exact ctx.text (no vision page replaced anything).
         if any_vision:
-            _write_report(ctx, decision, signals, report, budget,
-                          time.monotonic() - start, whole_fallback)
+            _write_report(ctx, decision, signals, report, budget, time.monotonic() - start, whole_fallback)
             vision_documents_total.labels(path="slow_path").inc()
             return assembled
-        _write_report(ctx, decision, signals, report, budget,
-                      time.monotonic() - start, whole_fallback)
+        _write_report(ctx, decision, signals, report, budget, time.monotonic() - start, whole_fallback)
         return ctx.text
     return ctx.text

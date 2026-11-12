@@ -27,15 +27,16 @@ def _restore_real_renderer_modules():
     import vision.renderer  # noqa: F401 — now lazily bound to real pypdfium2/PIL
 
 
-from vision.renderer import count_pages, render_page, render_page_async  # noqa: E402
 from fixtures import build_pdf  # noqa: E402
+from vision.renderer import count_pages, render_page, render_page_async  # noqa: E402
 
 PNG_MAGIC = b"\x89PNG"
 
 
 def _png_dims(png_bytes):
-    from PIL import Image
     import io
+
+    from PIL import Image
 
     with Image.open(io.BytesIO(png_bytes)) as im:
         return im.size

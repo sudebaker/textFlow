@@ -10,18 +10,18 @@ BAAI/bge-m3 multilingual model with GPU/CPU support.
 - Adaptive batching based on device
 """
 
-import os
-import time
 import logging
-from typing import List, Dict, Any, Optional
+import os
 import threading
+import time
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Try to import sentence-transformers, handle gracefully if not available
 try:
-    from sentence_transformers import SentenceTransformer
     import torch
+    from sentence_transformers import SentenceTransformer
 
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError as e:
@@ -84,8 +84,7 @@ class EmbeddingService:
         """
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             raise ImportError(
-                "sentence-transformers is required. "
-                "Install with: pip install sentence-transformers torch"
+                "sentence-transformers is required. " "Install with: pip install sentence-transformers torch"
             )
 
         self.model_name = model_name
@@ -143,20 +142,16 @@ class EmbeddingService:
                 local_path = Path(model_path)
 
                 # Check if sentence_transformers.cfg or config.json exists
-                has_local_model = (
-                    local_path / "sentence_transformers.cfg"
-                ).exists() or (local_path / "config.json").exists()
+                has_local_model = (local_path / "sentence_transformers.cfg").exists() or (
+                    local_path / "config.json"
+                ).exists()
 
                 if has_local_model and local_path.exists():
                     logger.info(f"Loading model from local path: {model_path}")
-                    self.model = SentenceTransformer(
-                        str(local_path), device=self.device
-                    )
+                    self.model = SentenceTransformer(str(local_path), device=self.device)
                 else:
                     # Check if remote downloads are allowed
-                    allow_remote = (
-                        os.getenv("ALLOW_REMOTE_DOWNLOAD", "false").lower() == "true"
-                    )
+                    allow_remote = os.getenv("ALLOW_REMOTE_DOWNLOAD", "false").lower() == "true"
                     if not allow_remote:
                         raise RuntimeError(
                             f"Local model not found at {model_path} and "
@@ -164,12 +159,8 @@ class EmbeddingService:
                             f"Cannot download model from HuggingFace."
                         )
 
-                    logger.info(
-                        f"Local model not found at {model_path}, downloading from HuggingFace..."
-                    )
-                    self.model = SentenceTransformer(
-                        self.model_name, device=self.device
-                    )
+                    logger.info(f"Local model not found at {model_path}, downloading from HuggingFace...")
+                    self.model = SentenceTransformer(self.model_name, device=self.device)
 
                 # ⭐ Apply FP16 optimization for GPU
                 if self._use_fp16 and self.device.startswith("cuda"):
@@ -299,10 +290,8 @@ class EmbeddingService:
                     "cuda_device_count": torch.cuda.device_count(),
                     "cuda_current_device": torch.cuda.current_device(),
                     "cuda_device_name": torch.cuda.get_device_name(),
-                    "cuda_memory_allocated": torch.cuda.memory_allocated()
-                    / 1024**3,  # GB
-                    "cuda_memory_reserved": torch.cuda.memory_reserved()
-                    / 1024**3,  # GB
+                    "cuda_memory_allocated": torch.cuda.memory_allocated() / 1024**3,  # GB
+                    "cuda_memory_reserved": torch.cuda.memory_reserved() / 1024**3,  # GB
                 }
             )
         else:
@@ -321,9 +310,7 @@ class EmbeddingService:
 
         # Check sentence-transformers availability
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            checks["sentence_transformers"] = (
-                "unavailable: sentence-transformers not installed"
-            )
+            checks["sentence_transformers"] = "unavailable: sentence-transformers not installed"
             return checks
         else:
             checks["sentence_transformers"] = "ok"
@@ -346,9 +333,7 @@ class EmbeddingService:
             if len(test_embedding) == self.embedding_dimension:
                 checks["embedding_generation"] = "ok"
             else:
-                checks["embedding_generation"] = (
-                    f"failed: wrong dimension {len(test_embedding)}"
-                )
+                checks["embedding_generation"] = f"failed: wrong dimension {len(test_embedding)}"
         except Exception as e:
             checks["embedding_generation"] = f"failed: {e}"
 
@@ -377,8 +362,7 @@ class EmbeddingService:
                 {
                     "cuda_allocated_gb": torch.cuda.memory_allocated() / 1024**3,
                     "cuda_reserved_gb": torch.cuda.memory_reserved() / 1024**3,
-                    "cuda_max_allocated_gb": torch.cuda.max_memory_allocated()
-                    / 1024**3,
+                    "cuda_max_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
                 }
             )
 

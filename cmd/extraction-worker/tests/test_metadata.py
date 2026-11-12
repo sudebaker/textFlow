@@ -62,10 +62,7 @@ class TestExtractMetadataFast:
         assert set(md.keys()) == EXPECTED_KEYS
         assert md["filename"] == "doc.pdf"
         assert md["file_size_bytes"] == 11
-        assert (
-            md["sha256"]
-            == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        )
+        assert md["sha256"] == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         assert md["mime_type"] == "application/pdf"
         assert md["author"] is None
         assert md["page_count"] is None
@@ -154,14 +151,10 @@ class TestExtractDocumentMetadata:
         f = tmp_path / "doc.pdf"
         f.write_bytes(b"data")
 
-        exif_json = json.dumps(
-            [{"Author": "Alice", "Title": "T", "PageCount": "3"}]
-        )
+        exif_json = json.dumps([{"Author": "Alice", "Title": "T", "PageCount": "3"}])
         # magic is a MagicMock stub in this env; pin from_file so mime_type
         # is a plain str like the real exif path would produce.
-        with patch("worker.subprocess.run") as m_run, patch(
-            "worker.magic.from_file", return_value="application/pdf"
-        ):
+        with patch("worker.subprocess.run") as m_run, patch("worker.magic.from_file", return_value="application/pdf"):
             m_run.return_value = MagicMock(returncode=0, stdout=exif_json)
             md = asyncio.run(extract_document_metadata(str(f), "doc.pdf"))
 

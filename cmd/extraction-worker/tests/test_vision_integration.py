@@ -41,14 +41,20 @@ for _mod in (
     sys.modules.setdefault(_mod, MagicMock())
 
 import pytest  # noqa: E402
-
-import worker  # noqa: E402
 import vision.fallback as vf  # noqa: E402
-from golden_utils import FakeExchange, FakeMsg, FakeRedis, FakeStore, canonical_json, normalize  # noqa: E402
+import worker  # noqa: E402
 from fixtures import build_pdf  # noqa: E402
-from pkg.events_python import EventBus  # noqa: E402
-
+from golden_utils import (  # noqa: E402
+    FakeExchange,
+    FakeMsg,
+    FakeRedis,
+    FakeStore,
+    canonical_json,
+    normalize,
+)
 from vision.config import VisionSettings  # noqa: E402
+
+from pkg.events_python import EventBus  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GOLDEN_PATH = Path(__file__).resolve().parent / "golden" / "baseline.json"
@@ -60,14 +66,10 @@ FIXTURE_PAGES = ["Pagine uno escribir", "Pagina dos escribir"]
 def _stub_worker_modules(monkeypatch) -> None:
     """Common deterministic patches (golden Task 0.3 pattern). STORE NOT here —
     _run_job passes its own FakeStore so the test can resolve blobs."""
-    monkeypatch.setenv(
-        "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-    )
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
     monkeypatch.setattr(worker, "analyze_text", lambda t: {"language": "es"})
     monkeypatch.setattr(worker, "tokenizer", None)
-    monkeypatch.setattr(
-        worker.subprocess, "run", MagicMock(returncode=0, stdout="[]")
-    )
+    monkeypatch.setattr(worker.subprocess, "run", MagicMock(returncode=0, stdout="[]"))
     monkeypatch.setattr(worker.magic, "from_buffer", lambda *a, **k: "application/pdf")
     monkeypatch.setattr(worker.magic, "from_file", lambda *a, **k: "application/pdf")
 
@@ -224,11 +226,7 @@ def _run_job(monkeypatch, settings, docling_response_path="document.json_content
     monkeypatch.setattr(vf, "render_page_async", AsyncMock(return_value=b"\x89PNG"))
 
     channel = _Channel()
-    asyncio.run(
-        w._process_message_async(
-            _IncomingMessage(json.dumps(_job_body()).encode()), channel
-        )
-    )
+    asyncio.run(w._process_message_async(_IncomingMessage(json.dumps(_job_body()).encode()), channel))
     return fake_redis, fake_store, channel.default_exchange.published
 
 
@@ -276,9 +274,7 @@ class TestVisionIntegrationFlagOn:
         envelopes, chunks = _split_published(published)
         base_envelopes = [p for p in baseline["published"] if "queued_at" in p["body"]]
         # SAME routing keys as baseline (full profile: embeddings+entities+metadata+inferences)
-        assert [p["routing_key"] for p in envelopes] == [
-            p["routing_key"] for p in base_envelopes
-        ]
+        assert [p["routing_key"] for p in envelopes] == [p["routing_key"] for p in base_envelopes]
         # Inference chunks are dispatched by the entry stage, one per non-empty chunk
         assert chunks, "entry stage must publish inference chunk messages"
         assert {p["routing_key"] for p in chunks} == {"inferences"}
@@ -291,9 +287,7 @@ class TestVisionIntegrationFlagOn:
             assert body["queued_at"] == "<ts>"
             assert body["pipeline_version"] == "v1"
             assert body["profile"] == "full"
-            assert sorted(body["document_metadata"].keys()) == sorted(
-                base_body["body"]["document_metadata"].keys()
-            )
+            assert sorted(body["document_metadata"].keys()) == sorted(base_body["body"]["document_metadata"].keys())
             # NOT telemetry keys: the job message contract carries no provenance
             assert "provenance" not in json.dumps(body)
 

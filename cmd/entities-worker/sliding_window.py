@@ -13,7 +13,8 @@ the model's limitations.
 """
 
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import Any, Dict, List, Tuple
+
 from rapidfuzz import fuzz
 from unidecode import unidecode
 
@@ -216,9 +217,7 @@ def merge_entities(
     if not all_entities:
         return []
 
-    logger.debug(
-        f"Deduplicating {len(all_entities)} entities from {len(entities_list)} windows"
-    )
+    logger.debug(f"Deduplicating {len(all_entities)} entities from {len(entities_list)} windows")
 
     # Step 2: Deduplicate using fuzzy matching
     merged = {}
@@ -232,9 +231,7 @@ def merge_entities(
             if entities_are_duplicate(entity, merged_entity):
                 # Duplicate found - keep the one with higher confidence
                 entity_score = entity.get("score", entity.get("confidence", 0))
-                merged_score = merged_entity.get(
-                    "score", merged_entity.get("confidence", 0)
-                )
+                merged_score = merged_entity.get("score", merged_entity.get("confidence", 0))
 
                 if entity_score > merged_score:
                     logger.debug(
@@ -280,9 +277,7 @@ def merge_entities(
     return result
 
 
-def requires_sliding_window(
-    text: str, threshold_tokens: int = GLINER_MAX_TOKENS
-) -> bool:
+def requires_sliding_window(text: str, threshold_tokens: int = GLINER_MAX_TOKENS) -> bool:
     """
     Check if text exceeds GLiNER's safe processing length and requires sliding window.
 
@@ -350,10 +345,7 @@ def process_with_sliding_window(
 
     for window_idx, (window_text, offset) in enumerate(windows):
         try:
-            logger.debug(
-                f"  Window {window_idx + 1}/{len(windows)}: "
-                f"offset={offset}, len={len(window_text)}"
-            )
+            logger.debug(f"  Window {window_idx + 1}/{len(windows)}: " f"offset={offset}, len={len(window_text)}")
 
             entities = predict_fn(window_text, entity_types, threshold=threshold)
             if not entities:

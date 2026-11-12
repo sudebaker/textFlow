@@ -12,14 +12,10 @@ class Settings(BaseSettings):
     """Worker settings with environment variable support."""
 
     # Redis Configuration
-    redis_url: str = Field(
-        default="redis://localhost:6379", description="Redis connection URL"
-    )
+    redis_url: str = Field(default="redis://localhost:6379", description="Redis connection URL")
 
     # Queue Configuration
-    entities_queue: str = Field(
-        default="entities", description="RabbitMQ queue name for entities extraction"
-    )
+    entities_queue: str = Field(default="entities", description="RabbitMQ queue name for entities extraction")
 
     # GLiNER Model Configuration
     gliner_model_path: str = Field(
@@ -27,9 +23,7 @@ class Settings(BaseSettings):
         description="Path to GLiNER model (local or HuggingFace model name)",
     )
 
-    gliner_model_size: str = Field(
-        default="small", description="Model size: small, base, large"
-    )
+    gliner_model_size: str = Field(default="small", description="Model size: small, base, large")
 
     # Entity Types Configuration
     entity_types: str = Field(
@@ -38,30 +32,18 @@ class Settings(BaseSettings):
     )
 
     # Thresholds Configuration (per entity type)
-    entity_threshold_per: float = Field(
-        default=0.35, description="Confidence threshold for PERSON entities"
-    )
+    entity_threshold_per: float = Field(default=0.35, description="Confidence threshold for PERSON entities")
 
-    entity_threshold_org: float = Field(
-        default=0.50, description="Confidence threshold for ORGANIZATION entities"
-    )
+    entity_threshold_org: float = Field(default=0.50, description="Confidence threshold for ORGANIZATION entities")
 
-    entity_threshold_loc: float = Field(
-        default=0.50, description="Confidence threshold for LOCATION entities"
-    )
+    entity_threshold_loc: float = Field(default=0.50, description="Confidence threshold for LOCATION entities")
 
-    entity_threshold_date: float = Field(
-        default=0.45, description="Confidence threshold for DATE entities"
-    )
+    entity_threshold_date: float = Field(default=0.45, description="Confidence threshold for DATE entities")
 
-    entity_threshold_money: float = Field(
-        default=0.55, description="Confidence threshold for MONEY entities"
-    )
+    entity_threshold_money: float = Field(default=0.55, description="Confidence threshold for MONEY entities")
 
     # Deduplication Configuration
-    deduplication_enabled: bool = Field(
-        default=True, description="Enable deduplication of extracted entities"
-    )
+    deduplication_enabled: bool = Field(default=True, description="Enable deduplication of extracted entities")
 
     fuzzy_match_threshold: float = Field(
         default=0.85, description="Fuzzy matching threshold for deduplication (0.0-1.0)"
@@ -70,19 +52,13 @@ class Settings(BaseSettings):
     # Regex Entity Extractor Configuration
     regex_service_url: str = Field(
         default="http://regex-entity-extractor:8081",
-        validation_alias=AliasChoices(
-            "REGEX_SERVICE_URL", "REGEX_ENTITY_EXTRACTOR_URL"
-        ),
+        validation_alias=AliasChoices("REGEX_SERVICE_URL", "REGEX_ENTITY_EXTRACTOR_URL"),
         description="URL of the regex-entity-extractor microservice",
     )
 
-    regex_timeout: int = Field(
-        default=30, description="HTTP timeout in seconds for regex extraction"
-    )
+    regex_timeout: int = Field(default=30, description="HTTP timeout in seconds for regex extraction")
 
-    regex_enabled: bool = Field(
-        default=True, description="Enable regex entity extraction"
-    )
+    regex_enabled: bool = Field(default=True, description="Enable regex entity extraction")
 
     # Model Loading Configuration
     allow_remote_download: bool = Field(

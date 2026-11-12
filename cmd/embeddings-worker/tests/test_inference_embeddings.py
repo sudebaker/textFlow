@@ -66,25 +66,19 @@ class TestGenerateInferenceEmbeddings:
 
     def test_chunk_with_no_inferences_is_skipped(self):
         embed_fn = MagicMock(return_value=[[0.1]])
-        result = generate_inference_embeddings(
-            {"c0": [], "c1": [{"text": "x"}]}, embed_fn, MagicMock()
-        )
+        result = generate_inference_embeddings({"c0": [], "c1": [{"text": "x"}]}, embed_fn, MagicMock())
         assert result == {"c1": {"inference_0": [0.1]}}
         embed_fn.assert_called_once_with(["x"])
 
     def test_chunk_with_only_blank_texts_is_skipped(self):
         embed_fn = MagicMock(return_value=[[0.1]])
-        result = generate_inference_embeddings(
-            {"c0": [{"text": ""}, {"text": None}]}, embed_fn, MagicMock()
-        )
+        result = generate_inference_embeddings({"c0": [{"text": ""}, {"text": None}]}, embed_fn, MagicMock())
         assert result == {}
         embed_fn.assert_not_called()
 
     def test_tensor_embeddings_converted_via_tolist(self):
         embed_fn = lambda texts: [_TensorLike([0.5, 0.6])]
-        result = generate_inference_embeddings(
-            {"c0": [{"text": "a"}]}, embed_fn, MagicMock()
-        )
+        result = generate_inference_embeddings({"c0": [{"text": "a"}]}, embed_fn, MagicMock())
         assert result["c0"]["inference_0"] == [0.5, 0.6]
 
     def test_total_embed_failure_raises(self):
@@ -102,9 +96,7 @@ class TestGenerateInferenceEmbeddings:
                 raise RuntimeError("boom")
             return [[0.1]]
 
-        result = generate_inference_embeddings(
-            {"c0": [{"text": "ok"}], "c1": [{"text": "boom"}]}, embed_fn, logger
-        )
+        result = generate_inference_embeddings({"c0": [{"text": "ok"}], "c1": [{"text": "boom"}]}, embed_fn, logger)
         assert result == {"c0": {"inference_0": [0.1]}}
         logger.warning.assert_called_once()
 
@@ -128,16 +120,15 @@ def worker_env(monkeypatch, tmp_path):
 
     # Default: redis.get returns chunks JSON for the :chunks key (spec 3.4 —
     # workers read chunks from the artifact store, not inline in the message).
-    mock_redis.get.return_value = json.dumps(
-        [{"chunk_id": "c0", "text": "hello world"}]
-    )
+    mock_redis.get.return_value = json.dumps([{"chunk_id": "c0", "text": "hello world"}])
 
-    with patch.object(BaseWorker, "redis_client", mock_redis), \
-         patch.object(BaseWorker, "event_bus", mock_event_bus), \
-         patch("pkg.worker_common.base.Counter"), \
-         patch("pkg.worker_common.base.Histogram"), \
-         patch("pkg.worker_common.base.Gauge"), \
-         patch("prometheus_client.Gauge"):
+    with patch.object(BaseWorker, "redis_client", mock_redis), patch.object(
+        BaseWorker, "event_bus", mock_event_bus
+    ), patch("pkg.worker_common.base.Counter"), patch("pkg.worker_common.base.Histogram"), patch(
+        "pkg.worker_common.base.Gauge"
+    ), patch(
+        "prometheus_client.Gauge"
+    ):
         import embeddings_worker as worker
 
         store = FSStore(str(tmp_path))
@@ -175,30 +166,18 @@ class TestProcessMessageInferenceEmbeddings:
             [{"chunk_id": "c0", "inferences": [{"text": "Some inference", "confidence": 0.9}]}]
         )
 
-        result = w.process_message(
-            {"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello world"}]}
-        )
+        result = w.process_message({"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello world"}]})
 
         assert result["status"] == "success"
         store = worker_env["store"]
 
-        chunks_call = next(
-            c for c in redis.set.call_args_list
-            if c[0][0] == "orchestrator:job:j1:embeddings"
-        )
+        chunks_call = next(c for c in redis.set.call_args_list if c[0][0] == "orchestrator:job:j1:embeddings")
         assert msgpack.unpackb(store.get(chunks_call[0][1]), raw=False) == {"c0": [0.1, 0.2]}
 
-        ie_call = next(
-            c for c in redis.set.call_args_list
-            if c[0][0] == "orchestrator:job:j1:inference_embeddings"
-        )
-        assert msgpack.unpackb(store.get(ie_call[0][1]), raw=False) == {
-            "c0": {"inference_0": [0.7, 0.8]}
-        }
+        ie_call = next(c for c in redis.set.call_args_list if c[0][0] == "orchestrator:job:j1:inference_embeddings")
+        assert msgpack.unpackb(store.get(ie_call[0][1]), raw=False) == {"c0": {"inference_0": [0.7, 0.8]}}
 
-        redis.hset.assert_any_call(
-            "orchestrator:job:j1:steps", "inference_embeddings", "completed"
-        )
+        redis.hset.assert_any_call("orchestrator:job:j1:steps", "inference_embeddings", "completed")
         worker_env["event_bus"].publish_job_progress.assert_called_with("j1", 40, "embedding")
 
     def test_no_micro_inferences_skips_inference_embeddings(self, worker_env):
@@ -209,15 +188,10 @@ class TestProcessMessageInferenceEmbeddings:
         redis = worker_env["redis_client"]
         redis.exists.return_value = 0
 
-        result = w.process_message(
-            {"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello world"}]}
-        )
+        result = w.process_message({"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello world"}]})
 
         assert result["status"] == "success"
-        assert not any(
-            c[0][0] == "orchestrator:job:j1:inference_embeddings"
-            for c in redis.set.call_args_list
-        )
+        assert not any(c[0][0] == "orchestrator:job:j1:inference_embeddings" for c in redis.set.call_args_list)
         worker_env["event_bus"].publish_job_progress.assert_called_with("j1", 33, "embedding")
 
 
@@ -241,9 +215,7 @@ class TestBatchMetrics:
         worker_env["redis_client"].exists.return_value = 0
 
         before = worker.chunks_total.labels(status="success")._value.get()
-        result = w.process_message(
-            {"job_id": "j-m", "chunks": [{"chunk_id": "c0", "text": "hello world"}]}
-        )
+        result = w.process_message({"job_id": "j-m", "chunks": [{"chunk_id": "c0", "text": "hello world"}]})
         after = worker.chunks_total.labels(status="success")._value.get()
 
         assert result["status"] == "success"
@@ -254,19 +226,13 @@ class TestDegradedFlag:
     def test_degraded_client_result_is_surfaced_for_completion(self, worker_env):
         w = worker_env["worker"]
         client = worker_env["client"]
-        client.embed_batch.return_value = EmbeddingsResult(
-            vectors=[[0.1, 0.2]], degraded=True
-        )
+        client.embed_batch.return_value = EmbeddingsResult(vectors=[[0.1, 0.2]], degraded=True)
         worker_env["redis_client"].exists.return_value = 0
 
-        result = w.process_message(
-            {"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello"}]}
-        )
+        result = w.process_message({"job_id": "j1", "chunks": [{"chunk_id": "c0", "text": "hello"}]})
 
         assert result["status"] == "success"
-        worker_env["redis_client"].setex.assert_any_call(
-            "orchestrator:job:j1:embeddings_degraded", 86400, "true"
-        )
+        worker_env["redis_client"].setex.assert_any_call("orchestrator:job:j1:embeddings_degraded", 86400, "true")
 
 
 class TestPartialDegradation:
@@ -275,9 +241,7 @@ class TestPartialDegradation:
         w = worker_env["worker"]
         w.batch_size = 1
         client = worker_env["client"]
-        client.embed_batch.return_value = EmbeddingsResult(
-            vectors=[[0.1, 0.2], [], [0.3, 0.4]], degraded=True
-        )
+        client.embed_batch.return_value = EmbeddingsResult(vectors=[[0.1, 0.2], [], [0.3, 0.4]], degraded=True)
         worker_env["redis_client"].exists.return_value = 0
         worker_env["redis_client"].get.return_value = json.dumps(
             [
@@ -292,14 +256,8 @@ class TestPartialDegradation:
         assert result["status"] == "success"
         client.embed_batch.assert_called_once()
         embeddings_call = next(
-            c
-            for c in worker_env["redis_client"].set.call_args_list
-            if c[0][0] == "orchestrator:job:j1:embeddings"
+            c for c in worker_env["redis_client"].set.call_args_list if c[0][0] == "orchestrator:job:j1:embeddings"
         )
-        stored = msgpack.unpackb(
-            worker_env["store"].get(embeddings_call[0][1]), raw=False
-        )
+        stored = msgpack.unpackb(worker_env["store"].get(embeddings_call[0][1]), raw=False)
         assert stored == {"c0": [0.1, 0.2], "c2": [0.3, 0.4]}
-        worker_env["redis_client"].setex.assert_any_call(
-            "orchestrator:job:j1:embeddings_degraded", 86400, "true"
-        )
+        worker_env["redis_client"].setex.assert_any_call("orchestrator:job:j1:embeddings_degraded", 86400, "true")

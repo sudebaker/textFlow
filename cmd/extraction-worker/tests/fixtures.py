@@ -22,12 +22,7 @@ _CONTENT_OP = b"BT /F1 24 Tf 72 720 Td ({txt}) Tj ET"
 
 def _escape(text: str) -> bytes:
     """Escape a PDF literal string (backslash and parenthesis)."""
-    return (
-        text.replace("\\", "\\\\")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-        .encode("utf-8")
-    )
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").encode("utf-8")
 
 
 def _serialize_object(obj_num: int, body: bytes) -> bytes:
@@ -63,13 +58,17 @@ def build_pdf(page_texts: list) -> bytes:
     pieces.append(
         _serialize_object(
             pages_obj,
-            b"<< /Type /Pages /Kids [" + b" ".join(
-                b"%d 0 R" % (3 + 2 * i) for i in range(n)
-            ) + b"] /Count %d >>" % n,
+            b"<< /Type /Pages /Kids [" + b" ".join(b"%d 0 R" % (3 + 2 * i) for i in range(n)) + b"] /Count %d >>" % n,
         )
     )
     for i, text in enumerate(page_texts):
-        pieces.append(_serialize_object(3 + 2 * i, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>" % (font_obj, 4 + 2 * i)))
+        pieces.append(
+            _serialize_object(
+                3 + 2 * i,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+                % (font_obj, 4 + 2 * i),
+            )
+        )
         pieces.append(_serialize_object(4 + 2 * i, _build_stream(text)))
 
     # Shared font, referenced by every page's /Resources.
@@ -87,11 +86,9 @@ def build_pdf(page_texts: list) -> bytes:
     ]
     for off in offsets[1:]:
         sections.append(b"%010d 00000 n \n" % off)
-    trailer = (
-        b"trailer << /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF" % (
-            total_objects + 1,
-            offset,
-        )
+    trailer = b"trailer << /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF" % (
+        total_objects + 1,
+        offset,
     )
 
     return HEADER + b"\n" + b"".join(pieces) + b"".join(sections) + trailer

@@ -79,13 +79,21 @@ def test_dedup_different_label_no_merge():
 def test_dedup_offsets_preserved_from_highest_confidence():
     entities = [
         {
-            "label": "PER", "text": "María", "confidence": 0.7,
-            "entity_id": "eee000000001", "start": 10, "end": 15,
+            "label": "PER",
+            "text": "María",
+            "confidence": 0.7,
+            "entity_id": "eee000000001",
+            "start": 10,
+            "end": 15,
             "chunk_id": "chunk_001",
         },
         {
-            "label": "PER", "text": "María", "confidence": 0.9,
-            "entity_id": "eee000000002", "start": 100, "end": 105,
+            "label": "PER",
+            "text": "María",
+            "confidence": 0.9,
+            "entity_id": "eee000000002",
+            "start": 100,
+            "end": 105,
             "chunk_id": "chunk_002",
         },
     ]

@@ -106,7 +106,8 @@ func TestConsumer_ReconnectsAfterChannelClose(t *testing.T) {
 
 	select {
 	case got := <-received:
-		require.Equal(t, "msg-1", got)
+		// Publish marshals the message as JSON, so a plain string arrives quoted.
+		require.JSONEq(t, `"msg-1"`, got)
 	case <-time.After(5 * time.Second):
 		t.Fatal("msg-1 not received after 5s")
 	}

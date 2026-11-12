@@ -6,27 +6,27 @@ import (
 	"time"
 )
 
+// ConsumeWithContext consumes a queue until the context is cancelled.
+//
+// A cancelled context is a clean shutdown, not a failure: it returns nil and
+// logs at debug level. Any other error means the connection or the channel
+// broke; the broker reconnects with a growing backoff and keeps consuming.
 func (b *RabbitMQBroker) ConsumeWithContext(ctx context.Context, queue string, handler func([]byte) error) error {
 	for {
-		if err := b.consumeOnce(ctx, queue, handler); err != nil {
+		err := b.consumeOnce(ctx, queue, handler)
+		if ctx.Err() != nil {
+			b.logger.Debug().Str("queue", queue).Msg("consumer stopped by context")
+			return nil
+		}
+		if err != nil {
 			b.logger.Error().Err(err).Str("queue", queue).Msg("consumer stopped, attempting reconnect")
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
 			b.reconnect()
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return nil
 			case <-time.After(5 * time.Second):
 			}
 			continue
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
 		}
 	}
 }

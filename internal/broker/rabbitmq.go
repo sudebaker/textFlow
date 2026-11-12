@@ -238,7 +238,19 @@ func (b *RabbitMQBroker) declareQueue(name string) error {
 }
 
 func (b *RabbitMQBroker) Publish(ctx context.Context, queue string, message interface{}) error {
-	return b.pub.publishJSON(ctx, queue, message)
+	// The publisher is rebuilt by reconnect(); between a connection loss and the
+	// next successful reconnect it is nil. Publishing used to dereference it and
+	// panic, turning a recoverable outage into a crash. Fail fast instead and let
+	// the reconnect loop (or the caller's retry) do the recovering: blocking a
+	// publish for seconds while holding the hot path helps nobody.
+	b.mu.RLock()
+	pub := b.pub
+	b.mu.RUnlock()
+
+	if pub == nil {
+		return fmt.Errorf("publish to %s: broker not connected (publisher unavailable)", queue)
+	}
+	return pub.publishJSON(ctx, queue, message)
 }
 
 func (b *RabbitMQBroker) PublishJobMessage(ctx context.Context, jobMsg *models.JobMessage) error {
@@ -259,44 +271,46 @@ func (b *RabbitMQBroker) Consume(queue string, handler func([]byte) error) error
 	return b.ConsumeWithContext(context.Background(), queue, handler)
 }
 
+// GetQueueInfo reports how many messages and consumers a queue has.
+//
+// It must answer quickly: admission control calls it on every ingestion, and a
+// request that blocks for minutes while the broker is down is worse than an
+// error that lets the caller decide. So there is at most one reconnect attempt,
+// without the backoff loop that the background monitor uses.
 func (b *RabbitMQBroker) GetQueueInfo(queue string) (*QueueInfo, error) {
-	for attempt := 0; attempt < 3; attempt++ {
-		b.mu.RLock()
-		pool := b.pool
-		b.mu.RUnlock()
-
+	pool := b.currentPool()
+	if pool == nil {
+		if err := b.tryReconnect(); err != nil {
+			return nil, fmt.Errorf("get queue info for %s: broker not connected: %w", queue, err)
+		}
+		pool = b.currentPool()
 		if pool == nil {
-			b.logger.Warn().Msgf("Channel pool is nil, triggering reconnect (attempt %d/3)", attempt+1)
-			b.reconnect()
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
+			return nil, fmt.Errorf("get queue info for %s: broker not connected", queue)
 		}
-
-		pc, err := pool.Checkout(CheckoutTimeout)
-		if err != nil {
-			b.logger.Warn().Err(err).Msgf("Failed to checkout pool channel for QueueInspect (attempt %d/3)", attempt+1)
-			b.reconnect()
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
-		}
-
-		queueInfo, err := pc.QueueInspect(queue)
-		pool.Return(pc)
-		if err != nil {
-			b.logger.Warn().Err(err).Msgf("GetQueueInfo failed, attempting reconnection (attempt %d/3)", attempt+1)
-			b.reconnect()
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
-		}
-
-		return &QueueInfo{
-			Name:      queueInfo.Name,
-			Messages:  queueInfo.Messages,
-			Consumers: queueInfo.Consumers,
-		}, nil
 	}
 
-	return nil, fmt.Errorf("failed to get queue info for %s after 3 attempts", queue)
+	pc, err := pool.Checkout(CheckoutTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("checkout channel for queue %s: %w", queue, err)
+	}
+
+	queueInfo, err := pc.QueueInspect(queue)
+	pool.Return(pc)
+	if err != nil {
+		return nil, fmt.Errorf("inspect queue %s: %w", queue, err)
+	}
+
+	return &QueueInfo{
+		Name:      queueInfo.Name,
+		Messages:  queueInfo.Messages,
+		Consumers: queueInfo.Consumers,
+	}, nil
+}
+
+func (b *RabbitMQBroker) currentPool() *ChannelPool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.pool
 }
 
 func (b *RabbitMQBroker) UpdateQueueMetrics() error {

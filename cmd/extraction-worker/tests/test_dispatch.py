@@ -39,9 +39,18 @@ for _mod in (
 ):
     sys.modules.setdefault(_mod, MagicMock())
 
+# The stubs above are bare MagicMocks: their attributes only exist because
+# MagicMock invents them on access. When monkeypatch.undo() deletes one of those
+# invented attributes, the mock remembers the deletion and every later access
+# raises AttributeError, so the second test that patches "magic" fails. Pin the
+# attributes explicitly so undo() restores a value instead of deleting it.
+setattr(sys.modules["magic"], "from_buffer", MagicMock(return_value="application/pdf"))
+setattr(sys.modules["magic"], "from_file", MagicMock(return_value="application/pdf"))
+
 import worker  # noqa: E402
 from fixtures import build_pdf  # noqa: E402
 from golden_utils import FakeMsg, FakeStore  # noqa: E402
+
 from pkg.events_python import EventBus  # noqa: E402
 from pkg.worker_common.inference_dispatch import (  # noqa: E402
     INFERENCES_QUEUE,
@@ -158,9 +167,7 @@ class _Incoming:
 
 
 def _run(monkeypatch, *, profile: str, features=None, text: str = LONG_TEXT) -> _Recorder:
-    monkeypatch.setenv(
-        "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-    )
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
     monkeypatch.setattr(worker, "analyze_text", lambda t: {"language": "es"})
     monkeypatch.setattr(worker, "tokenizer", None)
     monkeypatch.setattr(worker, "extract_document_metadata", _fake_metadata)
@@ -168,9 +175,7 @@ def _run(monkeypatch, *, profile: str, features=None, text: str = LONG_TEXT) -> 
     monkeypatch.setattr(
         worker.ExtractionWorker,
         "_docling_convert_async",
-        lambda self, document_bytes, filename: _fake_docling(
-            self, document_bytes, filename, text=text
-        ),
+        lambda self, document_bytes, filename: _fake_docling(self, document_bytes, filename, text=text),
     )
     monkeypatch.setattr(
         worker.SourceClassifier,
@@ -206,11 +211,7 @@ def _run(monkeypatch, *, profile: str, features=None, text: str = LONG_TEXT) -> 
     if features is not None:
         body["features"] = features
 
-    asyncio.run(
-        instance._process_message_async(
-            _Incoming(json.dumps(body).encode("utf-8")), channel
-        )
-    )
+    asyncio.run(instance._process_message_async(_Incoming(json.dumps(body).encode("utf-8")), channel))
     return recorder
 
 
@@ -226,9 +227,7 @@ def _body(event):
 
 def _counter_index(events) -> int:
     for index, event in enumerate(events):
-        if event[0] in ("redis:set", "redis:setex") and event[1].endswith(
-            ":inferences:remaining"
-        ):
+        if event[0] in ("redis:set", "redis:setex") and event[1].endswith(":inferences:remaining"):
             return index
     return None
 
@@ -272,15 +271,11 @@ def test_counters_are_set_before_publishing_chunks(monkeypatch):
     first_message_index = next(
         index
         for index, event in enumerate(events)
-        if event[0] == "amqp:publish"
-        and event[1] == INFERENCES_QUEUE
-        and (_body(event) or {}).get("chunk_text")
+        if event[0] == "amqp:publish" and event[1] == INFERENCES_QUEUE and (_body(event) or {}).get("chunk_text")
     )
 
     assert counter_index is not None, "inferences:remaining counter was never set"
-    assert first_message_index > counter_index, (
-        "counters must be written BEFORE the first chunk publish (race fix)"
-    )
+    assert first_message_index > counter_index, "counters must be written BEFORE the first chunk publish (race fix)"
     assert _counter_value(events, ":inferences:total") == len(messages)
 
     counter_event = events[counter_index]
@@ -307,8 +302,7 @@ def test_publishes_one_message_per_non_empty_chunk(monkeypatch):
         chunk_ids.add(message["chunk_id"])
     assert len(chunk_ids) == len(messages)
     assert INFERENCES_QUEUE not in _job_envelope_queues(recorder.events), (
-        "the job envelope must not be published to the inferences queue: "
-        "chunk messages are dispatched separately"
+        "the job envelope must not be published to the inferences queue: " "chunk messages are dispatched separately"
     )
 
 
@@ -325,9 +319,7 @@ def _step_events(events, step: str) -> list:
     return [
         event
         for event in events
-        if event[0] == "redis:hset"
-        and event[1] == f"orchestrator:job:{JOB_ID}:steps"
-        and step in event[2]
+        if event[0] == "redis:hset" and event[1] == f"orchestrator:job:{JOB_ID}:steps" and step in event[2]
     ]
 
 
@@ -344,9 +336,7 @@ def test_no_chunks_completes_inferences_step_without_routing(monkeypatch):
 
     assert _counter_index(events) is None, "no counters without chunks"
     assert _inference_messages(events) == []
-    assert INFERENCES_QUEUE not in _job_envelope_queues(events), (
-        "no inferences envelope: the step is already completed"
-    )
+    assert INFERENCES_QUEUE not in _job_envelope_queues(events), "no inferences envelope: the step is already completed"
     step_events = _step_events(events, "inferences")
     assert step_events, "inferences step must be marked completed"
     assert "completed" in step_events[0][2]

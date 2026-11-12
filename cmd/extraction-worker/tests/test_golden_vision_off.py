@@ -45,9 +45,25 @@ for _mod in (
 ):
     sys.modules.setdefault(_mod, MagicMock())
 
+# The stubs above are bare MagicMocks: their attributes only exist because
+# MagicMock invents them on access. When monkeypatch.undo() deletes one of those
+# invented attributes, the mock remembers the deletion and every later access
+# raises AttributeError, so the second test that patches "magic" fails. Pin the
+# attributes explicitly so undo() restores a value instead of deleting it.
+setattr(sys.modules["magic"], "from_buffer", MagicMock(return_value="application/pdf"))
+setattr(sys.modules["magic"], "from_file", MagicMock(return_value="application/pdf"))
+
 import worker  # noqa: E402
 from fixtures import build_pdf  # noqa: E402
-from golden_utils import FakeExchange, FakeMsg, FakeRedis, FakeStore, canonical_json, normalize  # noqa: E402
+from golden_utils import (  # noqa: E402
+    FakeExchange,
+    FakeMsg,
+    FakeRedis,
+    FakeStore,
+    canonical_json,
+    normalize,
+)
+
 from pkg.events_python import EventBus  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -188,9 +204,7 @@ def _job_body():
 def _run_capture(monkeypatch):
     """Run one job end-to-end over fakes; return normalized capture."""
     # Determinism hooks BEFORE constructing the worker (plan Task 0.3).
-    monkeypatch.setenv(
-        "PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json")
-    )
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(PROJECT_ROOT / "configs" / "pipeline.json"))
     # langdetect/textstat are MagicMock stubs whose return values would break
     # json.dumps; replace analyze_text entirely with a deterministic dict.
     monkeypatch.setattr(worker, "analyze_text", lambda t: {"language": "es"})
@@ -199,15 +213,9 @@ def _run_capture(monkeypatch):
     monkeypatch.setattr(worker, "tokenizer", None)
     monkeypatch.setattr(worker, "extract_document_metadata", _fake_metadata)
     # Belt-and-braces: guard any stray real-path call into exiftool/magic.
-    monkeypatch.setattr(
-        worker.subprocess, "run", MagicMock(returncode=0, stdout="[]")
-    )
-    monkeypatch.setattr(
-        worker.magic, "from_buffer", lambda *a, **k: "application/pdf"
-    )
-    monkeypatch.setattr(
-        worker.magic, "from_file", lambda *a, **k: "application/pdf"
-    )
+    monkeypatch.setattr(worker.subprocess, "run", MagicMock(returncode=0, stdout="[]"))
+    monkeypatch.setattr(worker.magic, "from_buffer", lambda *a, **k: "application/pdf")
+    monkeypatch.setattr(worker.magic, "from_file", lambda *a, **k: "application/pdf")
     monkeypatch.setattr(worker, "STORE", FakeStore())
     monkeypatch.setattr(worker.ExtractionWorker, "_docling_convert_async", _fake_docling)
     # aio_pika is a MagicMock module here; replace Message with FakeMsg so
@@ -243,9 +251,7 @@ def test_vision_off_golden(monkeypatch):
         GOLDEN_PATH.write_text(capture, encoding="utf-8")
         return
 
-    assert (
-        GOLDEN_PATH.exists()
-    ), f"missing {GOLDEN_PATH}; run with GOLDEN_REGENERATE=1 first"
+    assert GOLDEN_PATH.exists(), f"missing {GOLDEN_PATH}; run with GOLDEN_REGENERATE=1 first"
     expected = GOLDEN_PATH.read_text(encoding="utf-8")
     if capture != expected:
         import difflib
@@ -261,9 +267,7 @@ def test_vision_off_golden(monkeypatch):
                 )
             )[:60]
         )
-        raise AssertionError(
-            "Output drifted from golden baseline (VISION must be off):\n" + diff
-        )
+        raise AssertionError("Output drifted from golden baseline (VISION must be off):\n" + diff)
 
 
 def test_golden_capture_plumbing_sanity(monkeypatch):

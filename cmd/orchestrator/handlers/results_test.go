@@ -40,7 +40,9 @@ func TestGraphHandler_InvalidJobID(t *testing.T) {
 		t.Errorf("Expected 400, got %d", w.Code)
 	}
 	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
 	if resp["error"] != "invalid_job_id" {
 		t.Errorf("Expected error 'invalid_job_id', got %v", resp["error"])
 	}
@@ -103,7 +105,9 @@ func TestVectorsHandler_SeparatePagination(t *testing.T) {
 	}
 	data, _ := json.Marshal(results)
 	filePath := filepath.Join(tmpDir, results.JobID+".json")
-	os.WriteFile(filePath, data, 0644)
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		t.Fatalf("write results file: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "/v1/documents/a0000000-b000-c000-d000-e00000000000/vectors?fields=chunks&page_chunks=2&limit_chunks=2", nil)
@@ -113,7 +117,9 @@ func TestVectorsHandler_SeparatePagination(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp VectorsResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal vectors response: %v", err)
+	}
 	if len(resp.Chunks) != 2 {
 		t.Errorf("Expected 2 chunks, got %d", len(resp.Chunks))
 	}

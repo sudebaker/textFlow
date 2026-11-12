@@ -103,8 +103,12 @@ func (pc *poolChannel) PublishWithConfirm(exchange, key string, mandatory, immed
 	}
 }
 
+// QueueInspect asks the broker for a queue's depth without creating it.
+//
+// amqp091-go deprecated Channel.QueueInspect in favour of a passive declaration,
+// which is what QueueInspect did underneath: it fails if the queue does not exist.
 func (pc *poolChannel) QueueInspect(name string) (amqp.Queue, error) {
-	return pc.ch.QueueInspect(name)
+	return pc.ch.QueueDeclarePassive(name, false, false, false, false, nil)
 }
 
 func (pc *poolChannel) close() {

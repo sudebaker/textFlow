@@ -168,6 +168,46 @@ def test_process_message_skips_regex_when_disabled():
     assert entities_raw == []  # sin regex: solo GLiNER (mock devuelve [])
 
 
+class _GlinerLike:
+    def __init__(self, entities_by_text):
+        self.entities_by_text = entities_by_text
+
+    def predict_entities(self, text, labels, threshold=0.5, **kwargs):
+        return self.inference([text], labels, threshold=threshold, **kwargs)[0]
+
+    def inference(self, texts, labels, threshold=0.5, **kwargs):
+        return [self.entities_by_text.get(t, []) if isinstance(t, str) else [] for t in texts]
+
+
+def test_process_message_extracts_gliner_entities_from_every_chunk_in_batch():
+    chunks = [
+        {"chunk_id": "c1", "text": "Juan vive en Madrid", "start_offset": 0},
+        {"chunk_id": "c2", "text": "Ana trabaja en Sevilla", "start_offset": 20},
+    ]
+    worker = _build_worker()
+    worker.regex_enabled = False
+    worker.model = _GlinerLike(
+        {
+            "Juan vive en Madrid": [{"start": 0, "end": 4, "text": "Juan", "label": "PERSON", "score": 0.9}],
+            "Ana trabaja en Sevilla": [{"start": 15, "end": 22, "text": "Sevilla", "label": "LOCATION", "score": 0.9}],
+        }
+    )
+    worker.redis_client.get.side_effect = lambda key: (
+        json.dumps("Juan vive en Madrid Ana trabaja en Sevilla")
+        if key.endswith(":text")
+        else (json.dumps(chunks) if key.endswith(":chunks") else None)
+    )
+
+    worker.process_message({"job_id": "job-b"})
+
+    writes = {c[0][0]: c[0][1] for c in worker.redis_client.set.call_args_list}
+    entities_raw = json.loads(writes["orchestrator:job:job-b:entities_raw"])
+    assert {(e["chunk_id"], e["text"], e["start"], e["end"]) for e in entities_raw} == {
+        ("c1", "Juan", 0, 4),
+        ("c2", "Sevilla", 35, 42),
+    }
+
+
 def test_batch_metrics_registered():
     """Throughput metrics (spec 33) are registered at module level."""
     assert ew.batch_duration.collect()[0].name == "entities_worker_batch_duration_seconds"

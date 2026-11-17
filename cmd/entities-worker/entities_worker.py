@@ -416,11 +416,9 @@ class EntitiesWorker(BaseWorker):
                 texts = [c[1] for c in batch]
                 batch_start_time = time.time()
                 try:
-                    batch_predictions = self.model.predict_entities(texts, entity_types, threshold=0.1)
+                    batch_predictions = self.model.inference(texts, entity_types, threshold=0.1, batch_size=len(batch))
                     batch_duration.labels(batch_size=len(batch)).observe(time.time() - batch_start_time)
                     for (chunk_id, chunk_text, chunk_offset), entities_items in zip(batch, batch_predictions):
-                        if entities_items and isinstance(entities_items[0], list):
-                            entities_items = entities_items[0]
                         for e in entities_items:
                             label = e.get("label", "")
                             score = e.get("score", 0.0)
